@@ -31,6 +31,18 @@ export function createMyToken(input: CreatePATInput): Promise<CreatePATResponse>
   return guard404("pats", () => apiPost("/api/me/tokens", { body: input }));
 }
 
-export async function revokeMyToken(tokenID: string): Promise<void> {
-  await guard404("pats", () => apiDelete("/api/me/tokens/{token_id}", { params: { token_id: tokenID } }));
+// What a revoke ended: the pending invitations the token had emailed
+// (ADR-174), which live no longer than it, and why the sweep could not take
+// every one out when it could not.
+export type TokenRevocation = components["schemas"]["patRevokedView"];
+
+export async function revokeMyToken(tokenID: string): Promise<TokenRevocation> {
+  // A 204 is a revoke that ended nothing: apiRequest answers it undefined.
+  const r = (await guard404("pats", () =>
+    apiDelete("/api/me/tokens/{token_id}", { params: { token_id: tokenID } }),
+  )) as TokenRevocation | undefined;
+  return {
+    invitations_revoked: r?.invitations_revoked ?? [],
+    invitations_error: r?.invitations_error,
+  };
 }

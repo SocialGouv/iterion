@@ -112,7 +112,39 @@ func (s *Server) mintInvitation(w http.ResponseWriter, r *http.Request, id auth.
 	if !s.confirmTeamGrantAfterMint(w, r, id, c.orgID, c.grantCapped, inv) {
 		return
 	}
+	if !s.confirmMintingTokenAfterMint(w, r, inv) {
+		return
+	}
 	deliver()
+}
+
+// confirmMintingTokenAfterMint reads again, once the row has landed, the
+// standing of the personal access token that minted inv (nothing to read for
+// a session's mint). The request was authenticated before the row landed,
+// and the revoke of that token sweeps the pending rows it lists only AFTER
+// the revoke is written: a row inserted behind that listing would be emailed
+// and then refused at accept, with nobody told. Read here, the revoke is
+// either seen — the row is taken back before any email leaves, and the
+// minter hears that its token no longer stands — or it lands later, and its
+// sweep lists this row and names it.
+func (s *Server) confirmMintingTokenAfterMint(w http.ResponseWriter, r *http.Request, inv identity.Invitation) bool {
+	err := s.authSvc.InvitationCredentialStands(r.Context(), inv)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, auth.ErrInvitationCredentialGone) {
+		fate, _ := s.revokeUndeliveredInvitation(r, inv, "minting_pat_gone", "")
+		httpError(w, http.StatusUnauthorized,
+			"this personal access token was revoked, or stopped standing, while the invitation for %s was being minted: nothing was sent, and %s",
+			inv.Email, fate)
+		return false
+	}
+	// A standing that could not be READ is not one that dropped: the trail
+	// says which, as the cap confirmations' *_unconfirmed reasons do.
+	fate, _ := s.revokeUndeliveredInvitation(r, inv, "minting_pat_unconfirmed", "")
+	httpError(w, http.StatusInternalServerError,
+		"confirming the personal access token that minted the invitation for %s failed (%v): nothing was sent, and %s", inv.Email, err, fate)
+	return false
 }
 
 // deliverInvitationLink answers a studio session's mint with the token, and
@@ -141,7 +173,7 @@ func (s *Server) deliverSealedInvitation(w http.ResponseWriter, r *http.Request,
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
 	defer cancel()
 	if err := s.authSvc.DeliverInvitation(dctx, sealed, d); err != nil {
-		fate, stands := s.revokeUndeliveredInvitation(r, inv)
+		fate, stands := s.revokeUndeliveredInvitation(r, inv, "email_delivery_failed", ": mint it again once the mail relay answers")
 		// A 5xx body keeps its error_code alone (the rest reaches the log
 		// under the request id): the code is what tells the caller whether
 		// the invitation went with its email or still stands, to revoke by
@@ -158,23 +190,26 @@ func (s *Server) deliverSealedInvitation(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, invitationMintedOf(inv, "", invitationDeliveryEmail, orgID))
 }
 
-// revokeUndeliveredInvitation takes back an invitation whose email the relay
-// refused, on a context detached from the request, and answers its fate in
-// words for the refusal, and whether the row still stands.
-func (s *Server) revokeUndeliveredInvitation(r *http.Request, inv identity.Invitation) (string, bool) {
+// revokeUndeliveredInvitation takes back an invitation that will not be
+// delivered — its email refused by the relay, or its minting token gone
+// before any email left — on a context detached from the request, and
+// answers its fate in words for the refusal, and whether the row still
+// stands. reason is the audit line's; next follows the fate of a row taken
+// back, as the advice for what to do then.
+func (s *Server) revokeUndeliveredInvitation(r *http.Request, inv identity.Invitation, reason, next string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
 	defer cancel()
 	err := s.authStore().DeleteInvitation(ctx, inv.ID)
 	switch {
 	case err == nil:
 		s.auditTenant(r, inv.TeamID, "invitation.deleted", "invitation", inv.ID,
-			map[string]any{"email": inv.Email, "reason": "email_delivery_failed"})
-		return "it was revoked: mint it again once the mail relay answers", false
+			map[string]any{"email": inv.Email, "reason": reason})
+		return "it was revoked" + next, false
 	case errors.Is(err, identity.ErrNotFound):
 		return "it is already revoked", false
 	default:
 		if s.logger != nil {
-			s.logger.Error("team %s: revoking invitation %s, whose email could not be sent, failed: %v", inv.TeamID, inv.ID, err)
+			s.logger.Error("team %s: revoking undelivered invitation %s (%s) failed: %v", inv.TeamID, inv.ID, reason, err)
 		}
 		return fmt.Sprintf("revoking it failed too (%v): invitation %s stands undelivered — revoke it by hand (DELETE /api/teams/%s/invitations/%s)", err, inv.ID, inv.TeamID, inv.ID), true
 	}
@@ -223,11 +258,12 @@ func invitationOrgRoleIn(inv identity.Invitation, orgID string) identity.OrgRole
 }
 
 // invitationAuditMeta is what the audit line of a minted invitation names:
-// its address, its team role, the org role accepting writes, and — for one a
-// personal access token minted — that token, which is what someone answering
-// a leak looks for.
+// its address, its team, its team role, the org role accepting writes, and —
+// for one a personal access token minted — that token, which is what someone
+// answering a leak looks for. The team is what keeps the org trail's row
+// from a credential pinned to another team (orgAuditRowsForPin).
 func invitationAuditMeta(inv identity.Invitation, orgID string) map[string]any {
-	meta := map[string]any{"email": inv.Email, "role": string(inv.Role), "org_role": string(invitationOrgRoleIn(inv, orgID))}
+	meta := map[string]any{"email": inv.Email, "team_id": inv.TeamID, "role": string(inv.Role), "org_role": string(invitationOrgRoleIn(inv, orgID))}
 	if inv.MintedWith != "" {
 		meta["minted_with"] = inv.MintedWith
 	}

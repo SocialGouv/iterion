@@ -85,7 +85,9 @@ type Store interface {
 	GetByTokenHash(ctx context.Context, hash string) (Token, error)
 	Get(ctx context.Context, id string) (Token, error)
 	ListByUser(ctx context.Context, userID string) ([]Token, error)
-	// Revoke marks the token unusable; rows are kept for audit.
+	// Revoke marks the token unusable; rows are kept for audit. On a token
+	// already revoked it changes nothing and succeeds: the first instant
+	// stands. ErrNotFound for a token that does not exist.
 	Revoke(ctx context.Context, id string, at time.Time) error
 	// RevokeAllByUser revokes every token of userID not revoked yet — "sign
 	// out everywhere" and an admin disable — and returns how many it

@@ -224,13 +224,18 @@ func (s *Server) handleListOrgProvisionApprovals(w http.ResponseWriter, r *http.
 		}{Approvals: []forge.ProvisionApproval{}})
 		return
 	}
-	list, err := s.provisionApprovals.ListByOrg(r.Context(), orgID)
+	all, err := s.provisionApprovals.ListByOrg(r.Context(), orgID)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	if list == nil {
-		list = []forge.ProvisionApproval{}
+	// A credential pinned to one team reads that team's requests only, as
+	// the team route answers it.
+	list := make([]forge.ProvisionApproval, 0, len(all))
+	for _, a := range all {
+		if !id.PinRefusesTeam(a.TenantID) {
+			list = append(list, a)
+		}
 	}
 	writeJSON(w, struct {
 		Approvals []forge.ProvisionApproval `json:"approvals"`
@@ -263,14 +268,17 @@ func (s *Server) handleListTeamProvisionApprovals(w http.ResponseWriter, r *http
 	}{Approvals: list})
 }
 
-// approvalForOrg loads the record and confirms it belongs to the route org.
-func (s *Server) approvalForOrg(w http.ResponseWriter, r *http.Request, orgID, approvalID string) (forge.ProvisionApproval, bool) {
+// approvalForOrg loads the record and confirms it belongs to the route org
+// and to a team the credential reaches: a credential pinned to one team
+// decides that team's requests only, and a sibling team's is one it cannot
+// even read.
+func (s *Server) approvalForOrg(w http.ResponseWriter, r *http.Request, id auth.Identity, orgID, approvalID string) (forge.ProvisionApproval, bool) {
 	if s.provisionApprovals == nil {
 		httpError(w, http.StatusNotFound, "approval not found")
 		return forge.ProvisionApproval{}, false
 	}
 	a, err := s.provisionApprovals.Get(r.Context(), approvalID)
-	if err != nil || a.OrgID != orgID {
+	if err != nil || a.OrgID != orgID || id.PinRefusesTeam(a.TenantID) {
 		httpError(w, http.StatusNotFound, "approval not found")
 		return forge.ProvisionApproval{}, false
 	}
@@ -284,7 +292,7 @@ func (s *Server) handleApproveProvision(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusForbidden, "org admin or owner required")
 		return
 	}
-	a, ok := s.approvalForOrg(w, r, orgID, r.PathValue("approval_id"))
+	a, ok := s.approvalForOrg(w, r, id, orgID, r.PathValue("approval_id"))
 	if !ok {
 		return
 	}
@@ -461,7 +469,7 @@ func (s *Server) handleRejectProvision(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "org admin or owner required")
 		return
 	}
-	a, ok := s.approvalForOrg(w, r, orgID, r.PathValue("approval_id"))
+	a, ok := s.approvalForOrg(w, r, id, orgID, r.PathValue("approval_id"))
 	if !ok {
 		return
 	}

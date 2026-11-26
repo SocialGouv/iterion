@@ -141,6 +141,15 @@ func (s *Server) handleUpdateOrgTeamCaps(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusForbidden, "org admin or owner required")
 		return
 	}
+	// A credential pinned to one team reaches that team's org through
+	// canManageOrg, and the caps of that team only: a sibling team is one it
+	// cannot even read. Refused before the lookup, so the answer is the same
+	// whether the sibling exists or not.
+	if id.PinRefusesTeam(teamID) {
+		httpError(w, http.StatusForbidden,
+			"this credential is pinned to team %s, so it changes that team's caps only", id.TeamPin)
+		return
+	}
 	t, err := s.authStore().GetTeam(r.Context(), teamID)
 	if err != nil || t.OrgID != orgID {
 		httpError(w, http.StatusNotFound, "team not in org")
@@ -1284,7 +1293,7 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 	// route.
 	if id.PinRefusesTeam(teamID) {
 		httpError(w, http.StatusForbidden,
-			"this credential is pinned to team %s, so it invites into that team only: name it as team_id, or invite from a session", id.TeamPin)
+			"this credential is pinned to team %s, so it invites into that team only: name it as team_id (--team from the CLI), or invite from a session", id.TeamPin)
 		return
 	}
 	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role, orgRole)
@@ -1331,7 +1340,7 @@ func (s *Server) handleDeleteOrgInvitation(w http.ResponseWriter, r *http.Reques
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	s.auditOrg(r, orgID, "org_invitation.deleted", "invitation", inviteID, map[string]any{"email": inv.Email})
+	s.auditOrg(r, orgID, "org_invitation.deleted", "invitation", inviteID, map[string]any{"email": inv.Email, "team_id": inv.TeamID})
 	w.WriteHeader(http.StatusNoContent)
 }
 

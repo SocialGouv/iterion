@@ -460,6 +460,14 @@ func (s *Server) purgeRetiredHookTombstones(ctx context.Context, teamID string, 
 func (s *Server) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
+	// The rank below is read on the ORG (canManageOrg), which answers the org
+	// pin only: a credential pinned to one team would pass it for every
+	// sibling team of that org. Refused before the lookup, so the answer is
+	// the same whether the sibling exists or not.
+	if id.PinRefusesTeam(teamID) {
+		httpError(w, http.StatusForbidden, "this credential is pinned to team %s, so it deletes no other team", id.TeamPin)
+		return
+	}
 	t, err := s.authStore().GetTeam(r.Context(), teamID)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())

@@ -230,7 +230,33 @@ func (s *Server) handleOrgAudit(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "list audit: %v", err)
 		return
 	}
-	writeJSON(w, auditListResponse{Events: events, NextOffset: p.Offset + len(events)})
+	// The page is counted BEFORE the pin's filter: next_offset is an offset
+	// into the org's trail, and the caller pages on.
+	next := p.Offset + len(events)
+	writeJSON(w, auditListResponse{Events: orgAuditRowsForPin(id, events), NextOffset: next})
+}
+
+// orgAuditRowsForPin keeps, for a credential pinned to one team, the org
+// trail rows that name no OTHER team: a row about a sibling team — its caps,
+// its provisioning requests, the invitations into it — is one the org
+// routes already keep from that credential (the invitation and
+// provision-approval lists, the team routes). A row names its team by
+// targeting it, or by a team_id in its meta.
+func orgAuditRowsForPin(id auth.Identity, events []audit.Event) []audit.Event {
+	if id.TeamPin == "" || id.IsSuperAdmin {
+		return events
+	}
+	out := make([]audit.Event, 0, len(events))
+	for _, e := range events {
+		if e.Target == "team" && id.PinRefusesTeam(e.TargetID) {
+			continue
+		}
+		if team, ok := e.Meta["team_id"].(string); ok && team != "" && id.PinRefusesTeam(team) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package pat
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,22 @@ func runStoreSuite(t *testing.T, s Store) {
 		}
 		if got.Usable(now.Add(2 * time.Hour)) {
 			t.Fatal("revoked token still usable")
+		}
+	})
+
+	t.Run("a revoke re-issued on a revoked token keeps the first instant", func(t *testing.T) {
+		if err := s.Revoke(ctx, "p1", now.Add(3*time.Hour)); err != nil {
+			t.Fatalf("a re-issued Revoke: %v, want nil: the token is revoked", err)
+		}
+		got, err := s.Get(ctx, "p1")
+		if err != nil {
+			t.Fatalf("Get after the re-issued revoke: %v", err)
+		}
+		if got.RevokedAt == nil || !got.RevokedAt.Equal(now.Add(time.Hour)) {
+			t.Fatalf("the re-issued revoke moved the revocation instant to %v, want the first one %v", got.RevokedAt, now.Add(time.Hour))
+		}
+		if err := s.Revoke(ctx, "ghost", now); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Revoke(ghost) err = %v, want ErrNotFound", err)
 		}
 	})
 

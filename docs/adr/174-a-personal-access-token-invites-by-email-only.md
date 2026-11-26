@@ -42,11 +42,13 @@ only** (`auth.MintEmailedInvitation`).
 - **Revoking a PAT ends its invitations, and the revoke names them.**
   - `DELETE /api/me/tokens/{id}` takes the PAT's pending invitations out of
     the lists and answers 200 `invitations_revoked`, naming who to invite
-    again (204 when there were none).
-  - `iterion remote teams switch` revokes the token it replaces and prints
-    that list.
-  - The studio's access-token panel and `iterion remote tokens revoke` do
-    not show the list yet (#3773).
+    again (204 when there were none). A credential pinned to one team may
+    revoke any token of its account, but the invitations in teams its pin
+    does not reach are counted (`invitations_revoked_elsewhere`), not named.
+  - `iterion remote teams switch` has the token it replaces revoke itself,
+    so the list names what that token sent, and prints it; `iterion remote
+    tokens revoke` prints it, and the studio's access-token panel shows it
+    once the revoke has landed.
   - A bulk revocation (sign out everywhere, an admin disable) leaves the rows
     listed, and the lookup refuses them before any registration form.
   - Revoking a leaked token ends what it sent.
@@ -74,15 +76,22 @@ and a PAT still cannot make them.
   existing org members only (`teams members add` answers 422 for an
   outsider, and `orgs members add` is super-admin, whose PAT places anyone
   already). The window closes with the PAT, since an accept refuses an
-  invitation whose PAT is revoked, expired or disabled. Two races escape it,
-  both bounded to a request already in flight at the instant of the revoke:
-  - an accept that passed its check before the revoke still lands;
-  - a mint whose row is written after the sweep listed the PAT's rows emails
-    an invitation the lookup then refuses.
+  invitation whose PAT is revoked, expired or disabled. A request already in
+  flight at the instant of the revoke reads the PAT's standing again after its
+  own write:
+  - **The mint** reads it before its email leaves. The revoke is written
+    before its sweep lists the pending rows, so either that read sees the
+    revoke — the row is taken back, nothing is sent, the minter is answered
+    401 — or the sweep sees the row and names it: a revoke landing while the
+    email is being sent is that second case.
+  - **The accept** reads it once its claim has landed, and that read is its
+    commit point. One that sees the revoke writes no access and answers 410;
+    one past it is an accept the revoke came too late for, and it is seated,
+    as a membership accepted before the revoke stays. Either way its row is
+    claimed, not pending, so the sweep names it to nobody: the revoker learns
+    nothing of an accept already in flight.
 
-  Re-reading the standing after the write closes both (#3773). A membership accepted
-  BEFORE that stays, as any grant does. The audit line of the mint names the
-  PAT (`minted_with`).
+  The audit line of the mint names the PAT (`minted_with`).
 - The CLI no longer refuses invitations client-side
   (`RefuseTeamTokenMintFromPAT` keeps the webhook mints). Against an older
   instance, its server refusal comes back instead.

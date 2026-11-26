@@ -16,6 +16,8 @@ import (
 	"mime"
 	"strings"
 	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Message is one outbound transactional email. Both bodies are
@@ -50,6 +52,9 @@ type Config struct {
 	StartTLS bool
 	// Timeout bounds the whole SMTP conversation (default 10s).
 	Timeout time.Duration
+	// Logger records what does not fail a send: a QUIT refused after
+	// the relay took the message. Nil logs nothing.
+	Logger *iterlog.Logger
 }
 
 // buildMIME assembles a multipart/alternative envelope. Header values

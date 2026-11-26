@@ -211,6 +211,11 @@ func routeSchemas() map[string]routeOp {
 				Tokens []pat.Token `json:"tokens"`
 			}{},
 		},
+		"DELETE /api/me/tokens/{token_id}": {
+			response:    patRevokedView{},
+			description: "Revoke a token. 204 when the revoke ended nothing; 200 naming the pending invitations the token had emailed (ADR-174), now revoked, with invitations_error when the sweep could not take every one out — re-issuing the revoke finishes it.",
+			errors:      map[int]string{http.StatusNoContent: "The revoke ended no invitation: no body"},
+		},
 
 		// Org administration (super-admin).
 		"GET /api/admin/orgs": {

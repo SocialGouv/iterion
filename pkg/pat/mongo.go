@@ -52,7 +52,19 @@ func (s *MongoStore) ListByUser(ctx context.Context, userID string) ([]Token, er
 }
 
 func (s *MongoStore) Revoke(ctx context.Context, id string, at time.Time) error {
-	return s.kit.Set(ctx, id, bson.M{"revoked_at": at}, "revoke")
+	res, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"revoked_at": at}})
+	if err != nil {
+		return fmt.Errorf("pat: revoke %s: %w", id, err)
+	}
+	if res.MatchedCount == 1 {
+		return nil
+	}
+	// Nothing matched: a revoked token keeps its first instant and the
+	// revoke stands; a token that does not exist answers ErrNotFound.
+	_, err = s.kit.GetByID(ctx, id, "revoke")
+	return err
 }
 
 func (s *MongoStore) RevokeAllByUser(ctx context.Context, userID string, at time.Time) (int64, error) {

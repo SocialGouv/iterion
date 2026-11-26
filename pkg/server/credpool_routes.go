@@ -673,6 +673,13 @@ type poolRequest struct {
 func (s *Server) handlePutTeamPool(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	teamID := r.PathValue("id")
+	// The gate below is the ORG's (canManageOrg), which answers the org pin
+	// only: a team-addressed route still answers 403 for a team the
+	// credential is not pinned to, before the team is even resolved.
+	if id.PinRefusesTeam(teamID) {
+		httpError(w, http.StatusForbidden, "this credential is pinned to team %s: address the pool through that team", id.TeamPin)
+		return
+	}
 	orgID := s.orgIDForPoolTeam(r, teamID)
 	if orgID == "" {
 		httpError(w, http.StatusNotFound, "this team has no parent org to own a pool")

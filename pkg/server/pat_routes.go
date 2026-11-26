@@ -216,15 +216,28 @@ func (s *Server) handleRevokePAT(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	writeJSON(w, patRevokedView{InvitationsRevoked: ended, InvitationsError: sweepErr})
+	// The revoke reaches any token of the account, but a credential pinned
+	// to one team reads no other team's invitations: those it ended are
+	// counted, not named.
+	view := patRevokedView{InvitationsRevoked: []revokedInvitationView{}, InvitationsError: sweepErr}
+	for _, inv := range ended {
+		if id.PinRefusesTeam(inv.TeamID) {
+			view.InvitationsRevokedElsewhere++
+			continue
+		}
+		view.InvitationsRevoked = append(view.InvitationsRevoked, inv)
+	}
+	writeJSON(w, view)
 }
 
 // patRevokedView answers a revoke that ended invitations: the pending ones
-// the token minted, now revoked, and — when the sweep could not finish — why,
+// the token minted, now revoked — named where the caller's own pin reaches
+// their team, counted otherwise — and, when the sweep could not finish, why,
 // the rows it left being refused at accept all the same.
 type patRevokedView struct {
-	InvitationsRevoked []revokedInvitationView `json:"invitations_revoked"`
-	InvitationsError   string                  `json:"invitations_error,omitempty"`
+	InvitationsRevoked          []revokedInvitationView `json:"invitations_revoked"`
+	InvitationsRevokedElsewhere int                     `json:"invitations_revoked_elsewhere,omitempty"`
+	InvitationsError            string                  `json:"invitations_error,omitempty"`
 }
 
 type revokedInvitationView struct {
@@ -242,16 +255,17 @@ type revokedInvitationView struct {
 func (s *Server) revokeInvitationsMintedWith(r *http.Request, tokenID string) ([]revokedInvitationView, string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
 	defer cancel()
+	// Never null on the wire: a client reads an empty list beside the error.
+	ended := []revokedInvitationView{}
 	invs, err := s.authStore().ListPendingInvitationsMintedWith(ctx, tokenID)
 	if err != nil {
-		return nil, fmt.Sprintf("listing the invitations this token sent failed (%v): they stand, and an accept refuses them since the token no longer stands", err)
+		return ended, fmt.Sprintf("listing the invitations this token sent failed (%v): they stand, an accept refuses them since the token no longer stands, and re-issuing this revoke takes them out", err)
 	}
-	var ended []revokedInvitationView
 	failure := ""
 	for _, inv := range invs {
 		if err := s.authStore().DeleteInvitation(ctx, inv.ID); err != nil && !errors.Is(err, identity.ErrNotFound) {
 			if failure == "" {
-				failure = fmt.Sprintf("revoking invitation %s failed (%v): it stands, and an accept refuses it since the token no longer stands", inv.ID, err)
+				failure = fmt.Sprintf("revoking invitation %s failed (%v): it stands, an accept refuses it since the token no longer stands, and re-issuing this revoke takes it out", inv.ID, err)
 			}
 			continue
 		}
