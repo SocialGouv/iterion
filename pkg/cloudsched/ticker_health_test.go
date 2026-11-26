@@ -7,10 +7,10 @@ import (
 	"time"
 )
 
-// A tick that could not launch — an org launch-gate denial above all — must be
-// readable on the schedule itself. Before this the only trace was one Warn in
-// whichever replica happened to win the CAS, so a schedule silently stopped
-// producing runs and `iterion remote schedules list` still showed it healthy.
+// A tick that could not launch must be readable on the schedule itself, not
+// only in one Warn of whichever replica won the CAS. A refusal that names no
+// class records its whole text; a classed launch-gate denial records its
+// class (TestTickerClassedRefusalWritesStableLaunchVerdict).
 
 func dueSchedule(t *testing.T, s Store, now time.Time) ScheduledBot {
 	t.Helper()
@@ -26,7 +26,7 @@ func TestTicker_LaunchRefusalLandsOnTheSchedule(t *testing.T) {
 	st := NewMemoryStore()
 	now := time.Now().UTC()
 	dueSchedule(t, st, now)
-	refusal := errors.New("launch gate: concurrency_cap_exceeded: org has 3 active runs (cap 3)")
+	refusal := errors.New("run service refused the run: queue unavailable")
 	tk := &Ticker{
 		Store:  st,
 		Launch: func(context.Context, ScheduledBot) error { return refusal },

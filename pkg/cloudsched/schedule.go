@@ -107,7 +107,8 @@ type ScheduledBot struct {
 	// LastError is the verdict of the last tick that consumed or held a slot
 	// (Ticker.recordLaunchVerdict names the holds that write none): empty
 	// means the launch went through, a message says why it did not (an org
-	// launch-gate denial, a run service that refused the run). LastErrorAt is
+	// launch-gate denial, recorded as its class `launch gate: <reason>`; a
+	// run service that refused the run). LastErrorAt is
 	// when that verdict was recorded. Both are rendered by
 	// GET /api/teams/{id}/schedules and `iterion remote schedules list`, so a
 	// schedule that stopped producing runs is visible to its operator instead

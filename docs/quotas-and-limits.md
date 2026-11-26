@@ -202,7 +202,13 @@ where an operator reads it, never skipped in silence:
   refusal and cleared by the next launch that goes through;
 - a **schedule** carries the same two fields
   (`GET /api/teams/{id}/schedules`, `iterion remote schedules list`), plus
-  the tick-audit row the ticker already wrote.
+  the tick-audit row the ticker already wrote. Its `last_error` is the
+  denial's class, `launch gate: <reason token>` — except
+  `maintenance_fence`: an unreadable fence records the hold's stable
+  text, and an armed fence records nothing (see
+  [scheduling](scheduling.md)); the detail, which can carry a figure
+  measured at the tick (the active-run count, a repository's spend), is
+  in the tick-audit row.
 
 Both are targeted field writes on both store twins, so an operator editing
 the row between the match and the record does not lose the edit.

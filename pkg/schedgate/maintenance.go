@@ -30,3 +30,15 @@ var (
 	// than a lost lease: the transaction could not start, or it failed.
 	ErrLaunchNotPersisted = fmt.Errorf("%w: launched run could not be persisted", ErrMaintenanceHold)
 )
+
+// LaunchVerdictError is a launch refusal that names its stable class apart
+// from its full text. The full text can embed a figure measured at the tick
+// (the tenant's active-run count, a repository's monthly spend) that changes
+// while the refusal lasts; a scheduler records LaunchVerdict on its row
+// instead, so one refusal keeps one recorded verdict, hence one episode for
+// the schedule-outcome watch. The full text stays in the tick's audit record.
+// An empty LaunchVerdict means no class: the scheduler records the full text.
+type LaunchVerdictError interface {
+	error
+	LaunchVerdict() string
+}

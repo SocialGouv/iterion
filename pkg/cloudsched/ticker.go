@@ -242,16 +242,38 @@ func (t *Ticker) recordLaunchVerdict(ctx context.Context, sb ScheduledBot, launc
 		}
 		return
 	}
-	t.markLaunchError(ctx, sb, launchVerdict(launchErr), now)
+	verdict := launchVerdict(launchErr)
+	if isClassOfRecordedText(launchErr, verdict, sb.LastError) {
+		return
+	}
+	t.markLaunchError(ctx, sb, verdict, now)
+}
+
+// isClassOfRecordedText reports whether verdict is the class of a classed
+// refusal and the row already records that refusal's whole text, as a
+// scheduler that does not read the class writes it. The row keeps that text
+// and its last_error_at: the switch between the whole text and the class is
+// the same refusal, not a new episode for the watch. A refusal with no class
+// is never matched, so any change of its whole text is written.
+func isClassOfRecordedText(launchErr error, verdict, recorded string) bool {
+	var classed schedgate.LaunchVerdictError
+	return verdict != "" && errors.As(launchErr, &classed) && verdict == classed.LaunchVerdict() &&
+		strings.HasPrefix(recorded, verdict+": ")
 }
 
 // launchVerdict is the last_error text of a launch outcome. A typed hold
 // records its sentinel's stable text rather than the whole chain, which
-// embeds a driver error that can vary from tick to tick (a connection id):
-// markLaunchError writes only a CHANGED verdict, so a stable text keeps one
-// last_error_at, hence one watch episode, for one outage. The whole chain
-// stays in the tick's audit record and the warn log.
+// embeds a driver error that can vary from tick to tick (a connection id),
+// and a refusal that names its class (schedgate.LaunchVerdictError: a
+// launch-gate denial whose text embeds the active-run count) records that
+// class: markLaunchError writes only a CHANGED verdict, so a stable text
+// keeps one last_error_at, hence one watch episode, for one outage or one
+// refusal. An empty class names no class: the whole text is recorded. The
+// whole chain stays in the tick's audit record and the warn log. The typed
+// holds are matched first: the unreadable-fence denial is also a launch-gate
+// refusal, and its sentinel text is what the watch's sweep compares.
 func launchVerdict(launchErr error) string {
+	var classed schedgate.LaunchVerdictError
 	switch {
 	case launchErr == nil:
 		return ""
@@ -259,6 +281,8 @@ func launchVerdict(launchErr error) string {
 		return schedgate.ErrMaintenanceFenceUnreadable.Error()
 	case errors.Is(launchErr, schedgate.ErrLaunchNotPersisted):
 		return schedgate.ErrLaunchNotPersisted.Error()
+	case errors.As(launchErr, &classed) && classed.LaunchVerdict() != "":
+		return classed.LaunchVerdict()
 	default:
 		return launchErr.Error()
 	}

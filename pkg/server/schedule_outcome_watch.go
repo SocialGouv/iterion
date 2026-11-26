@@ -55,10 +55,12 @@ func (s *Server) runScheduleOutcomeWatch(ctx context.Context) {
 // stalled one to the ops dispatcher under a per-episode claim key. A failed
 // delivery is released by NotifyOperator, so the next sweep offers it again.
 //
-// A sweep that reads the maintenance fence armed skips the unreadable-fence
-// verdict: the operator's fence holds that slot whatever the failed read
-// said. A sweep that cannot read the fence either keeps the alert, since the
-// store may really be down.
+// A sweep that reads the maintenance fence armed sets aside the
+// unreadable-fence verdict, and that verdict only: the operator's fence
+// holds that slot whatever the failed read said, and the next armed tick
+// clears it from the row. The rest of the row is still judged — an overdue
+// slot, the failed run the verdict sits in front of. A sweep that cannot read
+// the fence either keeps the alert, since the store may really be down.
 func (s *Server) scheduleOutcomeSweep(ctx context.Context, now time.Time, grace time.Duration) {
 	rows, err := s.cfg.ScheduledBots.ListEnabled(ctx)
 	if err != nil {
@@ -73,11 +75,11 @@ func (s *Server) scheduleOutcomeSweep(ctx context.Context, now time.Time, grace 
 		if ctx.Err() != nil {
 			return
 		}
+		if fenceArmed && sb.LastError == schedgate.ErrMaintenanceFenceUnreadable.Error() {
+			sb.LastError, sb.LastErrorAt = "", nil
+		}
 		stall := cloudsched.AssessScheduleStall(sb, now, grace)
 		if stall == nil {
-			continue
-		}
-		if fenceArmed && stall.Cause == cloudsched.StallLaunchRefused && sb.LastError == schedgate.ErrMaintenanceFenceUnreadable.Error() {
 			continue
 		}
 		a := alert.Alert{

@@ -283,7 +283,8 @@ func TestScheduleOutcomeWatchFenceReadBlipClearedByNextArmedTick(t *testing.T) {
 // A sweep that reads the fence armed does not alert on an unreadable-fence
 // verdict: the slot is held by the operator's fence either way. A sweep that
 // cannot read the fence either still alerts, since the store may be down. An
-// overdue row alerts whatever its verdict: no scheduler claims its slot.
+// overdue row alerts whatever its verdict: no scheduler claims its slot, and
+// a failed run behind the verdict alerts as the run it is.
 func TestScheduleOutcomeWatchUnreadableVerdictUnderArmedFence(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 24, 9, 0, 0, 0, time.UTC)
@@ -334,6 +335,18 @@ func TestScheduleOutcomeWatchUnreadableVerdictUnderArmedFence(t *testing.T) {
 	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
 	if got := sink.snapshot(); len(got) != 1 {
 		t.Fatalf("a sweep reading the fence armed raised %d alert(s) on another refusal, want 1: %+v", len(got), got)
+	}
+
+	sink = &advSink{}
+	failed := newRow(t)
+	if err := failed.MarkRunOutcome(ctx, "sb-fenced", "run-9", "failed", "provider 401", "AUTH_FAILED", now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("MarkRunOutcome: %v", err)
+	}
+	s = watchReplica(failed, usernotify.NewMemSentStore(), sink)
+	s.maintenanceStore = armed
+	s.scheduleOutcomeSweep(ctx, now, scheduleStallGraceFor(time.Minute))
+	if got := sink.snapshot(); len(got) != 1 || got[0].RunID != "run-9" || !strings.Contains(got[0].Reason, "ended failed") {
+		t.Fatalf("a sweep reading the fence armed hid a failed run behind an unreadable-fence verdict: %+v", got)
 	}
 
 	sink = &advSink{}
@@ -450,4 +463,43 @@ func TestScheduleOutcomeWatchSameEpisodeOnTwoSchedules(t *testing.T) {
 			t.Fatalf("two schedules overdue on one slot delivered %d alerts, want 2: %+v", len(got), got)
 		}
 	})
+}
+
+// A schedule refused at its team's concurrency cap is refused with the
+// tenant's active-run count in the denial text, a count that changes while
+// the cap holds. The ticker records the denial's class, so the refusal stays
+// one episode and the operator is told once.
+func TestScheduleOutcomeWatchConcurrencyCapRefusalIsOneEpisode(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+	s := newGatedSpineServer(t, gateSpec{id: "t1", maxConcurrentRuns: 1}, &spinePublisher{})
+	runs := s.cfg.Store
+	st := cloudsched.NewMemoryStore()
+	sb := scheduledBot("t1")
+	sb.NextFireAt = now.Add(-30 * time.Second)
+	if err := st.Create(ctx, sb); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sink := &advSink{}
+	s.cfg.ScheduledBots = st
+	s.opsAlerts = &alert.OpsDispatcher{Claims: usernotify.NewMemSentStore(), Sinks: []alert.Sink{sink}, Logger: iterlog.Nop()}
+	for i, active := range []int{1, 2, 3} {
+		at := now.Add(time.Duration(i) * time.Minute)
+		s.cfg.Store = fakeActiveStore{RunStore: runs, active: active}
+		tk := &cloudsched.Ticker{Store: st, Now: func() time.Time { return at }, Launch: s.launchScheduledBot}
+		if fired, err := tk.Tick(spineCtx(t)); err != nil || fired != 1 {
+			t.Fatalf("Tick %d = %d, %v, want one consumed slot", i, fired, err)
+		}
+		s.scheduleOutcomeSweep(ctx, at.Add(30*time.Second), scheduleStallGraceFor(time.Minute))
+	}
+	if got := sink.snapshot(); len(got) != 1 {
+		t.Fatalf("a refusal at the concurrency cap raised %d alerts over three ticks with a changing active-run count, want 1: %+v", len(got), got)
+	}
+	row, err := st.Get(ctx, sb.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if want := "launch gate: " + denyConcurrencyCap; row.LastError != want {
+		t.Fatalf("last_error = %q, want the denial's class %q", row.LastError, want)
+	}
 }

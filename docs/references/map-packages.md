@@ -300,7 +300,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/sandbox/netproxy` | implements iterion's HTTP CONNECT proxy that enforces the workflow's sandbox network policy. | `SecretRewriter` |
 | `pkg/sandbox/noop` | provides the always-available passthrough sandbox driver. | — |
 | `pkg/sandbox/registry` | centralises the iterion-shipped sandbox-driver constructor list. | — |
-| `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `ScheduleRunLister` |
+| `pkg/schedgate` | the shared "should this scheduled bot fire now?" gate used by all three scheduled-launch paths: pkg/cli/schedule (host crontab),… | `LaunchVerdictError`, `ScheduleRunLister` |
 | `pkg/scripthost` | runs model-authored JavaScript in a child process that holds no credential and no capability. | `BudgetRefusalObserver`, `ToolServer` |
 | `pkg/scripthost/toolindex` | codemode's discovery surface (CM-3, ADR-165): the catalogue of the tools a program may call, their TypeScript declarations, a BM25 index over them,… | — |
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GatewayKeyLookup`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |

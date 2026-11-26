@@ -82,6 +82,18 @@ func (e *launchDeniedError) Error() string {
 	return "launch gate: " + e.Reason + ": " + e.Detail
 }
 
+// LaunchVerdict is the denial's stable class, the text the cloud ticker
+// records as a schedule's last_error (schedgate.LaunchVerdictError): the
+// reason token alone. Detail can embed a figure measured at the tick — the
+// tenant's active-run count under its concurrency cap, a repository's
+// monthly spend — and a verdict that changes with it re-opens a
+// schedule-outcome watch episode at each change while the refusal lasts.
+func (e *launchDeniedError) LaunchVerdict() string {
+	return "launch gate: " + e.Reason
+}
+
+var _ schedgate.LaunchVerdictError = (*launchDeniedError)(nil)
+
 // Preserve the HTTP denial details while giving durable consumers a typed
 // postponement, distinct from a launch failure with a bounded retry budget.
 // The fence's two holds are the narrower schedgate.ErrMaintenanceFenceArmed
