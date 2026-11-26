@@ -79,7 +79,7 @@ var runnerClasses = map[string]map[string]string{
 
 		"test":              smallRunner,
 		"race":              smallRunner,
-		"nats-conformance":  smallRunner,
+		"nats-conformance":  largeRunner,
 		"vendor-check":      smallRunner,
 		"helm-lint":         smallRunner,
 		"brand":             smallRunner,

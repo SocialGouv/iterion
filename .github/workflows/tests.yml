@@ -1132,7 +1132,7 @@ jobs:
     # in-tree so a developer's plain `go test ./...` skips them; CI
     # provides the URI explicitly so the contract stays enforced.
     # Mirror of the mongo-conformance job above.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
+    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_LARGE_RUNNER || 'arc-runners' }}
     timeout-minutes: 15
     steps:
       - name: Checkout
