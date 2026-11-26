@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.1](https://github.com/SocialGouv/iterion/compare/v7.40.0...v7.40.1) (2026-11-26)
+
+### Features
+
+* **claw:** refuse an image tool up front on a route that takes no image ([#3707](https://github.com/SocialGouv/iterion/issues/3707)) ([#3794](https://github.com/SocialGouv/iterion/issues/3794)) ([147a725](https://github.com/SocialGouv/iterion/commit/147a725f723d3ee4e2b7eb932eebb68db18f8472))
+
+    <details><summary>why</summary>
+
+    modelspecs.Spec gains ImageInput (*bool, json image_input): true when models.dev's modalities.input lists "image", false when it lists modalities without it, nil when the row states none. The bare-id index folds it by agreedFlag, so glm-5.3 (text-only at some publishers, vision at others) stays unknown there; the provider-qualified row keeps its own answer. The snapshot carries image_input and moves to schema 3 (a schema-2 file states it for no row). The changelog printer compares and prints…
+
+    </details>
+
 ## [7.40.0](https://github.com/SocialGouv/iterion/compare/v7.39.0...v7.40.0) (2026-11-26)
 
 ### Features
