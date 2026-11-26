@@ -145,8 +145,8 @@ func TestScheduleFenceMongoPublisherRunStoreTransaction(t *testing.T) {
 	//    exists, nothing was published.
 	ok, err = sched.WithSchedule(base, "fence-takeover-first", func(fctx context.Context) {
 		takeOver("fence-takeover-first")
-		if err := launch(fctx, "run-fence-takeover-first"); !errors.Is(err, schedgate.ErrMaintenanceHold) {
-			t.Errorf("launch behind a stolen lease: %v, want ErrMaintenanceHold", err)
+		if err := launch(fctx, "run-fence-takeover-first"); !errors.Is(err, schedgate.ErrScheduleLeaseLost) {
+			t.Errorf("launch behind a stolen lease: %v, want ErrScheduleLeaseLost", err)
 		}
 	})
 	if err != nil || !ok {
@@ -167,8 +167,8 @@ func TestScheduleFenceMongoPublisherRunStoreTransaction(t *testing.T) {
 			return
 		}
 		takeOver("fence-commit-then-takeover")
-		if err := launch(fctx, "run-fence-refused"); !errors.Is(err, schedgate.ErrMaintenanceHold) {
-			t.Errorf("launch after the takeover: %v, want ErrMaintenanceHold", err)
+		if err := launch(fctx, "run-fence-refused"); !errors.Is(err, schedgate.ErrScheduleLeaseLost) {
+			t.Errorf("launch after the takeover: %v, want ErrScheduleLeaseLost", err)
 		}
 	})
 	if err != nil || !ok {
@@ -199,8 +199,8 @@ func TestScheduleFenceMongoPublisherRunStoreTransaction(t *testing.T) {
 			}
 			return injected
 		})
-		if !errors.Is(err, schedgate.ErrMaintenanceHold) {
-			t.Errorf("aborted persist: %v, want ErrMaintenanceHold", err)
+		if !errors.Is(err, schedgate.ErrLaunchNotPersisted) || errors.Is(err, schedgate.ErrScheduleLeaseLost) {
+			t.Errorf("aborted persist: %v, want ErrLaunchNotPersisted, not a lost lease", err)
 		}
 		// Read the receipt INSIDE the fence: its row is released with the term.
 		var leaseDoc bson.M

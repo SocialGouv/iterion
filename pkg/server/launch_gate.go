@@ -18,7 +18,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
-	"github.com/SocialGouv/iterion/pkg/trigger"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -85,14 +84,15 @@ func (e *launchDeniedError) Error() string {
 
 // Preserve the HTTP denial details while giving durable consumers a typed
 // postponement, distinct from a launch failure with a bounded retry budget.
-// The armed fence's hold is the narrower schedgate.ErrMaintenanceFenceArmed,
-// which still wraps the hold.
+// The fence's two holds are the narrower schedgate.ErrMaintenanceFenceArmed
+// and schedgate.ErrMaintenanceFenceUnreadable (gateMaintenance denies on
+// nothing else), which both wrap the hold.
 func (e *launchDeniedError) Unwrap() error {
 	if e.Reason == denyMaintenanceFence {
 		if e.FenceArmed {
 			return schedgate.ErrMaintenanceFenceArmed
 		}
-		return trigger.ErrMaintenanceHold
+		return schedgate.ErrMaintenanceFenceUnreadable
 	}
 	return nil
 }

@@ -19,9 +19,10 @@ const (
 	// the scheduler is dead, stuck, or its store writes fail. No run and no
 	// launch verdict exist to say so.
 	StallOverdue StallCause = "overdue"
-	// StallLaunchRefused: the last tick that consumed a slot launched
-	// nothing (last_error) — an org launch-gate denial, a refused run, a
-	// guard that could not execute. No run exists, so no run alert fires.
+	// StallLaunchRefused: the last tick that consumed or held a slot
+	// launched nothing (last_error) — an org launch-gate denial, a refused
+	// run, a guard that could not execute, an unreadable fence record, a run
+	// that could not be persisted. No run exists, so no run alert fires.
 	StallLaunchRefused StallCause = "launch_refused"
 	// StallRunFailed: the last run the schedule launched ended failed, or
 	// parked failed_resumable (last_run_status).

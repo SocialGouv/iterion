@@ -741,9 +741,20 @@ producing successful runs:
   its next tick, so the grace runs from the resume;
 - **launch refused** — `last_error` is set: the last tick launched no run.
   A slot held by the operator's armed maintenance fence is postponed, not
-  refused: it leaves `last_error` as it was and raises nothing. A fence
-  record that cannot be read, or a run that cannot be persisted, holds
-  the slot too but writes `last_error` and alerts;
+  refused: it leaves `last_error` as it was and raises nothing, except
+  that it clears a "fence could not be read" verdict a read blip left. A
+  fence record that cannot be read, or a run that cannot be persisted
+  while the replica holds the schedule's lease, holds the slot too but
+  writes `last_error` (the hold's stable text, so one outage is one
+  episode) and alerts. Under an armed fence, a sweep that reads the fence
+  skips a "fence could not be read" verdict; a fence store that fails the
+  sweep's read too still raises one alert per episode it catches, and a
+  store that flaps re-opens an episode at each failed read after an armed
+  tick. Only these holds keep a stable text: a refusal whose text embeds a
+  changing figure (a repository's monthly quota spend) opens a new episode
+  each time the figure changes. A replica whose run persistence is refused
+  because it lost the schedule's lease writes nothing: its successor owns
+  the slot;
 - **run failed** — `last_run_status` is `failed` or `failed_resumable`.
 
 The causes are checked in that order, so an older failed run does not hide

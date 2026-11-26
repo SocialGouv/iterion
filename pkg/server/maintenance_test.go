@@ -17,6 +17,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -140,8 +141,8 @@ func (brokenMaintenanceStore) Put(context.Context, platformcfg.Maintenance) erro
 
 func TestFenceReadFailure(t *testing.T) {
 	s := &Server{maintenanceStore: brokenMaintenanceStore{}}
-	if d := s.gateMaintenance(context.Background(), launchSubject{}); d == nil || d.status != 503 || !errors.Is(d.err(), trigger.ErrMaintenanceHold) {
-		t.Fatalf("read failure: %+v", d)
+	if d := s.gateMaintenance(context.Background(), launchSubject{}); d == nil || d.status != 503 || !errors.Is(d.err(), schedgate.ErrMaintenanceFenceUnreadable) || errors.Is(d.err(), schedgate.ErrMaintenanceFenceArmed) {
+		t.Fatalf("read failure: %+v, want the unreadable-fence hold", d)
 	}
 	if d := s.gateMaintenance(context.Background(), launchSubject{ExistingRun: true}); d != nil {
 		t.Fatalf("existing run blocked: %+v", d)
