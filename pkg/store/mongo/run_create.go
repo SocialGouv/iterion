@@ -94,6 +94,16 @@ func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...optio
 		}
 		return store.Run{}, err
 	}
+	return decodeRunValueRecord(ctx, id, raw, result.Decode)
+}
+
+// decodeRunValueRecord is the one decode every run read crosses, whether the
+// document came from a single FindOne or from a listing cursor: value format,
+// data header, storage and binding checks, the tenant observation, then the
+// legacy registry (decodeLegacy, the reader's own Decode, so the client's
+// registry applies) or the exact codec. A listing that decoded more laxly
+// than LoadRun would be a second door into the same documents.
+func decodeRunValueRecord(ctx context.Context, id string, raw bson.Raw, decodeLegacy func(any) error) (store.Run, error) {
 	// The document is already read: a failure to decode it answers the same
 	// on every re-read, so it is reported as ErrRunMetadataUndecodable.
 	f, err := store.RunValueFormatFromBSON(ctx, raw)
@@ -119,7 +129,7 @@ func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...optio
 
 	var r store.Run
 	if f == store.LegacyValueFormat {
-		err = result.Decode(&r)
+		err = decodeLegacy(&r)
 	} else {
 		var codecErr error
 		codec, codecErr := store.ExactRecordCodec(store.ExactRun)

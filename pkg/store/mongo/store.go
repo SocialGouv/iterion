@@ -388,6 +388,10 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("status_created")},
 		{Keys: bson.D{{Key: "workflow_name", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("workflow_created_desc")},
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
+		// The run listings' order (ListRunWindow): newest first, the id
+		// breaking ties. created_id_desc serves the cross-tenant window and
+		// its keyset without a sort stage, and hands ListRuns its order.
+		{Keys: bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("created_id_desc")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_status_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_owner_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		// (tenant_id, project_path, created_at desc) backs the "filter

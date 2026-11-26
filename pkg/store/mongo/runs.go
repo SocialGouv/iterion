@@ -73,11 +73,23 @@ var _ store.RunListingStore = (*Store)(nil)
 // it. Same tenant filter and the same deleted / schema-version refusals as
 // LoadRun: a projection must not become a second, laxer door.
 func (s *Store) LoadRunForListing(ctx context.Context, id string) (*store.Run, error) {
-	r, err := s.loadRunValueRecord(ctx, id,
-		options.FindOne().SetProjection(bson.M{"workflow_source": 0, "workflow_sources": 0, codemodeScratchField: 0}))
+	r, err := s.loadRunValueRecord(ctx, id, options.FindOne().SetProjection(listingProjection()))
 	if err != nil {
 		return nil, err
 	}
+	return listingRecord(id, r)
+}
+
+// listingProjection leaves out of a listing read the fields no listing reads:
+// the recorded workflow source and the codemode scratch.
+func listingProjection() bson.M {
+	return bson.M{"workflow_source": 0, "workflow_sources": 0, codemodeScratchField: 0}
+}
+
+// listingRecord applies LoadRun's deleted / schema-version refusals to a
+// decoded listing record and marks it projected. Shared by the per-id and the
+// window listing, so neither is a laxer door than LoadRun.
+func listingRecord(id string, r store.Run) (*store.Run, error) {
 	if r.DeletedAt != nil {
 		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
 	}
@@ -763,15 +775,16 @@ func (s *Store) watchedIssues(ctx context.Context, runID string) ([]string, erro
 	return doc.Watched, nil
 }
 
-// ListRuns returns every run id sorted by created_at ascending. The
-// caller filters in higher layers (runview.Service.List). Tenant
-// scope is enforced when ctx carries a tenant_id.
+// ListRuns returns every run id sorted by created_at ascending. Tenant scope
+// is enforced when ctx carries a tenant_id.
 //
-// It is a COLLECTION SCAN with an in-memory sort: the tombstone predicate
-// matches no index and nothing orders the whole collection by created_at.
-// At ten thousand runs of ~140 KB that is seven seconds of mongod CPU per
-// call, which is why no periodic worker may call it (store.RunStore.ListRuns,
-// #2636) — a sweep asks an indexed question instead (listRunIDsBy).
+// Its cost follows the collection, not the answer: the tombstone predicate
+// matches no index, so the read walks every run document — unscoped, through
+// created_id_desc backwards, which hands the order back without an in-memory
+// sort. That is why no periodic worker may call it (store.RunStore.ListRuns,
+// #2636) — a sweep asks an indexed question instead (listRunIDsBy) — and why
+// the run listings ask ListRunWindow, which answers a page with one bounded
+// read.
 func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,

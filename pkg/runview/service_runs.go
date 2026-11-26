@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -107,14 +106,22 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 // ListRunRecordsCtx returns the persisted runs matching f. It is the
 // tenant-aware, record-level counterpart to ListCtx: the caller's context is
 // propagated to every store operation, including the event scan used by the
-// Node filter. Results are sorted by CreatedAt descending and truncated by
-// Limit after sorting.
+// Node filter. Results are sorted by CreatedAt descending, ties by ID
+// descending, and truncated by Limit after sorting.
+//
+// A store with an indexed window (store.RunWindowListingStore) answers the
+// status, workflow and since filters — and the limit, when no other filter is
+// set — in one read; the others are evaluated here on its answer. Any other
+// store is listed id by id.
 //
 // A run that cannot be loaded is skipped so one corrupt run document does not
 // break the whole listing. Returning the records directly lets server-side
 // projections consume the same filtered snapshot without listing summaries
 // and loading every run a second time.
 func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store.Run, error) {
+	if lister := store.AsRunWindowListingStore(s.store); lister != nil {
+		return s.listRunRecordsWindow(ctx, lister, f)
+	}
 	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		return nil, err
@@ -152,11 +159,46 @@ func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store
 		}
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
+	sortNewestFirst(out)
 	if f.Limit > 0 && len(out) > f.Limit {
 		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+// listRunRecordsWindow is ListRunRecordsCtx over a store's indexed window.
+// The store evaluates the filters it can; the ones only Go can evaluate
+// (repo, bundle, node) thin its answer here, and while one is set the limit
+// stays here too — pushed down, the store would stop at Limit rows this loop
+// then drops, and the page would come back short.
+func (s *Service) listRunRecordsWindow(ctx context.Context, lister store.RunWindowListingStore, f ListFilter) ([]*store.Run, error) {
+	w := store.RunWindow{Status: f.Status, Workflow: f.Workflow, Since: f.Since}
+	goOnly := hasGoOnlyFilter(f)
+	if !goOnly {
+		w.Limit = f.Limit
+	}
+	runs, skipped, err := lister.ListRunWindow(ctx, w)
+	if err != nil {
+		return nil, err
+	}
+	for _, sk := range skipped {
+		s.logSkippedRun(sk.ID, sk.Err)
+	}
+	if !goOnly {
+		return runs, nil
+	}
+	out := make([]*store.Run, 0, len(runs))
+	for _, r := range runs {
+		if !matchesGoOnlyFilter(r, f) {
+			continue
+		}
+		if f.Node != "" && !runTouchedNode(ctx, s.store, r.ID, f.Node) {
+			continue
+		}
+		out = append(out, r)
+		if f.Limit > 0 && len(out) == f.Limit {
+			break
+		}
 	}
 	return out, nil
 }
@@ -407,19 +449,37 @@ func runTouchedNode(ctx context.Context, s store.RunStore, runID, nodeID string)
 }
 
 func matchesFilter(r *store.Run, f ListFilter) bool {
+	return matchesStoreFilter(r, f) && matchesGoOnlyFilter(r, f)
+}
+
+// matchesStoreFilter is the part of ListFilter a store.RunWindow carries —
+// what an indexed window evaluates in the store.
+func matchesStoreFilter(r *store.Run, f ListFilter) bool {
 	if f.Status != "" && r.Status != f.Status {
 		return false
 	}
 	if f.Workflow != "" && r.WorkflowName != f.Workflow {
 		return false
 	}
+	if !f.Since.IsZero() && r.UpdatedAt.Before(f.Since) {
+		return false
+	}
+	return true
+}
+
+// hasGoOnlyFilter reports whether f sets a filter no store evaluates: the
+// repo and bundle matches and the node scan.
+func hasGoOnlyFilter(f ListFilter) bool {
+	return f.Repo != "" || f.Bundle != "" || f.Node != ""
+}
+
+// matchesGoOnlyFilter is the cheap part of the filters no store evaluates;
+// the node scan, which reads events, runs after it.
+func matchesGoOnlyFilter(r *store.Run, f ListFilter) bool {
 	if f.Repo != "" && r.ProjectPath != f.Repo {
 		return false
 	}
 	if f.Bundle != "" && !strings.EqualFold(resolveBundleName(r.BundleName, r.BundlePath), f.Bundle) {
-		return false
-	}
-	if !f.Since.IsZero() && r.UpdatedAt.Before(f.Since) {
 		return false
 	}
 	return true
