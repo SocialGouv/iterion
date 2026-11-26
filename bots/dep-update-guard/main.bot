@@ -1440,32 +1440,28 @@ tool continuity:
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each (app, name) is judged by
-    # its newest run alone. The app is part of the key: a newer run of the
-    # same name from another app never hides this app's run, which may be
-    # the one the base requires. Newest is the greatest key (suite createdAt,
-    # suite databaseId, run started, run databaseId): a total order, as a
-    # run's databaseId is unique, and one no node order decides. A run with
-    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
-    # run carry none): it is the newest of its suite and never passes, so it
-    # reads as pending instead of hiding behind an older green. Any other
-    # missing or malformed ordering field makes the rollup unreadable.
+    # check to the newest run of its name, so each slot (app, workflow, name)
+    # is judged by its newest run alone. Only runs of one workflow supersede
+    # each other: a run of the same name from another app or another
+    # workflow is a check of its own and must pass too. A suite of an app
+    # other than Actions has no workflow run, so its workflow is None. Newest
+    # is the greatest run databaseId: check run ids grow with creation across
+    # suites and attempts, whereas a rerun stays in its suite (whose
+    # createdAt is the first attempt's) and copies the startedAt of the jobs
+    # it does not rerun. A queued rerun already has its id, so it wins and
+    # reads as pending. A run alone in its slot needs no order; a slot of
+    # several runs where one has a missing or malformed app, workflow or id,
+    # or two share an id, makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
-        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        def when(x):
-            try:
-                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
-            except (TypeError, ValueError):
-                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { createdAt databaseId app { databaseId } } } "
+             "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -1481,7 +1477,7 @@ tool continuity:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        judged, newest = [], {}
+        judged, slots = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
@@ -1490,16 +1486,15 @@ tool continuity:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
-            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
-            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
-            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+            wrun = suite.get("workflowRun")
+            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
+            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
+            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+        for runs in slots.values():
+            if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None
-            key = (created, ids[1], unstarted, started or created, ids[2])
-            slot = (ids[0], text(c.get("name")))
-            if slot not in newest or newest[slot][0] < key:
-                newest[slot] = (key, c)
-        judged += [c for _, c in newest.values()]
+            judged.append(max(runs, key=lambda r: r[1])[2])
         required, optional, passing = [], [], []
         for c in judged:
             kind = text(c.get("__typename"))
@@ -3008,32 +3003,28 @@ tool post_feedback:
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each (app, name) is judged by
-    # its newest run alone. The app is part of the key: a newer run of the
-    # same name from another app never hides this app's run, which may be
-    # the one the base requires. Newest is the greatest key (suite createdAt,
-    # suite databaseId, run started, run databaseId): a total order, as a
-    # run's databaseId is unique, and one no node order decides. A run with
-    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
-    # run carry none): it is the newest of its suite and never passes, so it
-    # reads as pending instead of hiding behind an older green. Any other
-    # missing or malformed ordering field makes the rollup unreadable.
+    # check to the newest run of its name, so each slot (app, workflow, name)
+    # is judged by its newest run alone. Only runs of one workflow supersede
+    # each other: a run of the same name from another app or another
+    # workflow is a check of its own and must pass too. A suite of an app
+    # other than Actions has no workflow run, so its workflow is None. Newest
+    # is the greatest run databaseId: check run ids grow with creation across
+    # suites and attempts, whereas a rerun stays in its suite (whose
+    # createdAt is the first attempt's) and copies the startedAt of the jobs
+    # it does not rerun. A queued rerun already has its id, so it wins and
+    # reads as pending. A run alone in its slot needs no order; a slot of
+    # several runs where one has a missing or malformed app, workflow or id,
+    # or two share an id, makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
-        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        def when(x):
-            try:
-                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
-            except (TypeError, ValueError):
-                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { createdAt databaseId app { databaseId } } } "
+             "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -3049,7 +3040,7 @@ tool post_feedback:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        judged, newest = [], {}
+        judged, slots = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
@@ -3058,16 +3049,15 @@ tool post_feedback:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
-            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
-            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
-            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+            wrun = suite.get("workflowRun")
+            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
+            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
+            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+        for runs in slots.values():
+            if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None
-            key = (created, ids[1], unstarted, started or created, ids[2])
-            slot = (ids[0], text(c.get("name")))
-            if slot not in newest or newest[slot][0] < key:
-                newest[slot] = (key, c)
-        judged += [c for _, c in newest.values()]
+            judged.append(max(runs, key=lambda r: r[1])[2])
         required, optional, passing = [], [], []
         for c in judged:
             kind = text(c.get("__typename"))
@@ -3831,32 +3821,28 @@ tool arm_automerge:
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each (app, name) is judged by
-    # its newest run alone. The app is part of the key: a newer run of the
-    # same name from another app never hides this app's run, which may be
-    # the one the base requires. Newest is the greatest key (suite createdAt,
-    # suite databaseId, run started, run databaseId): a total order, as a
-    # run's databaseId is unique, and one no node order decides. A run with
-    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
-    # run carry none): it is the newest of its suite and never passes, so it
-    # reads as pending instead of hiding behind an older green. Any other
-    # missing or malformed ordering field makes the rollup unreadable.
+    # check to the newest run of its name, so each slot (app, workflow, name)
+    # is judged by its newest run alone. Only runs of one workflow supersede
+    # each other: a run of the same name from another app or another
+    # workflow is a check of its own and must pass too. A suite of an app
+    # other than Actions has no workflow run, so its workflow is None. Newest
+    # is the greatest run databaseId: check run ids grow with creation across
+    # suites and attempts, whereas a rerun stays in its suite (whose
+    # createdAt is the first attempt's) and copies the startedAt of the jobs
+    # it does not rerun. A queued rerun already has its id, so it wins and
+    # reads as pending. A run alone in its slot needs no order; a slot of
+    # several runs where one has a missing or malformed app, workflow or id,
+    # or two share an id, makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
-        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        def when(x):
-            try:
-                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
-            except (TypeError, ValueError):
-                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { createdAt databaseId app { databaseId } } } "
+             "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -3872,7 +3858,7 @@ tool arm_automerge:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        judged, newest = [], {}
+        judged, slots = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
@@ -3881,16 +3867,15 @@ tool arm_automerge:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
-            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
-            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
-            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+            wrun = suite.get("workflowRun")
+            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
+            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
+            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+        for runs in slots.values():
+            if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None
-            key = (created, ids[1], unstarted, started or created, ids[2])
-            slot = (ids[0], text(c.get("name")))
-            if slot not in newest or newest[slot][0] < key:
-                newest[slot] = (key, c)
-        judged += [c for _, c in newest.values()]
+            judged.append(max(runs, key=lambda r: r[1])[2])
         required, optional, passing = [], [], []
         for c in judged:
             kind = text(c.get("__typename"))
