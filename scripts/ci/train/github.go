@@ -18,7 +18,13 @@ type GitHub interface {
 	// QueueEntries returns the pull requests with an entry in main's merge queue.
 	QueueEntries(ctx context.Context) ([]int, error)
 	// Merge squashes n onto main as an admin, only if its head is headSHA.
+	// A nil error does NOT mean it merged: gh exits 0 for a pull request
+	// already in a merge queue (it never reaches the admin path) or already
+	// merged — the caller reads PullRequest(n).Merged.
 	Merge(ctx context.Context, n int, headSHA, subject, body string) error
+	// DisableAutoMerge disarms n's auto-merge: armed, GitHub enqueues it the
+	// moment its checks turn green, mid-landing.
+	DisableAutoMerge(ctx context.Context, n int) error
 	// CancelPullRequestRuns cancels the pull_request runs of sha still queued
 	// or running, and returns how many it cancelled.
 	CancelPullRequestRuns(ctx context.Context, sha string) (int, error)
@@ -51,12 +57,17 @@ func (g ghCLI) PullRequest(ctx context.Context, n int) (PR, error) {
 		return PR{}, err
 	}
 	var raw struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		Draft  bool   `json:"draft"`
-		Merged bool   `json:"merged"`
-		User   struct {
+		Number       int    `json:"number"`
+		Title        string `json:"title"`
+		State        string `json:"state"`
+		Draft        bool   `json:"draft"`
+		ChangedFiles int    `json:"changed_files"`
+		Merged       bool   `json:"merged"`
+		// merge_commit_sha is GitHub's test-merge commit while the pull
+		// request is open; it names the landed commit only once merged.
+		MergeCommitSHA string          `json:"merge_commit_sha"`
+		AutoMerge      json.RawMessage `json:"auto_merge"`
+		User           struct {
 			Login string `json:"login"`
 		} `json:"user"`
 		Base struct {
@@ -78,9 +89,13 @@ func (g ghCLI) PullRequest(ctx context.Context, n int) (PR, error) {
 		BaseRef: raw.Base.Ref, HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, Author: raw.User.Login,
 		CrossRepo: raw.Head.Repo == nil || raw.Head.Repo.FullName != g.Repo,
 	}
+	pr.AutoMerge = len(raw.AutoMerge) > 0 && string(raw.AutoMerge) != "null"
 	if raw.Merged {
 		pr.State = "merged"
+		pr.Merged = true
+		pr.MergeCommit = raw.MergeCommitSHA
 	}
+	listed := 0
 	for page := 1; ; page++ {
 		out, err := g.gh(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d/files?per_page=100&page=%d", g.Repo, n, page))
 		if err != nil {
@@ -94,6 +109,7 @@ func (g ghCLI) PullRequest(ctx context.Context, n int) (PR, error) {
 			return PR{}, fmt.Errorf("files of #%d: %w", n, err)
 		}
 		for _, f := range files {
+			listed++
 			pr.Files = append(pr.Files, f.Filename)
 			if f.PreviousFilename != "" {
 				pr.Files = append(pr.Files, f.PreviousFilename)
@@ -103,6 +119,8 @@ func (g ghCLI) PullRequest(ctx context.Context, n int) (PR, error) {
 			break
 		}
 	}
+	// GitHub stops the list at 3000 files without an error.
+	pr.Truncated = listed < raw.ChangedFiles
 	return pr, nil
 }
 
@@ -138,9 +156,17 @@ func (g ghCLI) QueueEntries(ctx context.Context) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseQueue(out)
+}
+
+// parseQueue reads the merge queue's entries. A main with no merge queue at
+// all (mergeQueue null) has nothing in flight: the train must keep landing
+// when the ruleset drops the queue. A repository the answer does not carry
+// is an error — that is not an empty queue, it is an unread one.
+func parseQueue(out []byte) ([]int, error) {
 	var raw struct {
 		Data struct {
-			Repository struct {
+			Repository *struct {
 				MergeQueue *struct {
 					Entries struct {
 						Nodes []struct {
@@ -152,12 +178,21 @@ func (g ghCLI) QueueEntries(ctx context.Context) ([]int, error) {
 				} `json:"mergeQueue"`
 			} `json:"repository"`
 		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("merge queue: %w", err)
 	}
+	if len(raw.Errors) > 0 {
+		return nil, fmt.Errorf("merge queue: %s", raw.Errors[0].Message)
+	}
+	if raw.Data.Repository == nil {
+		return nil, errors.New("merge queue: the answer carries no repository — cannot tell whether the queue is empty")
+	}
 	if raw.Data.Repository.MergeQueue == nil {
-		return nil, errors.New("merge queue: main has no merge queue in the GraphQL answer — cannot prove it empty")
+		return nil, nil
 	}
 	var prs []int
 	for _, e := range raw.Data.Repository.MergeQueue.Entries.Nodes {
@@ -169,6 +204,11 @@ func (g ghCLI) QueueEntries(ctx context.Context) ([]int, error) {
 func (g ghCLI) Merge(ctx context.Context, n int, headSHA, subject, body string) error {
 	_, err := g.gh(ctx, "pr", "merge", strconv.Itoa(n), "-R", g.Repo,
 		"--squash", "--admin", "--match-head-commit", headSHA, "--subject", subject, "--body", body)
+	return err
+}
+
+func (g ghCLI) DisableAutoMerge(ctx context.Context, n int) error {
+	_, err := g.gh(ctx, "pr", "merge", strconv.Itoa(n), "-R", g.Repo, "--disable-auto")
 	return err
 }
 
