@@ -4,7 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/SocialGouv/iterion/internal/pricingtest"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
@@ -17,7 +16,7 @@ import (
 func TestMain(m *testing.M) {
 	os.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	os.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	os.Exit(pricingtest.Run(m.Run))
+	os.Exit(m.Run())
 }
 
 // parseBotUnit parses a catalog bot as its UNIT — the file and the fragments
