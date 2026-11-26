@@ -1135,6 +1135,19 @@ func parsePiOutput(stdout string) CLIAgentParse {
 	return parse
 }
 
+// piProviderMessage is the provider's own message for status, taken from a
+// diagnostic that reports that status: only provider diagnostics supply the
+// message of a typed refusal, an assistant's rendered text is not evidence
+// of an HTTP error. "" when no diagnostic carries one.
+func piProviderMessage(m pisdk.Message, status int) string {
+	for _, d := range m.Diagnostics {
+		if d.Error != nil && d.Error.Message != "" && (pisdk.Message{Diagnostics: []pisdk.Diagnostic{d}}).HTTPStatus() == status {
+			return d.Error.Message
+		}
+	}
+	return ""
+}
+
 // piClassifyFailure re-types a failed turn onto iterion's error taxonomy, so
 // the executor retries, falls back, or fails fast the same way it would for
 // any other backend. Returns nil for a turn that ended normally.
@@ -1153,6 +1166,24 @@ func piClassifyFailure(m pisdk.Message) error {
 	msg := m.ErrorMessage
 	if msg == "" {
 		msg = "pi reported a failed turn with no error message"
+	}
+
+	// A provider refusal no retry clears — a budget, a model refusing an
+	// input kind, a grammar refusal, a 4xx refusing the request — read by the
+	// classifier claw shares (api.ClassifyRefusal) on the provider's own
+	// diagnostic message, before its status: a gateway serves them under any
+	// status, and the switch below would retry a grammar 500 as transient. A
+	// budget is the spend ceiling every backend parks on.
+	if status := m.HTTPStatus(); status >= 400 {
+		if provider := piProviderMessage(m, status); provider != "" {
+			typed := &api.APIError{Provider: BackendPi, StatusCode: status, Message: provider}
+			if spend, ok := SpendCeilingRefusal(BackendPi, typed); ok {
+				return spend
+			}
+			if typed.Refusal() != api.RefusalNone {
+				return typed
+			}
+		}
 	}
 
 	// The upstream HTTP status is the precise signal, and pi reports it in
@@ -1178,12 +1209,8 @@ func piClassifyFailure(m pisdk.Message) error {
 		// to "reconnect", which does not refill an account.
 		return fmt.Errorf("pi: payment required (%d): %s", status, msg)
 	case status == 400:
-		// Only provider diagnostics supply the message of the typed refusal.
-		// An assistant's rendered text is not evidence of an HTTP error.
-		for _, d := range m.Diagnostics {
-			if d.Error != nil && d.Error.Message != "" && (pisdk.Message{Diagnostics: []pisdk.Diagnostic{d}}).HTTPStatus() == status {
-				return &api.APIError{Provider: BackendPi, StatusCode: status, Message: d.Error.Message}
-			}
+		if provider := piProviderMessage(m, status); provider != "" {
+			return &api.APIError{Provider: BackendPi, StatusCode: status, Message: provider}
 		}
 		return fmt.Errorf("pi: upstream %d: %s", status, msg)
 	case status >= 400:

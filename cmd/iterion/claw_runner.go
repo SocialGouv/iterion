@@ -544,7 +544,10 @@ func clawRunnerResult(result delegate.Result, err error) delegate.IOResult {
 			ioRes.ProviderError = provider
 		} else {
 			var stream *model.APIError
-			if errors.As(err, &stream) && stream.StatusCode == 400 {
+			// A 400 and any stream error naming a deterministic refusal
+			// cross typed: the launcher reads the refusal from the type,
+			// never from the diagnostic string.
+			if errors.As(err, &stream) && (stream.StatusCode == 400 || stream.Refusal() != api.RefusalNone) {
 				ioRes.ProviderError = &api.APIError{StatusCode: stream.StatusCode, Message: stream.Message, Retryable: stream.IsRetryable}
 				ioRes.ProviderErrorStream = true
 			}

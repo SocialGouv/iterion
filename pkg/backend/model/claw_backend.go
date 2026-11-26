@@ -1076,6 +1076,12 @@ func clawUsageWindow(err error, now time.Time) error {
 	if err == nil || delegate.IsUsageWindow(err) {
 		return err
 	}
+	// A budget refusal, under whatever status or channel the gateway served
+	// it (LiteLLM: 400, 422, 429, 500, a stream frame), is the spend ceiling
+	// every backend parks on as an account refusal.
+	if spend, ok := delegate.SpendCeilingRefusal(delegate.BackendClaw, err); ok {
+		return spend
+	}
 	var detail string
 	var httpErr *api.APIError
 	var streamErr *APIError
@@ -1837,7 +1843,14 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 		if !ran {
 			finalTurn = fmt.Sprintf("none on this attempt, the conversation it replays already holding the %d tool turns of its tool_max_steps", toolStepBudgetFrom(ctx).limit)
 		}
-		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %v",
+		// The recovery's error is WRAPPED: its type is the cause of record
+		// (a provider refusal, a context overflow, a transient fault), and
+		// every layer above — the in-node retry, node recovery, the run's
+		// redelivery — decides from it rather than from this text.
+		if recErr == nil {
+			recErr = errors.New("no structured object returned")
+		}
+		return meteredFailure(ctx, task, billed), fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed — the tool loop's final turn: %s; the recovery pass: %w",
 			finalTurn, recErr)
 	}
 	output := map[string]any{"text": text}

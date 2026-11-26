@@ -93,5 +93,28 @@ type APIError = api.APIError
 // Retryable field from this function.
 var IsRetryableStatus = api.IsRetryableStatus
 
+// RefusalKind names a deterministic provider refusal (budget, capability,
+// grammar, request); ProviderRefusal is the typed error that carries one.
+type (
+	RefusalKind     = api.RefusalKind
+	ProviderRefusal = api.ProviderRefusal
+)
+
+const (
+	RefusalNone       = api.RefusalNone
+	RefusalBudget     = api.RefusalBudget
+	RefusalCapability = api.RefusalCapability
+	RefusalGrammar    = api.RefusalGrammar
+	RefusalRequest    = api.RefusalRequest
+)
+
+// ClassifyRefusal is the one reading of a provider refusal; RefusalOf reads
+// the refusal a typed error of err's chain names.
+var (
+	ClassifyRefusal = api.ClassifyRefusal
+	RefusalOf       = api.RefusalOf
+	RefusalsOf      = api.RefusalsOf
+)
+
 // RequestValidationError identifies a local invalid or unsupported request.
 type RequestValidationError = api.RequestValidationError

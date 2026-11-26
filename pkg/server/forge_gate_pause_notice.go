@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -341,9 +342,11 @@ func gatePauseCause(run *store.Run) string {
 
 // isSpendCeilingCause reports whether the parked cause is an account SPEND
 // ceiling rather than a time window. The distinction is the only part of
-// the notice a developer can act on (ask an admin) versus wait out.
+// the notice a developer can act on (ask an admin) versus wait out. A
+// provider budget refusal (a gateway key's, read by api.ClassifyRefusal) is
+// one too.
 func isSpendCeilingCause(cause string) bool {
-	return strings.Contains(strings.ToLower(cause), "spend limit")
+	return strings.Contains(strings.ToLower(cause), "spend limit") || api.ClassifyRefusal(0, cause, "") == api.RefusalBudget
 }
 
 // humanizeIn renders the wait as a parenthetical so the reader does not

@@ -326,10 +326,10 @@ func withToolUseInstruction(messages []api.Message) []api.Message {
 }
 
 // isGrammarRefusal reports whether err is a gateway refusing to compile the
-// request's schemas into a decoding grammar (api.APIError.IsGrammarRefusal).
+// request's schemas into a decoding grammar, on an HTTP response or in a
+// stream error frame alike (api.RefusalOf).
 func isGrammarRefusal(err error) bool {
-	var apiErr *api.APIError
-	return errors.As(err, &apiErr) && apiErr.IsGrammarRefusal()
+	return api.RefusalOf(err) == api.RefusalGrammar
 }
 
 // requiresAdaptiveThinking reads the vendor's adaptive-thinking profile on

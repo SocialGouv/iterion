@@ -31,6 +31,13 @@ import (
 // errors) and claw-code-go's *clawapi.APIError (returned by provider HTTP
 // clients on non-2xx responses, e.g. 429 / 5xx).
 func isRetryable(err error) bool {
+	// A deterministic provider refusal (budget, capability, grammar, a 4xx
+	// refusing the request) meets the same answer on every attempt, however
+	// its status or its wording reads — LiteLLM serves a grammar refusal as
+	// a 500 whose text the network reading below would retry.
+	if api.RefusalOf(err) != api.RefusalNone {
+		return false
+	}
 	// Iterion's own stream-silence watchdog owns this expiry and cancels only
 	// one provider attempt. It is therefore safe to retry, unlike a parent
 	// run/node context deadline which must still stop immediately below.
@@ -77,6 +84,11 @@ func statusCodeOf(err error) int {
 // been migrated yet (and for SDK-internal errors we don't own).
 func isDelegateRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+	// Before every arm below, for isRetryable's reason: a provider refusal
+	// is deterministic whatever wrapper, status or wording carries it.
+	if api.RefusalOf(err) != api.RefusalNone {
 		return false
 	}
 	if isStreamIdleError(err) {

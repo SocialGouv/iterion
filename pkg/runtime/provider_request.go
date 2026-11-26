@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Keep the parent's context verdicts in one list for both typed API paths.
@@ -58,37 +60,145 @@ var routeLocalCodes = map[ErrorCode]bool{
 	ErrCodeSchemaValidation:       true,
 }
 
+// refusalCodes maps each provider refusal (api.RefusalKind) to the code a
+// node refused that way fails with. A budget refusal is the spend ceiling
+// every backend parks on (delegate.SpendCeilingRefusal): USAGE_LIMIT_BLOCKED,
+// whose run waits and is probed hourly, since a gateway budget often reopens
+// by itself (a windowed budget, a released reservation). Every other refusal
+// is deterministic in retrypolicy: the same request meets the same refusal,
+// so neither node recovery nor redelivery nor an automatic resume runs it
+// again.
+var refusalCodes = map[api.RefusalKind]ErrorCode{
+	api.RefusalBudget:     ErrCodeUsageLimitBlocked,
+	api.RefusalCapability: ErrCodeCapabilityUnsupported,
+	api.RefusalGrammar:    ErrCodeSchemaUnusable,
+	api.RefusalRequest:    ErrCodeProviderRequestInvalid,
+}
+
+// refusalPrecedence orders the deterministic refusal codes for a chain whose
+// every route was refused, each its own way — the order api.RefusalOf reads
+// the kinds in, so the chain's code and its remedy name the same refusal:
+// the model, then the schema, then the request, whatever order the routes
+// ran in. A budget refusal is not among them: a chain holding one is read
+// as a usage window (chainWaitsOnUsageWindow).
+var refusalPrecedence = []ErrorCode{
+	ErrCodeCapabilityUnsupported,
+	ErrCodeSchemaUnusable,
+	ErrCodeProviderRequestInvalid,
+}
+
+// IsProviderRefusalCode reports a code a deterministic provider refusal fails
+// a node with (refusalPrecedence): a relaunch of the same work meets the same
+// refusal, whatever else raised the code too — each is deterministic.
+func IsProviderRefusalCode(code ErrorCode) bool {
+	return slices.Contains(refusalPrecedence, code)
+}
+
+// providerRefusalCode reads the provider refusal err's chain carries
+// (api.RefusalOf) as the code it fails the node with. A request-level
+// refusal that names the context window is left to the context reading,
+// whose compaction can shrink the next request.
+func providerRefusalCode(err error) (ErrorCode, bool) {
+	kind := api.RefusalOf(err)
+	code, ok := refusalCodes[kind]
+	if !ok {
+		return "", false
+	}
+	if kind == api.RefusalRequest && matchesProviderContext(strings.ToLower(err.Error())) {
+		return "", false
+	}
+	return code, true
+}
+
+// refusalRemedies is the operator's remedy for each provider refusal.
+var refusalRemedies = map[api.RefusalKind]string{
+	api.RefusalBudget:     "the provider refused the call because the spend budget of its key, team or account is exhausted — raise that budget (or add credits) at the provider or gateway; a declared fallback route is taken within the run; the run then parks, and the hourly probe relaunches it — the relaunch reuses the same key until the budget clears",
+	api.RefusalCapability: "the model cannot take an input this node sends it (e.g. an image to a text-only model) — route the node to a model that accepts it, or stop sending that input, then resume",
+	api.RefusalGrammar:    "the gateway cannot compile the request's schemas (tool or output) into a decoding grammar — simplify the schema construct it names, or serve the node on a model or gateway that accepts it, then resume",
+	api.RefusalRequest:    "the provider refused the request itself — fix what it names, then resume",
+}
+
+// ProviderRefusalRemedy is the operator's remedy for the provider refusal err
+// carries when that refusal is what classified it as code, naming the
+// provider's own words, bounded before it reaches persisted hints; ""
+// otherwise. The words are those of every error of the chain refused the
+// way the code says — sorted and deduplicated, so a fallback chain's remedy
+// names the refusal its code names, in whatever order its routes ran.
+func ProviderRefusalRemedy(err error, code ErrorCode) string {
+	refused, ok := providerRefusalCode(err)
+	if !ok || refused != code {
+		return ""
+	}
+	kind := api.RefusalOf(err)
+	var words []string
+	for _, r := range api.RefusalsOf(err) {
+		if r.Refusal() == kind {
+			words = append(words, refusalMessage(r))
+		}
+	}
+	slices.Sort(words)
+	return refusalRemedies[kind] + "; provider refused: " + iterlog.Truncate(strings.Join(slices.Compact(words), " | "), 2048)
+}
+
+// refusalMessage is the provider's own explanation a refusal carries: the
+// extracted message, else the raw body.
+func refusalMessage(refusal api.ProviderRefusal) string {
+	typed, ok := refusal.(*api.APIError)
+	switch {
+	case !ok:
+		return refusal.Error()
+	case typed.Message != "":
+		return typed.Message
+	}
+	return typed.Body
+}
+
+// routeLocal reports a route's verdict that condemns that route alone: a
+// route-local code, or a deterministic provider refusal (another route —
+// another key, model or gateway — may serve what this one refused). A budget
+// refusal is read with the usage windows instead (chainWaitsOnUsageWindow).
+func routeLocal(code ErrorCode, cause error) bool {
+	if routeLocalCodes[code] {
+		return true
+	}
+	refused, ok := providerRefusalCode(cause)
+	return ok && refused == code && code != ErrCodeUsageLimitBlocked
+}
+
 // classifyRefusedChain decides an exhausted fallback chain that holds at
-// least one route-local verdict (routeLocalCodes). Only a chain whose EVERY
-// route ended that way keeps one of those codes — SCHEMA_VALIDATION when any
-// route's answer stayed off its schema, else PROVIDER_REQUEST_INVALID, in
-// whatever order the routes ran. Otherwise the routes that failed for
-// another reason decide, read like any other chain: a rescue route's
-// transient outage stays transient. It declines (decided=false) a chain with
-// no route-local verdict — the reading of ClassifyError stays the one it
-// always had — and a chain a RuntimeError encloses, whose code is the
-// engine's own verdict on the whole chain.
+// least one route-local verdict (routeLocal). Only a chain whose EVERY route
+// ended that way keeps one of those codes — SCHEMA_VALIDATION when any
+// route's answer stayed off its schema, else the first refusal code of
+// refusalPrecedence a route met, in whatever order the routes ran. Otherwise
+// the routes that failed for another reason decide, read like any other
+// chain: a rescue route's transient outage stays transient. It declines
+// (decided=false) a chain with no route-local verdict — the reading of
+// ClassifyError stays the one it always had — and a chain a RuntimeError
+// encloses, whose code is the engine's own verdict on the whole chain.
 func classifyRefusedChain(err error) (code ErrorCode, decided bool) {
 	chain := exhaustedChainToRead(err)
 	if chain == nil {
 		return "", false
 	}
 	var others []error
-	schema := false
+	met := map[ErrorCode]bool{}
 	for _, cause := range chain.Errs {
 		c := ClassifyError(cause)
-		if !routeLocalCodes[c] {
+		if !routeLocal(c, cause) {
 			others = append(others, cause)
 			continue
 		}
-		if c == ErrCodeSchemaValidation {
-			schema = true
-		}
+		met[c] = true
 	}
 	switch len(others) {
 	case 0:
-		if schema {
+		if met[ErrCodeSchemaValidation] {
 			return ErrCodeSchemaValidation, true
+		}
+		for _, c := range refusalPrecedence {
+			if met[c] {
+				return c, true
+			}
 		}
 		return ErrCodeProviderRequestInvalid, true
 	case len(chain.Errs):
