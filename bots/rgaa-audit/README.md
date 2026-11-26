@@ -174,9 +174,10 @@ into the run directory, fingerprint-checked), so the job needs Node with
   sized for a `claw` route, which books every tool-loop step's whole prompt
   (about 1–3M tokens a batch of 8 criteria, against ~30k on `claude_code`);
   the cost cap is the real guard. The batches are dispatched in waves of
-  `wave_batches` (4), and the loop budget guard declines the next wave when
-  the budget cannot pay for it: what was decided is folded and the rest is
-  reported « à évaluer », never a run cut mid-fan-out. `--max-cost-usd`
+  `wave_batches` (4), criteria never asked before re-asks, and the loop
+  budget guard declines the next wave when the budget cannot pay for it:
+  what was decided is folded and the rest is reported « à évaluer », never
+  a run cut mid-fan-out. `--max-cost-usd`
   and `--max-tokens` move the caps (about 2 $ per batch of 8 criteria on
   the default models; a first run with no ledger is ~60 $). A committed
   ledger (`.ultra11y/verdicts/rgaa.json`) is replayed, so a recurring run

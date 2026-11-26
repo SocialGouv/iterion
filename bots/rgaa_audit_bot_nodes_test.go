@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/testfs"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -389,6 +390,34 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		}
 		if rgaaRate(rgaaDocCounts{Conformes: 23, NC: 17}) != 57 {
 			t.Fatal("the Go twin of the rate helper rounds 23/40 to 58")
+		}
+	})
+
+	t.Run("the_wave_planner_asks_fresh_criteria_first_and_sizes_the_wave_it_plans", func(t *testing.T) {
+		// #3746: plan_batches dispatches L.planWave's wave and fold_probe hands
+		// its size to the loop budget guard. Theme chunks vary (2.x has two
+		// criteria, 1.x ten), so the wave's size is the sum of its chunks,
+		// never wave_batches × batch_size; criteria never asked go before
+		// re-asks, theme by theme in numeric order (10 after 3).
+		ids := []string{"10.1", "3.3", "3.2", "3.1", "2.2", "2.1"}
+		for i := 10; i >= 1; i-- {
+			ids = append(ids, fmt.Sprintf("1.%d", i))
+		}
+		idsJSON, _ := json.Marshal(ids)
+		probe := map[string]string{"_wave": "const RUN = {{input.run_dir}};\nconst L = require(require(\"path\").join(RUN, \"bin\", \"lib.js\")).init(RUN);\nconst ids = " + string(idsJSON) + ", asked = { \"1.1\": 1, \"1.2\": 2, \"3.1\": 1 };\nconst p = L.planWave(ids, asked, 8, 2);\nL.out({ ok: true, chunks: p.chunks.map((c) => c.theme + \":\" + c.ids.join(\",\")), size: p.size, wave: p.wave.length, all: L.planWave(ids, asked, 8, 0).size, fallback: L.planWave(ids, {}, 0, 1).size });\n"}
+		r := rgaaRunNode(t, probe, "_wave", site, env, in(nil))
+		if r.Code != 0 {
+			t.Fatalf("planWave died: %s", r.Stderr)
+		}
+		want := []string{"1:1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10", "2:2.1,2.2", "3:3.2,3.3", "10:10.1", "1:1.1,1.2", "3:3.1"}
+		if got := rgaaStrings(r.Out["chunks"]); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("planWave chunks %v, want %v", got, want)
+		}
+		if rgaaInt(r.Out["wave"]) != 2 || rgaaInt(r.Out["size"]) != 10 {
+			t.Fatalf("a 2-batch wave is %v batches of %v criteria, want 2 of 10 (8 + 2), not 2 × 8", r.Out["wave"], r.Out["size"])
+		}
+		if rgaaInt(r.Out["all"]) != len(ids) || rgaaInt(r.Out["fallback"]) != 8 {
+			t.Fatalf("wave_batches 0 sizes %v (want %d); batch_size 0 sizes one batch at %v (want the default 8)", r.Out["all"], len(ids), r.Out["fallback"])
 		}
 	})
 
@@ -828,10 +857,8 @@ L.out({ ok: true, cases: out });
 		dir := rgaaRunCopy(t, run)
 		// The copy carries the round the subtest above planned; this one
 		// starts from the worklist's own round 0.
-		for _, p := range []string{filepath.Join(dir, "batches"), filepath.Join(dir, "asked.json")} {
-			if err := os.RemoveAll(p); err != nil {
-				t.Fatal(err)
-			}
+		for _, p := range []string{filepath.Join(dir, "batches"), filepath.Join(dir, "asked.json"), filepath.Join(dir, "asked")} {
+			testfs.RemoveAll(t, dir, p)
 		}
 		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.run_dir": dir, "input.batch_size": 8, "input.wave_batches": 1}))
 		if r.Code != 0 {
@@ -879,8 +906,50 @@ L.out({ ok: true, cases: out });
 				t.Fatalf("criterion %s (in the wave: %v) carries prior issue %q", id, inWave[id], issues[id])
 			}
 		}
-		if nw := rgaaInt(out["next_wave"]); nw != min(len(ids), 8) {
-			t.Fatalf("next_wave %d, want one batch of at most 8 criteria", nw)
+		// The guard's work signal is the wave that runs: plan_batches, handed
+		// this pending.json, dispatches exactly next_wave criteria — the
+		// criteria no wave has carried first, so a declined wave leaves
+		// second chances open, never a first ask. A replay of the round plans
+		// the same wave and counts it once.
+		next := rgaaRunCopy(t, dir)
+		planWave := func() ([]batch, map[string]int) {
+			t.Helper()
+			r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.run_dir": next, "input.batch_size": 8, "input.wave_batches": 1}))
+			if r.Code != 0 {
+				t.Fatalf("plan_batches round 1 died: %s", r.Stderr)
+			}
+			raw, _ := json.Marshal(r.Out["batches"])
+			var w []batch
+			if err := json.Unmarshal(raw, &w); err != nil {
+				t.Fatal(err)
+			}
+			var counts map[string]int
+			rgaaReadJSON(t, filepath.Join(next, "asked.json"), &counts)
+			return w, counts
+		}
+		wave1, _ := planWave()
+		size1 := 0
+		for _, b := range wave1 {
+			size1 += len(b.IDs)
+			for _, id := range b.IDs {
+				if inWave[id] || b.PriorIssues[id] != "" {
+					t.Fatalf("round 1 re-asks %s (prior issue %q) while %d criteria still wait for their first ask", id, b.PriorIssues[id], len(ids)-len(wave[0].IDs))
+				}
+			}
+		}
+		if nw := rgaaInt(out["next_wave"]); nw != size1 {
+			t.Fatalf("fold_probe announced a next wave of %d criteria, plan_batches dispatched %d (%v)", nw, size1, wave1)
+		}
+		replay, counts := planWave()
+		if fmt.Sprint(replay) != fmt.Sprint(wave1) {
+			t.Fatalf("a replay of round 1 planned %v, the first pass %v", replay, wave1)
+		}
+		for _, b := range wave1 {
+			for _, id := range b.IDs {
+				if counts[id] != 1 {
+					t.Fatalf("after a replay of round 1, asked.json counts %s %d times, want 1", id, counts[id])
+				}
+			}
 		}
 		// No re-ask: the asked wave stays open (« à évaluer » in the fold),
 		// the held criteria are still owed their first ask.

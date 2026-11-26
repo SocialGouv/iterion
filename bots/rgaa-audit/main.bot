@@ -1190,7 +1190,33 @@ tool prepare:
         return rep;
       };
 
-      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf, foldJSON, scanOutcome };
+      // The batches of a round, in dispatch order, and the wave of them that
+      // goes out (#3746). Criteria no wave has carried yet come first, so a
+      // wave the loop budget guard declines leaves second chances « à
+      // évaluer », never a criterion with no ask at all; then theme by theme,
+      // in criterion order, cut into chunks of batchSize (8 when unset).
+      // plan_batches dispatches this wave and fold_probe sizes the next one
+      // from it, so the guard's sized_by signal is the wave that runs.
+      // waveBatches 0 (or less) is every chunk at once.
+      const planWave = (ids, asked, batchSize, waveBatches) => {
+        const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 8;
+        const themeOf = (id) => String(id).split(".")[0];
+        const indexOf = (id) => Number(String(id).split(".")[1] || 0);
+        const reask = (id) => (Number((asked || {})[id] || 0) > 0 ? 1 : 0);
+        const sorted = ids.slice().sort((a, b) => reask(a) - reask(b) || Number(themeOf(a)) - Number(themeOf(b)) || indexOf(a) - indexOf(b));
+        const groups = [];
+        for (const id of sorted) {
+          const last = groups[groups.length - 1];
+          if (last && last.reask === reask(id) && last.theme === themeOf(id)) last.ids.push(id);
+          else groups.push({ reask: reask(id), theme: themeOf(id), ids: [id] });
+        }
+        const chunks = [];
+        for (const g of groups) for (let i = 0; i < g.ids.length; i += size) chunks.push({ theme: g.theme, ids: g.ids.slice(i, i + size) });
+        const wave = Number.isInteger(waveBatches) && waveBatches > 0 ? chunks.slice(0, waveBatches) : chunks;
+        return { chunks: chunks, wave: wave, size: wave.reduce((n, c) => n + c.ids.length, 0) };
+      };
+
+      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf, foldJSON, scanOutcome, planWave };
       return api;
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
@@ -1534,8 +1560,9 @@ tool worklist:
   output: worklist_output
 
 ## Batches for the fan-out: the pending criteria (all of them on round 0,
-## the fold's named refusals on a re-ask), grouped by theme, at most
-## batch_size each. File-driven and idempotent: a resume replans the same.
+## then the held ones and the fold's named refusals), never-asked first,
+## grouped by theme, at most batch_size each — one wave of them per round
+## (L.planWave). File-driven and idempotent: a resume replans the same.
 tool plan_batches:
   script: |
     const path = require("path");
@@ -1545,40 +1572,30 @@ tool plan_batches:
     // The agent opens the batch's own files, spelled out — never a path it
     // reconstructs from a directory and an id.
     const wl = L.readJSON(path.join(RUN, "worklist.json"));
-    const asked = Number({{input.batch_size}});
-    const size = Number.isInteger(asked) && asked > 0 ? asked : 8;
-    const byTheme = {};
-    const themeOf = (id) => String(id).split(".")[0];
-    const ids = pending.ids.slice().sort((a, b) => { const ta = Number(themeOf(a)), tb = Number(themeOf(b)); if (ta !== tb) return ta - tb; return Number(String(a).split(".")[1] || 0) - Number(String(b).split(".")[1] || 0); });
-    for (const id of ids) (byTheme[themeOf(id)] = byTheme[themeOf(id)] || []).push(id);
-    const batches = [];
-    for (const theme of Object.keys(byTheme).sort((a, b) => Number(a) - Number(b))) {
-      const list = byTheme[theme];
-      for (let i = 0; i < list.length; i += size) {
-        const chunk = list.slice(i, i + size);
-        const id = "r" + pending.round + "-b" + String(batches.length + 1).padStart(2, "0");
-        const prior = {};
-        for (const c of chunk) if (pending.issues && pending.issues[c]) prior[c] = pending.issues[c];
-        const b = { id: id, round: pending.round, theme: theme, ids: chunk, count: chunk.length, prior_issues: prior, item_paths: chunk.map((c) => path.join(wl.items_dir, c + ".json")), brief_paths: chunk.map((c) => path.join(wl.briefs_dir, c + ".md")) };
-        batches.push(b);
-      }
-    }
+    const askedPath = path.join(RUN, "asked.json");
+    // The ask counts as they stood before this round's wave: a replay of the
+    // round reads them back, so it plans the same wave and counts it once.
+    const beforePath = path.join(RUN, "asked", "before-r" + pending.round + ".json");
+    if (!L.exists(beforePath)) L.writeJSON(beforePath, L.exists(askedPath) ? L.readJSON(askedPath) : {});
+    const askedCount = L.readJSON(beforePath);
     // One WAVE per round (#3746): at most wave_batches batches are dispatched,
     // the rest stay pending for the next round. Each round is then one
     // iteration of the re-ask loop, which the loop budget guard prices and
     // declines when the budget cannot pay for it — the run folds what was
     // decided and reports the rest « à évaluer » instead of hitting the cap
     // in the middle of a fan-out. 0 (or less) dispatches every batch at once.
-    const waveAsked = Number({{input.wave_batches}});
-    const wave = Number.isInteger(waveAsked) && waveAsked > 0 ? batches.slice(0, waveAsked) : batches;
-    const askedPath = path.join(RUN, "asked.json");
-    const askedCount = L.exists(askedPath) ? L.readJSON(askedPath) : {};
+    const plan = L.planWave(pending.ids, askedCount, Number({{input.batch_size}}), Number({{input.wave_batches}}));
+    const wave = plan.wave.map((chunk, i) => {
+      const prior = {};
+      for (const c of chunk.ids) if (pending.issues && pending.issues[c]) prior[c] = pending.issues[c];
+      return { id: "r" + pending.round + "-b" + String(i + 1).padStart(2, "0"), round: pending.round, theme: chunk.theme, ids: chunk.ids, count: chunk.ids.length, prior_issues: prior, item_paths: chunk.ids.map((c) => path.join(wl.items_dir, c + ".json")), brief_paths: chunk.ids.map((c) => path.join(wl.briefs_dir, c + ".md")) };
+    });
     for (const b of wave) {
       L.writeJSON(path.join(RUN, "batches", b.id + ".json"), b);
       for (const c of b.ids) askedCount[c] = Number(askedCount[c] || 0) + 1;
     }
     L.writeJSON(askedPath, askedCount);
-    L.out({ batches: wave, count: wave.length, round: pending.round, held: ids.length - wave.reduce((n, b) => n + b.count, 0) });
+    L.out({ batches: wave, count: wave.length, round: pending.round, held: pending.ids.length - plan.size });
   language: js
   input: plan_input
   output: plan_output
@@ -1780,9 +1797,10 @@ tool fold_probe:
     L.writeJSON(path.join(RUN, "pending.json"), { round: round + 1, ids: pendingIds, issues: pendingIssues });
     L.writeJSON(path.join(RUN, "issues.json"), issues);
     // The size of the next wave, in criteria — the loop's work signal: the
-    // budget guard scales the last wave's cost by it.
-    const waveB = Number({{input.wave_batches}}), sizeB = Number({{input.batch_size}});
-    const nextWave = Number.isInteger(waveB) && waveB > 0 ? Math.min(pendingIds.length, waveB * (Number.isInteger(sizeB) && sizeB > 0 ? sizeB : 8)) : pendingIds.length;
+    // budget guard scales the last wave's cost by it. Planned the way
+    // plan_batches will plan it, from the same pending ids and asked.json:
+    // theme chunks vary in size, so a wave's capacity is not its size.
+    const nextWave = L.planWave(pendingIds, askedCount || {}, Number({{input.batch_size}}), Number({{input.wave_batches}})).size;
     L.out({ ok: true, fail_code: "", reason: "", pending: pendingIds.length, pending_ids: pendingIds, next_wave: nextWave, not_asked: notAsked.length, reask_spent: reaskSpent.length, applied: applied, rejected: rejected.length, unfilled: unfilled.length, flagged_open: flaggedOpen.length, round: round });
   language: js
   input: probe_input
