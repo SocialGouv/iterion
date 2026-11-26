@@ -3,7 +3,6 @@ package runtime
 import (
 	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,10 +77,8 @@ func TestMirrorAcceptsAnEmptyOrRelativeWorkspace(t *testing.T) {
 // value. It reads the EXPANDED value, so the literal a studio form re-sends
 // unmodified passes while "" and "some/dir" do not.
 //
-// The pattern's second branch is not decoration: the compile-time default
-// check (C161) compares the LITERAL default text, so a bare "^/" would refuse
-// `${BUNDLE_SKILLS_DIR}` itself. TestBundleSkillsVarPatternAdmitsItsOwnDefault
-// holds that end; this one holds the launch end.
+// internal/sweep/runtimecatalog's TestBundleSkillsVarPatternAdmitsItsOwnDefault
+// holds the compile end of the pattern; this one holds the launch end.
 func TestBundleSkillsVarRefusesANonAbsoluteOverride(t *testing.T) {
 	for _, bot := range []string{"sec-audit-source", "sec-audit-deps", "supply-shield", "supply-shield-cve", "secured-renovacy"} {
 		path := filepath.Join("..", "..", "bots", bot, "main.bot")
@@ -108,63 +105,6 @@ func TestBundleSkillsVarRefusesANonAbsoluteOverride(t *testing.T) {
 			if err := ValidateVarConstraints(vars, map[string]any{"bundle_skills_dir": good}, e.varExpandFn()); err != nil {
 				t.Errorf("%s: launch refused bundle_skills_dir=%q: %v", bot, good, err)
 			}
-		}
-	}
-}
-
-// Every bot declaring the var must still COMPILE with it — the measurement
-// that decided the pattern's shape. C161 reads the literal default, so a
-// pattern that admits only "^/" fails here even though the expansion is
-// always absolute.
-func TestBundleSkillsVarPatternAdmitsItsOwnDefault(t *testing.T) {
-	for _, bot := range []string{"sec-audit-source", "sec-audit-deps", "supply-shield", "supply-shield-cve", "secured-renovacy"} {
-		path := filepath.Join("..", "..", "bots", bot, "main.bot")
-		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
-		for _, d := range compiled.Diagnostics {
-			if d.Severity == ir.SeverityError {
-				t.Fatalf("%s: %s: %s", bot, d.Code, d.Message)
-			}
-		}
-	}
-}
-
-// The last layer, exercised on the recipe the bot ships: handed a value that
-// is not an absolute path, the node refuses by name instead of joining the
-// skill name onto nothing and reading the checkout's own file.
-func TestLangScannersRefuseANonAbsoluteSkillsDir(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 is the recipe's interpreter")
-	}
-	command := realLangScannerCommand(t)
-	ws := t.TempDir()
-	canary := filepath.Join(t.TempDir(), "canary-relative")
-	// The file a checkout would place at its own root, which a relative
-	// join reaches from the node's working directory.
-	writeCheckoutFile(t, ws, "lang-python.md", canaryScannersBlock(canary))
-
-	for _, bad := range []string{"", "."} {
-		quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
-		rendered := strings.NewReplacer(
-			"{{input.scan_dir}}", quote(filepath.Join(t.TempDir(), "scan")),
-			"{{input.langs}}", quote(`["python"]`),
-			"{{vars.workspace_dir}}", quote(ws),
-			"{{vars.bundle_skills_dir}}", quote(bad),
-		).Replace(command)
-		cmd := exec.Command("sh", "-c", rendered)
-		cmd.Dir = ws
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Fatalf("bundle_skills_dir=%q: the node accepted it\n%s", bad, out)
-		}
-		if !strings.Contains(string(out), "not an absolute path") {
-			t.Fatalf("bundle_skills_dir=%q: refusal is not named: %s", bad, out)
-		}
-		if _, serr := os.Stat(canary); !os.IsNotExist(serr) {
-			t.Fatalf("bundle_skills_dir=%q: the checkout's command ran (err=%v)\n%s", bad, serr, out)
 		}
 	}
 }

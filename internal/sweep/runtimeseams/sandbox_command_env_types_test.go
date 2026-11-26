@@ -1,4 +1,4 @@
-package runtime
+package runtimeseams
 
 import (
 	"fmt"
@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/modtypes"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 func TestCommandEnvironmentInventoryComposedTypes(t *testing.T) {
-	m, err := modtypes.Load(repoRootForInventory(t))
+	m, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func TestCommandEnvironmentInventoryComposedTypes(t *testing.T) {
 	}
 }
 func TestCommandEnvironmentInventoryOppositeValues(t *testing.T) {
-	m, err := modtypes.Load(repoRootForInventory(t))
+	m, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestCommandEnvironmentInventoryOppositeValues(t *testing.T) {
 }
 
 func TestCommandEnvironmentInventoryNamedScope(t *testing.T) {
-	m, err := modtypes.Load(repoRootForInventory(t))
+	m, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +115,7 @@ func unrelated(ctx context.Context,r sb.Run){_=r.Command(ctx,nil,sb.ExecOpts{})}
 }
 
 func TestCommandEnvironmentInventoryExportScope(t *testing.T) {
-	m, err := modtypes.Load(repoRootForInventory(t))
+	m, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}

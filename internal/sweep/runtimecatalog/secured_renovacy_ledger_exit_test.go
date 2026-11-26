@@ -1,9 +1,11 @@
-package runtime
+package runtimecatalog
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // The bot-level witness of #2381: secured-renovacy's ledger exit carries the
@@ -15,7 +17,7 @@ import (
 // The bare exit this guard replaced routed whatever the producer answered
 // into the Phase 2 solo ledger.
 func TestTheSecuredRenovacyLedgerExitCarriesTheGuard(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join("..", "..", "bots", "secured-renovacy", "main.bot"))
+	src, err := os.ReadFile(filepath.Join(sweepwalk.ModuleRoot(t), "bots", "secured-renovacy", "main.bot"))
 	if err != nil {
 		t.Fatalf("the shipped bot is unreadable: %v", err)
 	}

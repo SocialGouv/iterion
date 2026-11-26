@@ -52,7 +52,7 @@ const EnvNodeMaxIdenticalFailures = "ITERION_NODE_MAX_IDENTICAL_FAILURES"
 // is the ONE place the default is written: the tests that speak of the
 // default derive from it, and the two pages that state its value
 // (docs/environment-variables.md, docs/resume.md) are held to it by
-// TestTheDocsStateTheDefaultLimitOnceEach.
+// internal/sweep/runtimedocs's TestTheDocsStateTheDefaultLimitOnceEach.
 //
 // The limit counts EXECUTIONS of the node, across engines. The recovery
 // dispatcher retries an EXECUTION_FAILED once in place

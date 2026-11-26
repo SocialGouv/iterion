@@ -1,4 +1,4 @@
-package runtime
+package runtimecatalog
 
 import (
 	"context"
@@ -16,9 +16,11 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -54,7 +56,7 @@ var unanswered = map[string]bool{
 func TestFixerWorkflowDiffRefusesBeforeAnalysis(t *testing.T) {
 	for _, name := range []string{"missing-proof", "missing-token", "denied", "allowed", "server-error", "invalid-response", "redirect", "reset", "truncated", "garbage", "ordinary-code", "workflow-reverted", "rename-out", "rename-in", "dirty-workflow", "untracked-workflow", "gitlab"} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join("..", "..", "bots", "branch-improve-loop", "main.bot")
+			path := filepath.Join(sweepwalk.ModuleRoot(t), "bots", "branch-improve-loop", "main.bot")
 			src, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -188,7 +190,7 @@ func TestFixerWorkflowDiffRefusesBeforeAnalysis(t *testing.T) {
 			executor := &deliveryProbeExecutor{ClawExecutor: model.NewClawExecutor(nil, wf, model.WithWorkDir(ws), model.WithSecretGuard(guard))}
 			t.Cleanup(func() { _ = executor.Close() })
 			s := tmpStore(t)
-			err = New(wf, s, executor, WithWorkDir(ws), WithSandboxOverride("none")).Run(t.Context(), "delivery-refusal", map[string]any{
+			err = runtime.New(wf, s, executor, runtime.WithWorkDir(ws), runtime.WithSandboxOverride("none")).Run(t.Context(), "delivery-refusal", map[string]any{
 				"workspace_dir": ws, "base_ref": "main", "plan_phase": "off", "pr_url": prURL,
 				"forge_delivery_preflight_url": checkURL, "forge_publish_token": "scoped-grant",
 			})

@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -147,80 +146,6 @@ func TestLangScannersReadTheEngineOwnedCopy(t *testing.T) {
 	}
 }
 
-// workspaceSkillsRead is a recipe naming the workspace skills directory, in
-// the spellings a script builds it with: one path string, or its two
-// segments joined by the language (`".claude", "skills"` in either quote
-// style). Matching one quote style only let a bot that spelled it the other
-// way read its blocks from the checkout with this guard green.
-var workspaceSkillsRead = regexp.MustCompile(`\.claude/skills|\.claude["']\s*,\s*["']skills`)
-
-// The class, not the site a report names: across EVERY shipped bot, no
-// deterministic recipe may parse an `iterion:` comment block out of the
-// workspace skills directory — that is the directory the audited checkout
-// writes. A block read from a ledger a node of the run wrote is a different
-// provenance and is not what this asks about.
-func TestNoBotParsesIterionBlocksFromTheWorkspaceSkills(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "..", "bots"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The bots whose blocks come from a skill: each must name the
-	// engine-owned copy at least once, so a future edit cannot quietly drop
-	// the wiring and leave this test asserting nothing.
-	wantWired := map[string]bool{
-		"sec-audit-source": false, "sec-audit-deps": false,
-		"supply-shield": false, "supply-shield-cve": false, "secured-renovacy": false,
-		"assessment": false,
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		root := filepath.Join("..", "..", "bots", name)
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, werr error) error {
-			if werr != nil || d.IsDir() || !strings.HasSuffix(path, ".bot") {
-				return nil
-			}
-			src, rerr := os.ReadFile(path)
-			if rerr != nil {
-				t.Errorf("%s: %v", path, rerr)
-				return nil
-			}
-			compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
-			if compiled.Workflow == nil {
-				return nil // a fragment that does not compile standalone
-			}
-			for _, n := range compiled.Workflow.Nodes {
-				tool, ok := n.(*ir.ToolNode)
-				if !ok {
-					continue
-				}
-				body := tool.Command + "\n" + tool.Script
-				if strings.Contains(body, "{{vars.bundle_skills_dir}}") {
-					if _, tracked := wantWired[name]; tracked {
-						wantWired[name] = true
-					}
-				}
-				// An `iterion:` block parse spells the comment delimiter; a
-				// prose mention of the marker does not.
-				if !strings.Contains(body, "iterion:") || !strings.Contains(body, "<!--") {
-					continue
-				}
-				if workspaceSkillsRead.MatchString(body) {
-					t.Errorf("%s node %q parses an iterion: block from the workspace skills directory (%s)", name, tool.ID, path)
-				}
-			}
-			return nil
-		})
-	}
-	for name, wired := range wantWired {
-		if !wired {
-			t.Errorf("%s no longer reads any iterion: block from ${BUNDLE_SKILLS_DIR}", name)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // secured-renovacy's family fast-path (#1737)
 // ---------------------------------------------------------------------------
@@ -355,59 +280,6 @@ func TestFamilyNodesReadTheEngineOwnedCatalogue(t *testing.T) {
 			if _, err := os.Stat(canary); err != nil {
 				t.Fatalf("the workspace arm did not reproduce the defect, so the first arm proves nothing: %v\n%s", err, out)
 			}
-		})
-	}
-}
-
-// whichThenWorkspaceJoin matches the defect shape of both #1799 sites: a
-// binary resolved by shutil.which OR a path joined onto the workspace root —
-// the workspace being a checkout of an audited/untrusted repository, so the
-// joined file is one the repository supplies. Matches across quote styles
-// and across the line break the long spellings put before os.path.join.
-var whichThenWorkspaceJoin = regexp.MustCompile(
-	`shutil\.which\(\s*['"][^'"]+['"]\s*\)\s*or\s*os\.path\.join\(`)
-
-// The class, not the sites a report names: across EVERY shipped bot, no
-// deterministic recipe may resolve an executable as "the one on PATH, or a
-// file in the workspace". PATH (engine-shimmed on the host, baked in the
-// container) and the engine-written ITERION_ENGINE_BIN are the sources; a
-// workspace fallback executes the tree under audit with the run's
-// credentials (#1799).
-func TestNoBotResolvesABinaryFromTheWorkspace(t *testing.T) {
-	entries, err := os.ReadDir(filepath.Join("..", "..", "bots"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		root := filepath.Join("..", "..", "bots", name)
-		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, werr error) error {
-			if werr != nil || d.IsDir() || !strings.HasSuffix(path, ".bot") {
-				return nil
-			}
-			src, rerr := os.ReadFile(path)
-			if rerr != nil {
-				t.Errorf("%s: %v", path, rerr)
-				return nil
-			}
-			compiled := ir.Compile(parsertest.Parse(path, string(src)).File)
-			if compiled.Workflow == nil {
-				return nil // a fragment that does not compile standalone
-			}
-			for _, n := range compiled.Workflow.Nodes {
-				tool, ok := n.(*ir.ToolNode)
-				if !ok {
-					continue
-				}
-				body := tool.Command + "\n" + tool.Script
-				if whichThenWorkspaceJoin.MatchString(body) {
-					t.Errorf("%s node %q resolves a binary as PATH-or-workspace-join (%s) — drop the workspace fallback; fail loudly instead (#1799)", name, tool.ID, path)
-				}
-			}
-			return nil
 		})
 	}
 }

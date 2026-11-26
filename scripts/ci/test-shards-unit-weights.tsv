@@ -11,6 +11,9 @@
 # (#3758): 64 s, the moved tests' CI duration in #3758's measurement, taken off pkg/cli's row.
 # The internal/sweep/authorreading row (#3758) carries the seconds its tests took inside
 # pkg/server in that run; pkg/server's row predates their move out of it.
+# internal/sweep/runtime{catalog,seams} left pkg/runtime after that run
+# (#3758): their rows are local `ok`-line durations in the same build mode,
+# and pkg/runtime's row still counts their share until the next refresh.
 github.com/SocialGouv/iterion/bots	751
 github.com/SocialGouv/iterion/pkg/server	518
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
@@ -26,6 +29,7 @@ github.com/SocialGouv/iterion/pkg/auth	73
 github.com/SocialGouv/iterion/internal/sweep/authorcorpus	64
 github.com/SocialGouv/iterion/pkg/cli	52
 github.com/SocialGouv/iterion/pkg/dsl/unit	47
+github.com/SocialGouv/iterion/internal/sweep/runtimecatalog	42
 github.com/SocialGouv/iterion/internal/layerguard	41
 github.com/SocialGouv/iterion/pkg/claw/internal/tools	41
 github.com/SocialGouv/iterion/internal/sweep/authorreading	38
@@ -40,6 +44,7 @@ github.com/SocialGouv/iterion/pkg/backend/mcp	23
 github.com/SocialGouv/iterion/pkg/dsl/parser	22
 github.com/SocialGouv/iterion/pkg/assistantmission	20
 github.com/SocialGouv/iterion/pkg/server/cloudpublisher	18
+github.com/SocialGouv/iterion/internal/sweep/runtimeseams	18
 github.com/SocialGouv/iterion/internal/ciguard	17
 github.com/SocialGouv/iterion/pkg/lease	17
 github.com/SocialGouv/iterion/pkg/backend/compatgw	16

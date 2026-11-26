@@ -1,4 +1,4 @@
-package runtime
+package runtimeseams
 
 import (
 	"fmt"
@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/modtypes"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // This inventory names every reference to a sandbox command factory or SDK
@@ -175,7 +176,7 @@ func commandEnvReferences(pkg *modtypes.Package) map[string]int {
 }
 
 func TestSandboxCommandEnvironmentCallersHaveBehavioralProofs(t *testing.T) {
-	root := repoRootForInventory(t)
+	root := sweepwalk.ModuleRoot(t)
 	module, err := modtypes.Load(root)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +234,7 @@ func commandEnvProofExists(t *testing.T, root, proof string) bool {
 }
 
 func TestCommandEnvironmentInventoryResolvesTypes(t *testing.T) {
-	module, err := modtypes.Load(repoRootForInventory(t))
+	module, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}

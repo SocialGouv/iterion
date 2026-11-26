@@ -66,6 +66,9 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/sweep/itertoken` | holds the zero-trace guard for the deprecated workflow extension that `.bot` replaced: TestNoIterExtensionAnywhere greps every tracked file of the… | — |
 | `internal/sweep/mintchokepoint` | guards the derivation chokepoint over team-token mints across the whole module: every mint primitive demands the gate's verdict, the verdict is… | — |
 | `internal/sweep/modelseams` | holds the source sweeps that pin pkg/backend/model's seams across the whole module: no test discards the restore a global lookup install returns… | — |
+| `internal/sweep/runtimecatalog` | holds the pkg/runtime guards whose subject is the shipped bot catalogue under bots/: each compiles or runs a real .bot (or a bundle's presets/) under… | — |
+| `internal/sweep/runtimedocs` | holds the pkg/runtime guards whose subject is an operator page: docs/sandbox.md's bounded promise about the image-ENV screen, the residue it states… | — |
+| `internal/sweep/runtimeseams` | holds the pkg/runtime guards whose subject is the code AROUND the engine: they read or type-check the module's source to hold every caller of an… | — |
 | `internal/sweep/serversurface` | guards the seams between the server's REST surface and the sources that spell it from outside pkg/server: every /api path and (method, path) pair the… | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
