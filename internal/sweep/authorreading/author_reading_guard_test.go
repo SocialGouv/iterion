@@ -1,12 +1,12 @@
-package server
+package authorreading
 
 import (
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/modtypes"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // The author document's reading — the YAML decode of pkg/dsl/author
@@ -42,7 +42,7 @@ func TestNoServerCodeReadsAnAuthorDocument(t *testing.T) {
 		"pkg/cli/validate_author.go":                 "`iterion validate` of a document",
 		"pkg/dsl/author/internal/probecheck/main.go": "the author package's own probe program",
 	}
-	m, err := modtypes.Load(filepath.Join("..", ".."))
+	m, err := modtypes.Load(sweepwalk.ModuleRoot(t))
 	if err != nil {
 		t.Fatal(err)
 	}

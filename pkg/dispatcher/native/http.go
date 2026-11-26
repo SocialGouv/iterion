@@ -82,10 +82,11 @@ func (s *Store) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, 
 // Every route whose handler can persist a card's BotArgs filters the class
 // at the write (DropServerMintedLaunchVars / KeepStoredLaunchContext) — a
 // client door that forgets re-opens the launch context to the client. The
-// registrations stay literal on purpose: the route witnesses in pkg/server
-// (cli_route_reachability_test.go, docs_rest_reference_test.go,
-// board_write_rung_test.go) parse THIS source, and a registration they
-// cannot read is one they cannot guard.
+// registrations stay literal on purpose: the route witnesses
+// (internal/sweep/serversurface/cli_route_reachability_test.go and
+// docs_rest_reference_test.go, pkg/server/board_write_rung_test.go, through
+// internal/routescan) parse THIS source, and a registration they cannot read
+// is one they cannot guard.
 func (h *BoardAPI) RegisterRoutesWithMiddleware(mux *http.ServeMux, prefix string, wrap func(http.Handler) http.Handler) {
 	p := strings.TrimSuffix(prefix, "/")
 	if wrap == nil {

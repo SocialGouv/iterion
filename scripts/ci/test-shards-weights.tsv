@@ -10,6 +10,9 @@
 # internal/sweep/authorcorpus carries the corpus benches moved out of pkg/cli
 # (#3758): their 64 s unit duration (#3758's measurement) scaled by pkg/cli's race/unit ratio
 # (583/116), taken off pkg/cli's row.
+# The internal/sweep/authorreading and mintchokepoint rows (#3758) carry the unit seconds their tests took
+# inside pkg/server, scaled by pkg/server's race/unit ratio (1070/518);
+# pkg/server's row predates their move out of it.
 github.com/SocialGouv/iterion/bots	1564
 github.com/SocialGouv/iterion/pkg/server	1070
 github.com/SocialGouv/iterion/internal/fswatch	945
@@ -35,6 +38,7 @@ github.com/SocialGouv/iterion/pkg/dsl/canon	95
 github.com/SocialGouv/iterion/pkg/dryrun	87
 github.com/SocialGouv/iterion/pkg/repomap	87
 github.com/SocialGouv/iterion/pkg/knowledge	81
+github.com/SocialGouv/iterion/internal/sweep/authorreading	79
 github.com/SocialGouv/iterion/pkg/dsl/ir	76
 github.com/SocialGouv/iterion/pkg/assistantmission	71
 github.com/SocialGouv/iterion/pkg/dsl/unit	71
@@ -71,6 +75,7 @@ github.com/SocialGouv/iterion/connectors	15
 github.com/SocialGouv/iterion/internal/clawfold	14
 github.com/SocialGouv/iterion/pkg/backend/auxllm	13
 github.com/SocialGouv/iterion/pkg/dispatcher	13
+github.com/SocialGouv/iterion/internal/sweep/mintchokepoint	13
 github.com/SocialGouv/iterion/pkg/botinstall	12
 github.com/SocialGouv/iterion/pkg/dsl/workflowfile	12
 github.com/SocialGouv/iterion/pkg/liveledger	12

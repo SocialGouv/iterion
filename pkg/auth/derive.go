@@ -79,7 +79,7 @@ const (
 	// the verdict in the context they are called with
 	// (RequireMintVerdict — a mint without one refuses), the verdict is
 	// stamped only where the chokepoint granted (pkg/server's
-	// derivation_gate.go), and pkg/server's
+	// derivation_gate.go), and internal/sweep/mintchokepoint's
 	// TestEveryTeamTokenMintPrimitiveDemandsTheVerdict reads the demand in
 	// each primitive's own body while
 	// TestEveryMintPrimitiveCallerLivesInTheGuardsGraph fails on a caller

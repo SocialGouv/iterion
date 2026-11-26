@@ -35,7 +35,7 @@ import (
 //     annex is exactly where a reader learns that.
 //
 // The freshness and two-way gates live in docs_rest_inventory_test.go; the
-// source-scan ↔ live-table cross-check is cli_route_reachability_test.go's.
+// source-scan ↔ live-table cross-check is route_source_scan_test.go's.
 
 // RESTInventoryAnnexPath is the annex's path relative to the repository root.
 const RESTInventoryAnnexPath = "docs/cloud-rest-api-generated.md"

@@ -46,10 +46,10 @@ func (v MintVerdict) Credential() string { return v.credentialID }
 // NewMintVerdict issues the verdict a derivation ask that granted may stamp
 // into a request's context. The derivation gate calls it right after its ask
 // (CheckDerivation) grants; production code anywhere else is a trapdoor, and
-// TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest (pkg/server) refuses
-// one — in every spelling source can reach this constructor by: qualified,
-// a bare Ident through a dot-import of this package, or a MintVerdict
-// literal with the private key by hand. Tests issue verdicts through this
+// TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest
+// (internal/sweep/mintchokepoint) refuses one — in every spelling source can
+// reach this constructor by: qualified, a bare Ident through a dot-import of
+// this package, or a MintVerdict literal with the private key by hand. Tests issue verdicts through this
 // same constructor, so the context a test mints under is the context the
 // gate stamps, never a side door.
 func NewMintVerdict(mint Mint, credentialID string) MintVerdict {

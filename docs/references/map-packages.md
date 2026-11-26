@@ -56,13 +56,17 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
 | `internal/rendergate` | judges a rendered Kubernetes manifest stream — the output of `helm template`, `kustomize build` or an Argo CD manifest dump — for selectors that… | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
+| `internal/routescan` | derives the REST surface the iterion binary serves from the SOURCE of its registrars: the routes pkg/server registers as literal patterns, the native… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
 | `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
 | `internal/sweep/authorcorpus` | holds the corpus benches of the author document (the YAML twin of a .bot): every .bot of the repository converted with `fmt --to yaml` and held to… | — |
+| `internal/sweep/authorreading` | guards that no pkg/server function reads an author document: the YAML decode of pkg/dsl/author is sized for the CLI, and the guard type-checks the… | — |
 | `internal/sweep/itertoken` | holds the zero-trace guard for the deprecated workflow extension that `.bot` replaced: TestNoIterExtensionAnywhere greps every tracked file of the… | — |
+| `internal/sweep/mintchokepoint` | guards the derivation chokepoint over team-token mints across the whole module: every mint primitive demands the gate's verdict, the verdict is… | — |
 | `internal/sweep/modelseams` | holds the source sweeps that pin pkg/backend/model's seams across the whole module: no test discards the restore a global lookup install returns… | — |
+| `internal/sweep/serversurface` | guards the seams between the server's REST surface and the sources that spell it from outside pkg/server: every /api path and (method, path) pair the… | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |

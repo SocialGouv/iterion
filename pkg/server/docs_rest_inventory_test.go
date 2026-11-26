@@ -26,7 +26,7 @@ import (
 //     reader trusts, so they get their own verdict.
 //
 // The third leg — the source scan covers what a running server records —
-// is cli_route_reachability_test.go's
+// is route_source_scan_test.go's
 // TestTheSourceDerivedTableCoversTheRunningOne.
 
 // restAnnexPairFloor is the number of rows the annex must still yield.

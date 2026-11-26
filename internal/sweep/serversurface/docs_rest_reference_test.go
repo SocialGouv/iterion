@@ -1,4 +1,4 @@
-package server
+package serversurface
 
 import (
 	"os"
@@ -7,6 +7,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/routescan"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // docs/cloud-rest-api.md is a CURATED reference — its own header says so,
@@ -18,7 +21,7 @@ import (
 //
 // So this gate reads the page's own route literals and judges them
 // against the same source-derived served table the CLI reachability gate
-// uses (servedRouteTable). It is the FORWARD direction only: a documented
+// uses (routescan.ServedRouteTable). It is the FORWARD direction only: a documented
 // route must be served. The other direction — how much of the 527-literal
 // surface a curated page owes its reader — is a scope decision, not a
 // test (see the wave report's ARB).
@@ -65,10 +68,10 @@ type restRefRoute struct {
 	line   int
 }
 
-// restReferencePath locates the page from the package directory.
+// restReferencePath locates the page under the module root.
 func restReferencePath(t *testing.T) string {
 	t.Helper()
-	p := filepath.Join("..", "..", "docs", restReferenceDoc)
+	p := filepath.Join(sweepwalk.ModuleRoot(t), "docs", restReferenceDoc)
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("stat %s: %v — the reference moved and this gate stopped judging it", p, err)
 	}
@@ -183,7 +186,7 @@ func TestEveryRouteTheRESTReferenceDocumentsIsServed(t *testing.T) {
 		t.Fatalf("read %d (method, path) pairs from %s, want at least %d: the parse went blind, which would make this gate judge nothing", len(documented), restReferenceDoc, restReferencePairFloor)
 	}
 
-	served := servedRouteTable(t)
+	served := routescan.ServedRouteTable(t, sweepwalk.ModuleRoot(t))
 	byMethod := map[string][]string{}
 	for _, r := range served {
 		byMethod[r.Method] = append(byMethod[r.Method], r.Pattern)
@@ -197,7 +200,7 @@ func TestEveryRouteTheRESTReferenceDocumentsIsServed(t *testing.T) {
 		}
 		found := false
 		for _, pattern := range byMethod[doc.method] {
-			if ok, _ := servesPath(pattern, doc.path); ok {
+			if ok, _ := routescan.ServesPath(pattern, doc.path); ok {
 				found = true
 				break
 			}
@@ -206,7 +209,7 @@ func TestEveryRouteTheRESTReferenceDocumentsIsServed(t *testing.T) {
 		// answers every verb.
 		if !found {
 			for _, pattern := range byMethod[""] {
-				if ok, _ := servesPath(pattern, doc.path); ok {
+				if ok, _ := routescan.ServesPath(pattern, doc.path); ok {
 					found = true
 					break
 				}
