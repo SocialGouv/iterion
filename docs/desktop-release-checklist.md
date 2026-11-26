@@ -93,6 +93,6 @@ Without the dual-key bridge, users on the old version can't update past the rota
 
 ## What's not here
 
-- CLI-only release process — covered by `release.yml` and the conventional-commits / release-it flow. The desktop release rides the same tag.
+- CLI-only release process — covered by `release.yml` and the conventional-commits / release-it flow. The desktop release rides the same tag, dispatched by hand on it (`gh workflow run desktop-release.yml --ref v<X.Y.Z>`) while [#3740](https://github.com/SocialGouv/iterion/issues/3740) holds its tag trigger off.
 - Detailed cert provisioning (how to request an Apple Developer ID, etc.) — out of scope; once you have the cert, this checklist tells you how to use it.
 - Marketing / press kit — that's a product call, not a release-engineering call.

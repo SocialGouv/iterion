@@ -1,13 +1,13 @@
 name: 🖥️ Desktop Release
 
-# Triggers on the same v* tags as release.yml. The two workflows run in
-# parallel and attach distinct (iterion-* vs iterion-desktop-*) artefacts
-# to the same GitHub Release.
+# Dispatch-only until a run publishes again (#3740): both Linux legs fail
+# appimagetool's AppDir permission check and the macOS leg does not
+# complete, so `publish` never runs and a tag trigger would spend ~32 hosted
+# runner-minutes per release for no artefact. The tag trigger — `push: tags:
+# v*`, the same tags as release.yml, attaching iterion-desktop-* artefacts to
+# the same GitHub Release — returns once a dispatch publishes.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 concurrency:
