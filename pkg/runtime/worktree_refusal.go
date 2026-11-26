@@ -85,8 +85,12 @@ func (e *Engine) reclaimEarlyRefusalWorktree(ctx context.Context, runID string, 
 	}
 	// Persist BEFORE removal: a crash may leave a marked checkout in place,
 	// which restoration accepts; it must never leave an unmarked missing one.
-	run.WorktreeReclaimed = true
-	if err := e.store.SaveRun(ctx, run); err != nil {
+	markReclaimed := func(r *store.Run) error {
+		r.WorktreeReclaimed = true
+		return nil
+	}
+	_ = markReclaimed(run) // cannot fail: the error is saveRunOwned's signature
+	if err := e.saveRunOwned(ctx, run, markReclaimed); err != nil {
 		return false
 	}
 	cleanup()

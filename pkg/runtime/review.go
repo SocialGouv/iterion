@@ -375,19 +375,23 @@ func (e *Engine) persistGateMerge(ctx context.Context, runID, finalCommit, final
 	if err != nil {
 		return fmt.Errorf("load run for merge persist: %w", err)
 	}
-	if finalCommit != "" {
-		r.FinalCommit = finalCommit
+	applyMerge := func(doc *store.Run) error {
+		if finalCommit != "" {
+			doc.FinalCommit = finalCommit
+		}
+		if finalBranch != "" {
+			doc.FinalBranch = finalBranch
+		}
+		doc.MergedInto = mergedInto
+		doc.MergedCommit = mergedCommit
+		doc.MergeStatus = store.MergeStatus(status)
+		if strategy != "" {
+			doc.MergeStrategy = store.MergeStrategy(strategy)
+		}
+		return nil
 	}
-	if finalBranch != "" {
-		r.FinalBranch = finalBranch
-	}
-	r.MergedInto = mergedInto
-	r.MergedCommit = mergedCommit
-	r.MergeStatus = store.MergeStatus(status)
-	if strategy != "" {
-		r.MergeStrategy = store.MergeStrategy(strategy)
-	}
-	if err := e.store.SaveRun(ctx, r); err != nil {
+	_ = applyMerge(r) // cannot fail: the error is saveRunOwned's signature
+	if err := e.saveRunOwned(ctx, r, applyMerge); err != nil {
 		return fmt.Errorf("persist gate merge: %w", err)
 	}
 	return nil

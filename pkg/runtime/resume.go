@@ -4671,20 +4671,24 @@ func (e *Engine) restampWorkflowSource(ctx context.Context, r *store.Run) error 
 		}
 		return nil
 	}
-	fresh.WorkflowSource = r.WorkflowSource
-	fresh.WorkflowSources = r.WorkflowSources
-	fresh.WorkflowHash = r.WorkflowHash
-	fresh.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
-	// Preserve every execution-context field from the freshly loaded record.
-	// A resume-side authority may have updated that context after the entry
-	// snapshot was read. A forced source migration owns only the workflow
-	// revision, so patch that one field instead of replacing the whole context
-	// with the stale entry copy.
-	if recordArtifactCompatibility && fresh.ExecutionContext != nil {
-		fresh.ExecutionContext = fresh.ExecutionContext.Clone()
-		fresh.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
+	restamp := func(doc *store.Run) error {
+		doc.WorkflowSource = r.WorkflowSource
+		doc.WorkflowSources = r.WorkflowSources
+		doc.WorkflowHash = r.WorkflowHash
+		doc.ArtifactCompatibilityRevision = r.ArtifactCompatibilityRevision
+		// Preserve every execution-context field from the freshly loaded
+		// record. A resume-side authority may have updated that context after
+		// the entry snapshot was read. A forced source migration owns only the
+		// workflow revision, so patch that one field instead of replacing the
+		// whole context with the stale entry copy.
+		if recordArtifactCompatibility && doc.ExecutionContext != nil {
+			doc.ExecutionContext = doc.ExecutionContext.Clone()
+			doc.ExecutionContext.Workflow.WorkflowRevision = e.workflowHash
+		}
+		return nil
 	}
-	if err := e.store.SaveRun(ctx, fresh); err != nil {
+	_ = restamp(fresh) // cannot fail: the error is saveRunOwned's signature
+	if err := e.saveRunOwned(ctx, fresh, restamp); err != nil {
 		if isRunValueFormatRefusal(err) {
 			return err
 		}
