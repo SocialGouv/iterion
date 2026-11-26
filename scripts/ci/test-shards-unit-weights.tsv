@@ -14,6 +14,8 @@
 # internal/sweep/runtime{catalog,seams} left pkg/runtime after that run
 # (#3758): their rows are local `ok`-line durations in the same build mode,
 # and pkg/runtime's row still counts their share until the next refresh.
+# The internal/sweep/e2ematrix row (#3758, 2026-11-26) is a local reading of one of the packages
+# split out of bots, which keeps its own row until the next refresh.
 github.com/SocialGouv/iterion/bots	751
 github.com/SocialGouv/iterion/pkg/server	518
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
@@ -43,6 +45,7 @@ github.com/SocialGouv/iterion/internal/pricingtest	24
 github.com/SocialGouv/iterion/pkg/backend/mcp	23
 github.com/SocialGouv/iterion/pkg/dsl/parser	22
 github.com/SocialGouv/iterion/pkg/assistantmission	20
+github.com/SocialGouv/iterion/internal/sweep/e2ematrix	20
 github.com/SocialGouv/iterion/pkg/server/cloudpublisher	18
 github.com/SocialGouv/iterion/internal/sweep/runtimeseams	18
 github.com/SocialGouv/iterion/internal/ciguard	17

@@ -16,6 +16,8 @@
 # internal/sweep/runtime{catalog,seams} left pkg/runtime after that run
 # (#3758): their rows are local `ok`-line durations in the same build mode,
 # and pkg/runtime's row still counts their share until the next refresh.
+# The internal/sweep/{publishedtree,catalogcorpus,e2ematrix,catalogclaims} rows (#3758, 2026-11-26) are local -race readings of the
+# packages split out of bots, which keeps its own row until the next refresh.
 github.com/SocialGouv/iterion/bots	1564
 github.com/SocialGouv/iterion/pkg/server	1070
 github.com/SocialGouv/iterion/internal/fswatch	945
@@ -44,12 +46,14 @@ github.com/SocialGouv/iterion/pkg/knowledge	81
 github.com/SocialGouv/iterion/internal/sweep/authorreading	79
 github.com/SocialGouv/iterion/internal/sweep/runtimeseams	78
 github.com/SocialGouv/iterion/pkg/dsl/ir	76
+github.com/SocialGouv/iterion/internal/sweep/publishedtree	76
 github.com/SocialGouv/iterion/pkg/assistantmission	71
 github.com/SocialGouv/iterion/pkg/dsl/unit	71
 github.com/SocialGouv/iterion/internal/sweep/runtimecatalog	60
 github.com/SocialGouv/iterion/pkg/dsl/author	59
 github.com/SocialGouv/iterion/scripts/ci/testcaps	58
 github.com/SocialGouv/iterion/pkg/store/mongo	53
+github.com/SocialGouv/iterion/internal/sweep/catalogcorpus	50
 github.com/SocialGouv/iterion/charts/iterion	49
 github.com/SocialGouv/iterion/pkg/backend/mcp	48
 github.com/SocialGouv/iterion/pkg/botreplay	48
@@ -68,6 +72,7 @@ github.com/SocialGouv/iterion/pkg/internal/proc	25
 github.com/SocialGouv/iterion/pkg/dsl/unparse	24
 github.com/SocialGouv/iterion/pkg/runtime/recovery	24
 github.com/SocialGouv/iterion/internal/ciguard	23
+github.com/SocialGouv/iterion/internal/sweep/e2ematrix	23
 github.com/SocialGouv/iterion/pkg/secrets	21
 github.com/SocialGouv/iterion/internal/pricingtest	20
 github.com/SocialGouv/iterion/pkg/runview/runstream	20
@@ -81,6 +86,7 @@ github.com/SocialGouv/iterion/internal/clawfold	14
 github.com/SocialGouv/iterion/pkg/backend/auxllm	13
 github.com/SocialGouv/iterion/pkg/dispatcher	13
 github.com/SocialGouv/iterion/internal/sweep/mintchokepoint	13
+github.com/SocialGouv/iterion/internal/sweep/catalogclaims	13
 github.com/SocialGouv/iterion/pkg/botinstall	12
 github.com/SocialGouv/iterion/pkg/dsl/workflowfile	12
 github.com/SocialGouv/iterion/pkg/liveledger	12
