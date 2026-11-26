@@ -131,9 +131,11 @@ app pushes. The pipeline was restructured (see `.github/workflows/`):
 
 - **Layer inversion**: the sandbox images became tool-only `*-base` images
   (rebuilt only when `sandbox/**` changes, own workflow `sandbox-images.yml`,
-  own concurrency queue) + a cheap per-push finalize (`_finalize.yml`) that
-  stamps the freshly-built iterion binary onto the published bases — all four
-  variants in parallel, so `iterion-sandbox-*:edge` never lags the app image.
+  own concurrency queue) + a cheap finalize (`_finalize.yml`) that stamps the
+  iterion binary onto the published bases — all four variants in parallel.
+  It ran on every app push until the CI diet (#3742) moved it to a nightly
+  refold: `iterion-sandbox-*:edge` now lags the `:edge` app image by up to a
+  day ([topology](ci-pipeline-topology.md#why-the-splits)).
 - **Shared operator daemons per family**: the four bases route to ONE
   buildkit-operator name (`iterion-sandbox-base`, shared content store + apt
   cache mounts), the four finalizes to another (`iterion-sandbox-finalize`,

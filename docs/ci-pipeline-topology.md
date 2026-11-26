@@ -37,8 +37,8 @@ alongside the runner's.
 > server digest, `release-images.yml` for the runner and sandbox digests).
 >
 > Minor knock-on: `trivy.yml` image-scan runs on `image.yml` completion and
-> scans `iterion-sandbox-*:edge`, which the fresh refold republishes just
-> after — so those sandbox scans lag by one cycle (non-blocking; the tool
+> scans `iterion-sandbox-*:edge`, which the nightly refold republishes — so
+> those sandbox scans see a binary up to a day old (non-blocking; the tool
 > bases change only on `sandbox/**`, so the content is near-always identical).
 
 ## Workflows
@@ -47,10 +47,9 @@ alongside the runner's.
 image.yml            server `iterion`             push main (amd64 :edge) · tags (multi-arch :vX.Y.Z, signed) · PR
    └─ completion = SERVER redeploy signal
         │ workflow_run (main, success)
-        ├─▶ runner-image.yml   runner `iterion-runner-devbox:edge`  (amd64)   └─ completion = RUNNER redeploy signal
-        └─▶ sandbox-images.yml (finalize only, bases skipped)  refold sandbox :edge with the fresh binary
+        └─▶ runner-image.yml   runner `iterion-runner-devbox:edge`  (amd64)   └─ completion = RUNNER redeploy signal
 
-sandbox-images.yml   bases + finalizes            push sandbox/** (bases→finalize) · workflow_run(image.yml, main) (finalize) · PR
+sandbox-images.yml   bases + finalizes            push sandbox/** (bases→finalize) · schedule 03:37 UTC (finalize: refold :edge with main's binary) · PR
 release-images.yml   runner + sandbox @ :vX.Y.Z   push tags v*  (await image.yml's server, then multi-arch + signed)
 ```
 
@@ -64,9 +63,14 @@ release-images.yml   runner + sandbox @ :vX.Y.Z   push tags v*  (await image.yml
 - **Runner has its own workflow** so the server signal never waits on it (it
   bakes the server binary via `COPY --from`, i.e. it can only run *after* the
   server image). It is `workflow_run`-triggered off `image.yml` on main.
-- **Sandbox finalizes** re-run on the same `workflow_run` (fresh binary onto
-  the unchanged tool bases) and on `sandbox/**` pushes (fresh tools). Never on
-  the deploy path.
+- **Sandbox finalizes** re-run nightly (main's `:edge` binary onto the
+  unchanged tool bases) and on `sandbox/**` pushes (fresh tools). Never on
+  the deploy path. An `:edge` sandbox can lag the `:edge` server by up to a
+  day ([#3742](https://github.com/SocialGouv/iterion/issues/3742)): only an
+  `:edge` server pulls it — a released server pulls the `:vX.Y.Z` sandbox
+  `release-images.yml` builds on its tag — and the server ↔ runner relay
+  drops an envelope it does not know, so the lag delays a claw change in
+  sandboxed `:edge` runs without breaking them.
 - **release-images.yml** builds the `:vX.Y.Z` runner + sandbox tags that
   `image.yml` no longer builds on a tag. It is tag-push-triggered (so
   `github.ref` is the tag → correct checkout + semver tag naming), and its
@@ -97,11 +101,11 @@ revision, version labels and the keyless signature before accepting its digest.
 
 - `workflow_run` triggers use the workflow definition from the **default
   branch** and fire for every `image.yml` completion (main, tag, PR). The
-  downstream `prep` jobs guard to `conclusion == success && event == 'push' &&
-  head_branch == 'main'` so only a successful main build refreshes the runner /
-  sandbox `:edge`; tags go through `release-images.yml`, PRs publish nothing.
-- No cycles: nothing re-triggers `image.yml`, so the `image.yml → {runner,
-  sandbox}` fan-out terminates.
+  downstream `prep` job guards to `conclusion == success && event == 'push' &&
+  head_branch == 'main'` so only a successful main build refreshes the runner
+  `:edge`; tags go through `release-images.yml`, PRs publish nothing.
+- No cycles: nothing re-triggers `image.yml`, so the `image.yml → runner`
+  fan-out terminates.
 
 ### The docs site can freeze silently — check for a stuck `pages` run
 

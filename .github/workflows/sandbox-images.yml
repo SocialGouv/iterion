@@ -13,9 +13,8 @@ name: 🧱 Sandbox Base Images
 # the server/runner deploy.
 #
 # Two shapes: (1) sandbox/** push → rebuild the bases, then finalize; (2)
-# image.yml completes on main (workflow_run) → skip the bases, refold the
-# finalizes with the fresh binary. Bases publish `:edge` only, always
-# multi-arch. Release (`:vX.Y.Z`, multi-arch, signed) sandbox images are
+# the nightly (schedule) → skip the bases, refold the finalizes with main's
+# current `:edge` binary. Bases publish `:edge` only, always multi-arch. Release (`:vX.Y.Z`, multi-arch, signed) sandbox images are
 # produced by release-images.yml, not here.
 #
 # All five bases share ONE buildkit-operator routing-name
@@ -34,12 +33,17 @@ on:
       - ".github/workflows/sandbox-images.yml"
       - ".github/workflows/_build-image.yml"
       - ".github/workflows/_finalize.yml"
-  # Refold the finalizes with the fresh binary when the server image publishes
-  # (image.yml on main). Bases are skipped on this event (tools unchanged) —
-  # only the cheap COPY-layer finalize runs. Off the deploy critical path.
-  workflow_run:
-    workflows: ["🐳 Container Image"]
-    types: [completed]
+  # Refold the finalizes with main's current `:edge` binary once a night, not
+  # after every server image (#3742): ~30 refolds a day cost ~6 runner-h for
+  # images only an `:edge` server pulls — a released server pulls its own
+  # `:vX.Y.Z` sandbox, built by release-images.yml on the tag. So an `:edge`
+  # sandbox lags the `:edge` server by up to a day; the server ↔ runner relay
+  # drops an envelope it does not know, so the lag delays a claw change in
+  # sandboxed `:edge` runs, it does not break them. Bases are skipped on this
+  # event (tools unchanged) — only the cheap COPY-layer finalize runs. Off the
+  # deploy critical path. 03:37 UTC: after the 01:47 nightly 🧪 Tests.
+  schedule:
+    - cron: "37 3 * * *"
   pull_request:
     paths:
       - "sandbox/**"
@@ -63,15 +67,6 @@ permissions:
 
 jobs:
   prep:
-    # On a workflow_run trigger, only proceed for a SUCCESSFUL MAIN image.yml
-    # build (tags/PRs of image.yml don't refresh the sandbox :edge). Other
-    # events (sandbox/** push, PR, dispatch) always proceed.
-    if: >-
-      ${{ github.event_name != 'workflow_run' ||
-          (github.event.workflow_run.conclusion == 'success' &&
-           github.event.workflow_run.head_branch == 'main' &&
-           (github.event.workflow_run.event == 'push' ||
-            github.event.workflow_run.event == 'workflow_dispatch')) }}
     runs-on: ubuntu-latest
     outputs:
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
@@ -80,11 +75,11 @@ jobs:
         run: echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
   # The heavy tool bases rebuild ONLY when sandbox/ inputs change (push / PR /
-  # dispatch) — never on a workflow_run refold (the tools are unchanged then,
+  # dispatch) — never on the nightly refold (the tools are unchanged then,
   # only the binary is fresh).
   base-slim:
     needs: prep
-    if: ${{ github.event_name != 'workflow_run' }}
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -99,7 +94,7 @@ jobs:
   # builds against the *published* slim-base:edge, since PR builds don't push.)
   base-full:
     needs: [prep, base-slim]
-    if: ${{ github.event_name != 'workflow_run' }}
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -116,7 +111,7 @@ jobs:
   # iterion-sandbox-sec via sandbox.image).
   base-sec:
     needs: [prep, base-full]
-    if: ${{ github.event_name != 'workflow_run' }}
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -132,7 +127,7 @@ jobs:
   # full/sec leg.
   base-browser:
     needs: [prep, base-slim]
-    if: ${{ github.event_name != 'workflow_run' }}
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -148,7 +143,7 @@ jobs:
   # rgaa-audit capability class a bot selects with `sandbox: { image: rgaa }`.
   base-rgaa:
     needs: [prep, base-browser]
-    if: ${{ github.event_name != 'workflow_run' }}
+    if: ${{ github.event_name != 'schedule' }}
     uses: ./.github/workflows/_build-image.yml
     secrets: inherit
     with:
@@ -162,20 +157,20 @@ jobs:
 
   # Fold the fresh tool bases + the current `:edge` iterion binary into the
   # published iterion-sandbox-*:edge images. Runs after a base rebuild (push /
-  # PR) AND on a workflow_run refold (bases skipped → this is the only job).
+  # PR) AND on the nightly refold (bases skipped → this is the only job).
   # The skipped-base tolerance lets it run in both shapes.
   finalize:
     needs: [prep, base-sec, base-browser, base-rgaa]
-    # Two legitimate shapes: a workflow_run refold (bases deliberately skipped),
+    # Two legitimate shapes: the nightly refold (bases deliberately skipped),
     # or a base rebuild that SUCCEEDED. Never on a base FAILURE — a `skipped`
     # base can also mean "an upstream base build failed and skipped the rest",
-    # so only tolerate skipped bases on the workflow_run path; on a real base
+    # so only tolerate skipped bases on the schedule path; on a real base
     # build require success (sec+browser+rgaa success ⇒ the whole slim→full→sec
     # and slim→browser→rgaa chains succeeded), else we'd publish sandbox images
     # stamped onto stale *-base tools.
     if: >-
       ${{ !cancelled() && needs.prep.result == 'success' &&
-          (github.event_name == 'workflow_run' ||
+          (github.event_name == 'schedule' ||
            (needs.base-sec.result == 'success' && needs.base-browser.result == 'success' && needs.base-rgaa.result == 'success')) }}
     uses: ./.github/workflows/_finalize.yml
     secrets: inherit

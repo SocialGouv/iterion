@@ -4,8 +4,9 @@
 # (slim/full/sec/browser) by stamping the iterion binary + LLM CLIs onto the
 # matching tool-only *-base image. The bases carry the heavy, rarely-changing
 # tool layers (rebuilt only on sandbox/ changes); this build is a few cheap
-# COPY layers, so CI can refresh the binary in all variants on every push —
-# the published `:edge` sandbox images never lag the `:edge` app image.
+# COPY layers, which CI refolds nightly with main's `:edge` binary — so an
+# `:edge` sandbox image lags the `:edge` app image by up to a day (#3742),
+# while a release's `:vX.Y.Z` sandbox carries that release's own binary.
 #
 #   BASE          — the tool base to finalize (…-sandbox-<x>-base:<tag>).
 #   ITERION_IMAGE — the iterion app image whose /usr/local/bin/iterion and
