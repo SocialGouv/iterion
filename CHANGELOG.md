@@ -3,6 +3,25 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.2](https://github.com/SocialGouv/iterion/compare/v7.40.1...v7.40.2) (2026-11-26)
+
+### Bug Fixes
+
+* **rgaa-audit,claw:** a gateway run finishes its worklist instead of dying mid-fan-out ([#3780](https://github.com/SocialGouv/iterion/issues/3780)) ([e91396a](https://github.com/SocialGouv/iterion/commit/e91396aee9f9cbcd11bb65204c2508e7b63d34d9)), references [#3746](https://github.com/SocialGouv/iterion/issues/3746) [#3746](https://github.com/SocialGouv/iterion/issues/3746) [#3746](https://github.com/SocialGouv/iterion/issues/3746) [#3746](https://github.com/SocialGouv/iterion/issues/3746) [#3746](https://github.com/SocialGouv/iterion/issues/3746)
+
+    <details><summary>why</summary>
+
+    On a claw + openai_compatible route (prod: scaleway/deepseek-v4.1-flash through LiteLLM) the bot hit its 3M token cap after two of nineteen batches and ended in BUDGET_EXCEEDED / AMBIGUOUS_EFFECT. Measured on egapro packages/app, src/** (104 criteria to adjudicate):
+
+    </details>
+* **sandbox:** retry a sweep containerd refused before the exec started ([#3800](https://github.com/SocialGouv/iterion/issues/3800)) ([#3804](https://github.com/SocialGouv/iterion/issues/3804)) ([a1be9b0](https://github.com/SocialGouv/iterion/commit/a1be9b0e994878bdd550b4f79398f9918fcd7025))
+
+    <details><summary>why</summary>
+
+    A Revi run failed AMBIGUOUS_EFFECT at its last node (publish_health) because the completion sweep gave up after one attempt. The node's exec and the sweep's exec were both refused by containerd with "failed to exec in container: failed to load task: context deadline exceeded". execNeverReached did not know that wording, so it counted the attempt as one that reached the container, and the sweep stopped with 2 s spent of its 3 min budget. The engine's next exec into the same container succeeded…
+
+    </details>
+
 ## [7.40.1](https://github.com/SocialGouv/iterion/compare/v7.40.0...v7.40.1) (2026-11-26)
 
 ### Features
