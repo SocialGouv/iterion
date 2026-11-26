@@ -348,6 +348,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/webhooks/prforge` | decodes pull_request webhook payloads from PR-over-forge providers — GitHub and Forgejo/Gitea — which share the same wire shape for the… | — |
 | `pkg/workspacetrack` | versions a run's workspace: it captures what the files look like at a point in execution and can put them back. | `Tracker` |
 | `pkg/worktreepool` | the safety classifier for the per-run git worktrees iterion parks under `<store>/worktrees/`. | — |
+| `scripts/ci/affected` | Command affected selects the tests a diff can reach: the Go packages whose test binaries link a changed package, read a changed file, or own it, and… | — |
 | `scripts/ci/inpodbench` | Command inpodbench reports what a codemode child actually confines itself to under the posture it is GIVEN, whether that confinement REFUSES, and… | — |
 | `scripts/ci/mainwatch` | Command mainwatch keeps main from staying red (#3692). | `Git`, `GitHub` |
 | `scripts/ci/sandboxbenchpod` | Command sandboxbenchpod renders the pod the kubernetes sandbox driver creates for a run, so the codemode posture bench measures THAT pod and not a… | — |
