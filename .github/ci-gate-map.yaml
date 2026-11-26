@@ -29,7 +29,7 @@
 # so no member after one compiles against a tree it rewrote mid-run.
 #
 # `checks` — how many check runs the job produces (its matrix). The ruleset
-# keys on CONTEXTS, not on jobs: 20 jobs, 26 check runs.
+# keys on CONTEXTS, not on jobs: 21 jobs, 27 check runs.
 #
 # `inlined` — the one-command Taskfile tasks that are a `run:` of this job
 # BYTE FOR BYTE. Declared here because a row that argues an identity in prose
@@ -59,10 +59,11 @@ jobs:
       test-native-exec's `result` from the workflow context and fails if any is
       not success. There is nothing to reproduce: what it aggregates is those
       four legs, whose own rows carry the members. Running their members IS
-      running this. On a light run — a merge-queue build, or a pull request
-      without the `ci:full` label — it accepts `skipped` from test-e2e, which
-      runs after the merge instead; on push, the nightly, a dispatch and a
-      `ci:full` pull request a skipped leg is red (#3683, #3691).
+      running this. On a light run — a merge-queue build, a pull request
+      without the `ci:full` label, or a push heavy-gate decided light — it
+      accepts `skipped` from test-e2e, which runs on the debounced push
+      instead; on a heavy push, the nightly, a dispatch and a `ci:full` pull
+      request a skipped leg is red (#3683, #3691, #3737).
     aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
@@ -71,10 +72,22 @@ jobs:
     disposition: unexpressible
     reason: >-
       the same shape, over race-shard and test-native-exec; on a light run it
-      accepts `skipped` from race-shard alone (#3683, #3691). Out of the
+      accepts `skipped` from race-shard alone (#3683, #3691, #3737). Out of the
       ruleset while the experimental delivery mode lasts, and back in it when
       the mode ends (docs/adr/173-experimental-delivery-mode.md).
     aggregates: [race-shard, test-native-exec]
+
+  # ---- the heavy decider of a push to main ----
+  heavy-gate:
+    required: no
+    checks: 1
+    disposition: unexpressible
+    reason: >-
+      it decides whether a push to main runs the heavy layer, from the run
+      history of tests.yml on main read through the Actions API
+      (scripts/ci/heavy-gate.sh, #3737). It tests nothing: a local gate runs
+      every member, heavy ones included, so there is no decision to
+      reproduce. internal/ciguard runs the script against canned histories.
 
   # ---- the gated legs behind `test` ----
   test-unit:
@@ -125,8 +138,9 @@ jobs:
       quarantine; `task test:e2e` runs without the detector, whose local half
       for e2e is `task test:race` (race-shard's member, over `./...`). The job
       skips a light run — the merge queue and a pull request without the
-      `ci:full` label — and runs on push to `main`, the nightly and a dispatch
-      (#3683, #3691); a local run has no such split.
+      `ci:full` label — and runs on a heavy push to `main` (the debounced push
+      heavy-gate decides, #3737), the nightly and a dispatch (#3683, #3691); a
+      local run has no such split.
 
   studio:
     required: no
@@ -168,8 +182,9 @@ jobs:
       `./pkg/sandbox/kubernetes` (test-native-exec's) out of its partition and
       skips the flake quarantine, both of which `task test:race` runs; the job
       also pins yq by digest and builds the ultra11y engine first. The job skips
-      a light run — the merge queue and an unlabelled pull request — and runs
-      on push to `main`, the nightly and a dispatch (#3683, #3691).
+      a light run — the merge queue, an unlabelled pull request and a push to
+      `main` that heavy-gate decides light — and runs on a heavy push to
+      `main`, the nightly and a dispatch (#3683, #3691, #3737).
 
   # ---- the other required contexts, and the held mongo-conformance ----
   vendor-check:
@@ -194,8 +209,9 @@ jobs:
       READ FROM the job rather than restated — every one of them, including
       the targeted lines `docs/development.md`'s regex cannot see. Needs docker, and
       refuses with exit 2 where this process cannot reach the published port.
-      The job is heavy (#3691): it skips the merge queue and a pull request
-      without `ci:full`, and is out of the ruleset until the experimental
+      The job is heavy (#3691): it skips the merge queue, a pull request
+      without `ci:full` and a push to `main` that heavy-gate decides light
+      (#3737), and is out of the ruleset until the experimental
       delivery mode ends (docs/adr/173-experimental-delivery-mode.md).
 
   golangci:
@@ -287,8 +303,9 @@ jobs:
       machine class, not a flag — and the job pins yq by digest and uses
       unpinned third-party actions (helm/kind-action) whose versions no member
       can match. It skips the merge queue and a light pull request (#3683,
-      #3691): it runs on push to `main`, the nightly, a dispatch and a pull
-      request labelled `ci:full`.
+      #3691): it runs on a heavy push to `main` (the debounced push
+      heavy-gate decides, #3737), the nightly, a dispatch and a pull request
+      labelled `ci:full`.
 
   govulncheck:
     required: no

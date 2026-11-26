@@ -71,14 +71,15 @@ serialising the PRs that exist. The lane's blocking proof replaces the PR's:
 4. **The trailers, greppable.** `Adversarial-Rounds:` / `Adversarial-Model:` as
    everywhere, plus `Landing-Train:` naming the train and its evidence
    directory — a bypass that cannot be grepped is a bypass that did not happen.
-5. **The witnesses, post-hoc.** The GitHub CI still fires on every push to
-   `main`; a cancelled or missing witness run is NOT success in the landing
-   record; a red `main` outranks every other work until green. **Do not read the
-   run for your exact sha** — `tests.yml` puts every push to `main` in one
-   concurrency group that keeps the run in progress, each newer push replacing
-   the pending one: your sha's run may never start, which says nothing about
-   your change. The witness is the first run that **completes** on a `main` tip
-   containing your commit (`git merge-base --is-ancestor <sha> <tip>`).
+5. **The witnesses, post-hoc.** CI fires on every push to `main`; a cancelled
+   or missing witness run is NOT success in the landing record; a red `main`
+   outranks all other work. A push run is heavy unless a green heavy run
+   landed in `CI_HEAVY_EVERY_HOURS` (6 h)
+   ([ADR-173](../../adr/173-experimental-delivery-mode.md)). **Never read
+   your sha's own run**: one concurrency group keeps the run in progress, a
+   newer push replaces the pending one. The witness is the first run that
+   **completes** on a `main` tip holding your commit (`git merge-base
+   --is-ancestor <sha> <tip>`), a heavy one for the heavy legs.
 
 A duty: before a wave's first push, warn the sessions with unpushed branches
 (each `main` advance costs a rebase); queued PRs make the push wait (below).

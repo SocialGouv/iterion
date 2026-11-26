@@ -163,7 +163,7 @@ green.
 - **Every required check from `tests.yml` runs on self-hosted runners** —
   `test`, `vendor-check`, `golangci` and `brand` route to the organisation's
   `arc-runners` scale set on `merge_group`, and the heavy `race` shards and
-  `mongo-conformance` route there on push, the nightly, a dispatch and
+  `mongo-conformance` route there on a heavy push, the nightly, a dispatch and
   `ci:full`, because
   the 20-job cap above is what makes a cycle slow. That scale set is **outside this repository**, and it was dead
   and unnoticed for over a year before 2026-09-08.
@@ -202,7 +202,7 @@ green.
   `check_response_timeout_minutes`; for `CI_HEAVY_RUNNER` no queue check, but
   a `ci:full` pull request's required `test` (through `test-e2e`) and its
   `race` (through `race-shard`) wait too, and with them the admin-merge lane
-  that requires them; so do the heavy jobs of the push witness and the
+  that requires them; so do the heavy jobs of a heavy push run and the
   nightly, and with them the next push run. Set a
   variable only once the canary (or a probe) covers its scale set (#3694).
   The repair is clearing that variable, or `CI_SELF_HOSTED=off`.
@@ -231,31 +231,47 @@ jobs each on a scale set of ~40 concurrent pods; queue latency reached 4-14
 hours and 8 of 12 merge-group runs were cancelled. #3683 took the heavy legs
 off the light pull request; the
 [experimental delivery mode](adr/173-experimental-delivery-mode.md) (#3691)
-takes them out of the merge queue too, and runs them after the merge. So each
-layer gates where it pays:
+takes them out of the merge queue too, and runs them after the merge, on a
+debounced push (#3737). So each layer gates where it pays:
 
-| layer | pull request | merge queue | push to `main`, nightly, dispatch |
-| --- | --- | --- | --- |
-| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `brand`, `fmt-check` | runs | runs | runs |
-| `race-shard`, `test-e2e` (heavy legs) | skipped, unless labelled `ci:full` | skipped | runs |
-| `mongo-conformance`, `cloud-e2e` (heavy, no aggregator) | skipped, unless labelled `ci:full` | skipped | runs |
-| other advisory jobs | runs | skipped | runs |
-| `revi/review` | runs | mirrored | — |
+| layer | pull request | merge queue | light push to `main` | heavy push, nightly, dispatch |
+| --- | --- | --- | --- | --- |
+| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `brand`, `fmt-check` | runs | runs | runs | runs |
+| `race-shard`, `test-e2e` (heavy legs) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
+| `mongo-conformance`, `cloud-e2e` (heavy, no aggregator) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
+| other advisory jobs | runs | skipped | runs | runs |
+| `revi/review` | runs | mirrored | — | — |
 
-The nightly is `tests.yml`'s own `schedule` (`47 1 * * *`): the full suite on
-`main` once a day, in a concurrency group of its own so no merge cancels it.
-Every push to `main` shares one concurrency group that never cancels the run
-in progress: at most one push run is in flight and one pending, a newer push
-replacing the pending run. The heavy load after merges is thus one run at a
-time, the witness of the merged batch — every pull request merged since the
-last run started — not one heavy run per merge. A red push run names a batch,
-and main-watch's suspects are the pull requests merged since the last green
-run.
+A push to `main` is **light** only behind a **green heavy run** on `main`
+inside the last `CI_HEAVY_EVERY_HOURS` hours (a repository variable, 6 by
+default, at most 720), and **heavy** otherwise. The `heavy-gate` job, on push
+only, decides it from the run history (`scripts/ci/heavy-gate.sh`), and the
+newest run whose heavy legs ran decides: green means a push, schedule or
+dispatch run of this repository, created inside the window plus two hours
+(a rerun of an old run proves an old sha), whose latest attempt concluded
+success with every `race-shard (N)` job a success. **A red heavy run keeps
+every push heavy until a green heavy run lands**: it never buys a light
+window. When the gate cannot read the history or the window it warns and
+decides heavy; a gate that fails leaves no answer, and the push runs heavy
+too. `CI_HEAVY_EVERY_HOURS=0` makes every push heavy. The
+heavy layer thus runs about as often as a nightly would, and only when `main`
+moved: GitHub delays this repository's crons by hours or drops them, so the
+cadence cannot rest on a schedule.
+
+The nightly is `tests.yml`'s own `schedule` (`47 1 * * *`), a backstop: when
+it fires, the full suite runs on `main` in a concurrency group of its own so
+no merge cancels it, and it counts as the window's heavy run. Every push to
+`main` shares one concurrency group that never cancels the run in progress:
+at most one push run is in flight and one pending, a newer push replacing the
+pending run, so each run judges every pull request merged since the last run
+started. A red light push run names a batch; a red heavy job names every batch
+since the last green heavy run. main-watch must tell a heavy run from a light
+one (#3757): a green light run says nothing about the heavy layer.
 
 Automatic releases (`version.yml` on a merge and nightly) can tag and publish
 a commit whose heavy layer has not yet run or has not yet finished: a heavy
-regression can ship in a released version before the push witness or the
-nightly judges it. Gating the release on a green Tests run for its sha is a
+regression can ship in a released version before the next heavy run judges
+it. Gating the release on a green Tests run for its sha is a
 deferred decision.
 
 `test-unit` stays on the pull request: it is the fast signal (sharded three
@@ -266,9 +282,10 @@ ejection, two pull requests regenerating the same artefact.
 
 The aggregators stay honest. `test` and `race` read `LIGHT_RUN`, the negation
 of the heavy legs' own condition, evaluated by GitHub, and accept `skipped`
-from a heavy leg only when it is `true` — in `merge_group` and on a pull
-request without `ci:full`; on push, the nightly, a dispatch and a `ci:full`
-pull request it is `false`, and a skipped heavy leg is as red as a failed one.
+from a heavy leg only when it is `true` — in `merge_group`, on a pull request
+without `ci:full` and on a light push; on a heavy push, the nightly, a
+dispatch and a `ci:full` pull request it is `false`, and a skipped heavy leg
+is as red as a failed one.
 `internal/ciguard` pins the condition byte for byte on the heavy legs,
 `mongo-conformance`, `cloud-e2e` and both aggregators, evaluates it per event,
 and runs each aggregator's step under the result.
@@ -292,7 +309,7 @@ pull request skips, and `task check` alone runs nothing under `-race` and no
 Mongo conformance.
 
 **A red `main` is owned, not waited out.** The heavy layer now finds its
-regressions after the merge, on the push run or the nightly. Until the
+regressions after the merge, on a heavy push run or the nightly. Until the
 main-watch workflow (#3692) does it on its own, the session that sees a red
 push or nightly run of `tests.yml` reruns the failed jobs once
 (`gh run rerun <id> --failed`): green on rerun, the failing test is a flake —
