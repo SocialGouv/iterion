@@ -150,8 +150,9 @@ concurrency:
 # SUCCESS, and a pull request nothing tested would be green. They learn it
 # from PR_CI, `refused` or `run`, rendered from the same literal. `brand`
 # runs on every pull request as before: it is the tap skip's verifier, and
-# nothing skips it. `vendor-check`, `golangci` and `fmt-check`, required and
-# skipped on a refusal, `needs: brand`: a skipped job reports SUCCESS the
+# nothing skips it. `vendor-check` and `golangci` (required) and `fmt-check`
+# (staged: ruleset 18857412 requires test, vendor-check, golangci,
+# revi/review and brand), skipped on a refusal, `needs: brand`: a skipped job reports SUCCESS the
 # moment it is created, and `test` is created only when its legs concluded,
 # so a skipped required job created first would be the newest — green —
 # check of its name before the refusal exists. Behind brand they are created
@@ -918,7 +919,7 @@ jobs:
           case "${PR_CI:-}" in
             run) ;;
             refused)
-              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves."
+              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves. If this pull request already carries \`ci:run\` or \`ci:full\`, a run that started from an older snapshot superseded the labelled one: push, or remove and re-add the label."
               exit 1
               ;;
             *)
@@ -1101,7 +1102,7 @@ jobs:
           case "${PR_CI:-}" in
             run) ;;
             refused)
-              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves."
+              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves. If this pull request already carries \`ci:run\` or \`ci:full\`, a run that started from an older snapshot superseded the labelled one: push, or remove and re-add the label."
               exit 1
               ;;
             *)

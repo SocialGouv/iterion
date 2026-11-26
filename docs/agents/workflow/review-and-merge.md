@@ -38,7 +38,10 @@ The loop is:
 request runs no CI unless it asks
 ([CI on demand](../../merge-policy.md#pull-request-ci-on-demand)), so the local
 gate is its first witness. To get CI's, add the `ci:run` label (`ci:full` for
-the heavy layer too): labelling starts the run, no push needed. Or land it
+the heavy layer too) BEFORE pushing, so the push's run carries it — a label
+added after the push races the push's run, and the later one wins; on a new
+pull request, open it first and label it once its `opened` run exists.
+Labelling alone also starts a run. Or land it
 through the train (`task ci:train`) — except a pull request touching
 `.github/`, `scripts/ci/`, `Taskfile.yml` or `devbox.*`, which the train
 refuses: those need the label. Without either, `test` and `race` are red by

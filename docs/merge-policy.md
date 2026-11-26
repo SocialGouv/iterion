@@ -197,8 +197,9 @@ green.
   `arc-runners` only: once a class variable is set, a dead scale set behind
   it stalls that class unpaged — for `CI_SMALL_RUNNER`, the required `test`,
   `vendor-check`, `brand` and the queue branch's `revi/review` mirror (and
-  the unrequired `fmt-check`); for `CI_LARGE_RUNNER`, the required `golangci`
-  and, through its legs, `test` — until the queue's
+  the unrequired `fmt-check`), and with `brand` the `golangci` and
+  `fmt-check` that wait behind it (#3738); for `CI_LARGE_RUNNER`, the
+  required `golangci` and, through its legs, `test` — until the queue's
   `check_response_timeout_minutes`; for `CI_HEAVY_RUNNER` no queue check, but
   a `ci:full` pull request's required `test` (through `test-e2e`) and its
   `race` (through `race-shard`) wait too, and with them the admin-merge lane
@@ -328,9 +329,12 @@ jobs, about 33 times a day, and for a pull request the
 local gate. So a session's pull request runs **no CI unless it asks**:
 
 - **The `ci:run` label** runs the light layer; `ci:full` runs it with the
-  heavy layer, as before. **Labelling starts the run** (`labeled` is a
-  trigger of `tests.yml`): no push needed. Re-running an older run does not
-  help — a rerun reads the labels of the event that started it.
+  heavy layer, as before. Both are repository labels: `ci:run` was created
+  for this policy, and `ci:full`'s description, which still asks for a push
+  after labelling, changes when it lands. **Labelling starts the run**
+  (`labeled` is a trigger of `tests.yml`): no push needed. Re-running an
+  older run does not help — a rerun reads the labels of the event that
+  started it.
 - **A bot's pull request** — its author's account is of type `Bot`, which
   every GitHub App's is (renovate, tokenbureau, dependabot) — and **a fork's**
   run it automatically.
@@ -356,21 +360,32 @@ it redoes. Labels are rare (7 `labeled` events on the last 40 pull requests,
 none more than a minute after the first). Removing `ci:run` starts nothing:
 the last verdict stands until the next event on the pull request.
 
+**Label before pushing.** A push followed by a label — or `gh pr create
+--label`, whose label lands beside its `opened` event — creates two runs on
+one head in no guaranteed order, each judging the labels of its own
+snapshot, and the later one cancels the other: if the unlabelled snapshot
+comes last, a pull request that asked for CI ends refused. So add `ci:run`
+BEFORE pushing, and the synchronize payload already carries it; open a new
+pull request first and label it once its `opened` run exists. The refusal
+says so when the pull request already carries the label: push, or remove
+and re-add it.
+
 `vendor-check`, `golangci` and `fmt-check` wait for `brand`. On a refused
 pull request they skip, and a skipped job reports success the moment it is
 created; created at the run's start, before `test` — which is created only
 once its legs concluded — they would for that instant be the newest, green,
 checks of their names over the run before. Behind `brand`, whose check is
-pending from the run's start, they are created after `test`.
+pending from the run's start, they are created after `test`. "Re-run failed
+jobs" on a red `brand` therefore reruns the three jobs behind it too.
 
 The merge queue, a push to `main`, the nightly and a dispatch keep their
 layers. What a requested run runs is still the whole light layer: running
 only what a diff can reach is #3739, which waits on #3758.
 
 **Before pushing**, a session runs `task check` (the
-[review-and-merge](agents/workflow/review-and-merge.md) discipline), then
-adds `ci:run` when it wants CI's witness, or hands the pull request to the
-train.
+[review-and-merge](agents/workflow/review-and-merge.md) discipline), adds
+`ci:run` when it wants CI's witness — before the push, so the push's run
+carries it — or hands the pull request to the train.
 
 ## main-watch: a red main is rerun, quarantined or reverted
 

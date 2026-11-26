@@ -131,4 +131,35 @@ func TestNoSkippedRequiredCheckPrecedesTheRefusal(t *testing.T) {
 	if len(brand.Needs) != 0 || strings.TrimSpace(brand.If) != "" {
 		t.Errorf("%s carries needs %v / if %q: its check run must be created pending in the run's first instant", tapVerifierJob, brand.Needs, brand.If)
 	}
+
+	// The order above holds while `test` is created in the refused run's
+	// first instant: every job it and `race` need, transitively, skips there
+	// at once, needing nothing but heavyGateJob, which skips every pull
+	// request. A leg that gained a need on a job that runs (brand, a
+	// setup job) would put `test` behind a runner, after the skipped
+	// required jobs.
+	if v, err := evalContexts(wf.Jobs[heavyGateJob].If, refused, nil); err != nil || truthy(v) {
+		t.Errorf("%s `if:` %q runs on a pull request (%v): the legs that need it would wait for a runner", heavyGateJob, wf.Jobs[heavyGateJob].If, err)
+	}
+	seen := map[string]bool{}
+	queue := []string{"test", "race"}
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		for _, need := range wf.Jobs[name].Needs {
+			if seen[need] {
+				continue
+			}
+			seen[need] = true
+			queue = append(queue, need)
+			for _, n := range wf.Jobs[need].Needs {
+				if n != heavyGateJob {
+					t.Errorf("%q, which `test` or `race` needs, needs %q: only %s, which skips every pull request, may sit under an aggregator, or `test` is no longer created in a refused run's first instant", need, n, heavyGateJob)
+				}
+			}
+		}
+	}
+	if len(seen) < 5 {
+		t.Fatalf("`test` and `race` need %d jobs transitively, want the legs and %s at least", len(seen), heavyGateJob)
+	}
 }
