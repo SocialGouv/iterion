@@ -42,11 +42,15 @@ func (g ghCLI) gh(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
+		// The command is named by its leading words only: the arguments
+		// carry pull request titles and whole commit messages, which have
+		// no place in an error, a report or a comment.
+		name := strings.Join(args[:min(len(args), 3)], " ")
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return out, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(ee.Stderr)))
+			return out, fmt.Errorf("gh %s: %w: %s", name, err, strings.TrimSpace(string(ee.Stderr)))
 		}
-		return out, fmt.Errorf("gh %s: %w", strings.Join(args, " "), err)
+		return out, fmt.Errorf("gh %s: %w", name, err)
 	}
 	return out, nil
 }

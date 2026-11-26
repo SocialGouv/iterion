@@ -219,3 +219,18 @@ func TestTouchedPathsReadsTheCommitNotGitHubsList(t *testing.T) {
 	}
 	_ = io.Discard
 }
+
+// gh's arguments carry the pull request's title and every commit message:
+// none of it may reach an error (and from there lot.json and a comment).
+func TestGhErrorsCarryNoArguments(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/usr/bin/env bash\necho 'HTTP 502: Bad Gateway' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := ghCLI{Repo: "o/r"}.Merge(context.Background(), 7, "abc", "TITLE-MARKER (#7)", "BODY-MARKER not mergeable")
+	if err == nil || strings.Contains(err.Error(), "TITLE-MARKER") || strings.Contains(err.Error(), "BODY-MARKER") || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("err %v, want gh's stderr without the subject or body", err)
+	}
+}
