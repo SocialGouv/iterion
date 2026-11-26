@@ -98,8 +98,23 @@ type Report struct {
 	Worktree  string     `json:"worktree"`
 	Evidence  string     `json:"evidence"`
 	Landed    []Landing  `json:"landed,omitempty"`
-	Unlanded  string     `json:"unlanded,omitempty"`
-	Witnessed string     `json:"witness_hint,omitempty"`
+	// Uncertain lists the pull requests whose merge neither read as done
+	// nor as refused (main unreadable, GitHub silent): never in Landed, never
+	// commented, but the landing exits as partial — check them by hand.
+	Uncertain []int `json:"uncertain,omitempty"`
+	// BranchUpdates records each push of the train's resolution to a pull
+	// request's branch, the moment it happens, wherever the landing stops.
+	BranchUpdates []BranchUpdate `json:"branch_updates,omitempty"`
+	Unlanded      string         `json:"unlanded,omitempty"`
+	Witnessed     string         `json:"witness_hint,omitempty"`
+}
+
+// BranchUpdate is one push of the train's resolution to a pull request's
+// branch: a fast-forward of its head From to To.
+type BranchUpdate struct {
+	PR   int    `json:"pr"`
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 // Head is the lot's head commit, or the base when every pull request left.

@@ -50,11 +50,26 @@ type fakeGitHub struct {
 	// errAfterMerge makes Merge squash, then report an error (a 502 after
 	// the mutation went through).
 	errAfterMerge map[int]bool
+	// refuseWithPush: another push lands on main and GitHub refuses the
+	// merge ("Base branch was modified") without merging.
+	refuseWithPush map[int]bool
+	// lateMerge: GitHub answers a timeout, then finishes the merge before
+	// its next read of the pull request.
+	lateMerge    map[int]bool
+	pendingMerge map[int]string
+	pendingReads map[int]int
+	// mergedReadLag: main carries n's squash, but GitHub's read-back still
+	// says not merged.
+	mergedReadLag map[int]bool
+	// refuseBreakRemote: GitHub refuses, and main can no longer be read.
+	refuseBreakRemote map[int]bool
 }
 
 func newFakeGitHub(t *testing.T, f *fixture, prs []PR) *fakeGitHub {
 	g := &fakeGitHub{t: t, f: f, prs: map[int]PR{}, merged: map[int]string{}, bodies: map[int]string{}, comments: map[int]string{},
-		autoMerge: map[int]bool{}, queued: map[int]bool{}, headLag: map[int]int{}, seen: map[int]string{}, failReadAfterMerge: map[int]bool{}, errAfterMerge: map[int]bool{}}
+		autoMerge: map[int]bool{}, queued: map[int]bool{}, headLag: map[int]int{}, seen: map[int]string{}, failReadAfterMerge: map[int]bool{}, errAfterMerge: map[int]bool{},
+		refuseWithPush: map[int]bool{}, lateMerge: map[int]bool{}, pendingMerge: map[int]string{}, refuseBreakRemote: map[int]bool{},
+		pendingReads: map[int]int{}, mergedReadLag: map[int]bool{}}
 	for _, pr := range prs {
 		g.prs[pr.Number] = pr
 	}
@@ -74,6 +89,12 @@ func (g *fakeGitHub) PullRequest(_ context.Context, n int) (PR, error) {
 	if g.onRead != nil {
 		g.onRead(n)
 	}
+	if head, ok := g.pendingMerge[n]; ok && g.pendingReads[n] >= 2 {
+		delete(g.pendingMerge, n)
+		if err := g.squash(n, head, "late merge", ""); err != nil {
+			return PR{}, err
+		}
+	}
 	if _, done := g.merged[n]; done && g.failReadAfterMerge[n] {
 		return PR{}, errors.New("HTTP 502")
 	}
@@ -89,7 +110,10 @@ func (g *fakeGitHub) PullRequest(_ context.Context, n int) (PR, error) {
 	}
 	pr.HeadSHA = head
 	pr.AutoMerge = g.autoMerge[n]
-	if mc, done := g.merged[n]; done {
+	if _, ok := g.pendingMerge[n]; ok {
+		g.pendingReads[n]++
+	}
+	if mc, done := g.merged[n]; done && !g.mergedReadLag[n] {
 		pr.State, pr.Merged, pr.MergeCommit = "merged", true, mc
 	}
 	return pr, nil
@@ -99,7 +123,19 @@ func (g *fakeGitHub) CommitMessages(_ context.Context, n int) ([]string, error) 
 	return []string{fmt.Sprintf("change %d\n\nCo-Authored-By: Someone <s@example.com>", n), "fixup\n\nco-authored-by: someone <S@example.com>"}, nil
 }
 
-func (g *fakeGitHub) QueueEntries(context.Context) ([]int, error) { return g.queue, nil }
+// QueueEntries: the queue the test set, plus — once a merge happened — the
+// pull requests that entered the queue mid-landing.
+func (g *fakeGitHub) QueueEntries(context.Context) ([]int, error) {
+	q := slices.Clone(g.queue)
+	if len(g.merges) > 0 {
+		for n, in := range g.queued {
+			if in {
+				q = append(q, n)
+			}
+		}
+	}
+	return q, nil
+}
 
 func (g *fakeGitHub) DisableAutoMerge(_ context.Context, n int) error {
 	if !g.disarmNoop {
@@ -132,6 +168,43 @@ func (g *fakeGitHub) Merge(ctx context.Context, n int, headSHA, subject, body st
 	if g.queued[n] {
 		return nil
 	}
+	switch {
+	case g.refuseWithPush[n]:
+		g.pushOnMain("chore(release): v9.9.9")
+		return errors.New("GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)")
+	case g.lateMerge[n]:
+		g.pendingMerge[n] = headSHA
+		return errors.New("GraphQL: timeout (mergePullRequest)")
+	case g.refuseBreakRemote[n]:
+		mustGit(g.t, g.f.dir, "remote", "set-url", "origin", "/nonexistent/origin.git")
+		return errors.New("GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)")
+	}
+	return g.mergeNow(ctx, n, headSHA, subject, body)
+}
+
+// squash applies the merge on origin the way GitHub does.
+func (g *fakeGitHub) squash(n int, headSHA, subject, body string) error {
+	main, err := g.originGit("rev-parse", "refs/heads/main")
+	if err != nil {
+		return err
+	}
+	tree, err := g.originGit("merge-tree", "--write-tree", "--no-messages", main, headSHA)
+	if err != nil {
+		return fmt.Errorf("#%d is not mergeable: %w", n, err)
+	}
+	commit, err := g.originGit("commit-tree", strings.SplitN(tree, "\n", 2)[0], "-p", main, "-m", subject+"\n\n"+body)
+	if err != nil {
+		return err
+	}
+	if _, err := g.originGit("update-ref", "refs/heads/main", commit, main); err != nil {
+		return err
+	}
+	g.merged[n] = commit
+	g.merges = append(g.merges, n)
+	return nil
+}
+
+func (g *fakeGitHub) mergeNow(ctx context.Context, n int, headSHA, subject, body string) error {
 	pr, err := g.PullRequest(ctx, n)
 	if err != nil {
 		return err
@@ -198,7 +271,7 @@ func greenLot(t *testing.T, f *fixture, prs []PR) *Report {
 }
 
 func lander(f *fixture, gh GitHub) *Lander {
-	return &Lander{Dir: f.dir, Remote: "origin", Git: &gitRunner{}, GH: gh, Log: io.Discard, HeadPoll: time.Millisecond, HeadWait: 5 * time.Second}
+	return &Lander{Dir: f.dir, Remote: "origin", Git: &gitRunner{}, GH: gh, Log: io.Discard, HeadPoll: time.Millisecond, HeadWait: 5 * time.Second, MergeWait: 50 * time.Millisecond}
 }
 
 func originMain(t *testing.T, f *fixture) (commit, tree string) {
@@ -362,7 +435,7 @@ func TestLandStopsWhenGhMergesNothing(t *testing.T) {
 	gh := newFakeGitHub(t, f, prs)
 	gh.queued[2] = true
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "#2 reads not merged") || !strings.Contains(err.Error(), "nothing of it landed") || !errors.Is(err, errPartial) {
+	if err == nil || !strings.Contains(err.Error(), "#2 reads not merged") || !strings.Contains(err.Error(), "sits in the merge queue") || !strings.Contains(err.Error(), "nothing of it landed") || !errors.Is(err, errPartial) {
 		t.Fatalf("err %v, want #2 named as not merged, as a partial landing", err)
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || !rep.Landed[0].Verified || fmt.Sprint(gh.merges) != "[1]" {
@@ -471,6 +544,111 @@ func TestLandRecordsAMergeThatWentThroughBehindAnError(t *testing.T) {
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || rep.Landed[0].Verified || rep.Landed[0].Merge != gh.merged[1] {
 		t.Fatalf("landed %+v — want #1 recorded unverified, as main's new tip %s", rep.Landed, short(gh.merged[1]))
+	}
+}
+
+// GitHub refuses a merge because another push landed on main meanwhile: the
+// push is not the pull request's landing — never recorded, commented or
+// charged to it.
+func TestLandNeverCreditsAForeignPushToARefusedMerge(t *testing.T) {
+	for _, at := range []int{1, 2} {
+		f := newFixture(t, map[string]string{"a.txt": "a\n"})
+		prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"}), f.pr(2, map[string]string{"c.txt": "c\n"})}
+		rep := greenLot(t, f, prs)
+		gh := newFakeGitHub(t, f, prs)
+		gh.refuseWithPush[at] = true
+		err := lander(f, gh).Land(context.Background(), rep)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("nothing of #%d landed", at)) || !strings.Contains(err.Error(), "chore(release): v9.9.9") {
+			t.Fatalf("at=%d: err %v, want the foreign push named and nothing of #%d landed", at, err, at)
+		}
+		for _, l := range rep.Landed {
+			if l.PR == at {
+				t.Fatalf("at=%d: #%d recorded as landed: %+v", at, at, rep.Landed)
+			}
+		}
+		if _, commented := gh.comments[at]; commented {
+			t.Fatalf("at=%d: a comment was posted on the unmerged #%d", at, at)
+		}
+		if slices.Contains(gh.cancels, prs[at-1].HeadSHA) {
+			t.Fatalf("at=%d: #%d's runs were cancelled", at, at)
+		}
+		if partial := errors.Is(err, errPartial); partial != (at == 2) {
+			t.Fatalf("at=%d: partial=%v — want partial only once the train itself landed something", at, partial)
+		}
+	}
+}
+
+func TestLandWaitsForAMergeGitHubFinishesAfterATimeout(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	gh.lateMerge[1] = true
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "#1 reads merged") {
+		t.Fatalf("err %v, want the late merge found and recorded", err)
+	}
+	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] {
+		t.Fatalf("landed %+v, want #1 recorded as %s", rep.Landed, short(gh.merged[1]))
+	}
+}
+
+// GitHub squashed, but its read-back still says not merged: main's tip IS
+// the pull request's squash, and that is what is recorded.
+func TestLandRecognisesItsOwnSquashOnMainWhenTheReadBackLags(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	gh.errAfterMerge[1] = true
+	gh.mergedReadLag[1] = true
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "is #1's squash") {
+		t.Fatalf("err %v, want main's tip recognised as #1's squash", err)
+	}
+	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] {
+		t.Fatalf("landed %+v, want #1 recorded as %s", rep.Landed, short(gh.merged[1]))
+	}
+}
+
+func TestLandKeepsAnUnreadableOutcomeOutOfTheLandings(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	gh.refuseBreakRemote[1] = true
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "UNCERTAIN") {
+		t.Fatalf("err %v, want an uncertain, partial stop", err)
+	}
+	if len(rep.Landed) != 0 || !slices.Equal(rep.Uncertain, []int{1}) || len(gh.comments) != 0 || len(gh.cancels) != 0 {
+		t.Fatalf("landed %+v, uncertain %v, comments %d, cancels %v — want #1 uncertain only, no side effect", rep.Landed, rep.Uncertain, len(gh.comments), gh.cancels)
+	}
+}
+
+func TestLandRecordsTheBranchUpdateWhereverItStops(t *testing.T) {
+	f := newFixture(t, map[string]string{"docs/a.md": "a\n", "docs/z.md": "z\n"})
+	prs := []PR{f.pr(1, map[string]string{"docs/b.md": "b\n"}), f.pr(2, map[string]string{"docs/c.md": "c\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	reads := 0
+	gh.onRead = func(n int) {
+		if n != 2 {
+			return
+		}
+		reads++
+		// pre-flight 1, then waitHead reads after the push; push on main at
+		// the merge re-read, once the branch update is done.
+		if b := mustGit(t, f.origin, "rev-parse", "refs/heads/pr-2"); b != prs[1].HeadSHA && reads == 3 {
+			gh.pushOnMain("chore(release): v9.9.9")
+		}
+	}
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !strings.Contains(err.Error(), "stopped before #2") || !strings.Contains(err.Error(), "its branch already carries the train's resolution") {
+		t.Fatalf("err %v, want the stop to name #2's rewritten branch", err)
+	}
+	if len(rep.BranchUpdates) != 1 || rep.BranchUpdates[0].PR != 2 || rep.BranchUpdates[0].From != prs[1].HeadSHA {
+		t.Fatalf("branch updates %+v, want #2's push recorded", rep.BranchUpdates)
 	}
 }
 
