@@ -147,17 +147,17 @@ examples of what an operated agent workflow looks like. A few of the jobs they d
 |---|---|---|
 | 🚀 | **Ship software from a prompt** — greenfield apps and end-to-end features | Appy · Featurly · Fini · Bmady |
 | 🔁 | **Continuously review & improve a codebase** — whole-repo and per-branch campaigns, mono-default PR review with optional cross-family confirmation, test coverage | Willy · Billy · Revi · Testy |
-| 🏗️ | **Modernise a legacy codebase** — behaviour-preserving programmes run lot by lot, over a golden-master net that is proved non-blind by mutation, with a doctrine-bound judge for the blocked cases | Morphy · Goldy · Campy · Themis |
-| 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Vulny · Shieldy |
+| 🏗️ | **Modernise a legacy codebase** — behaviour-preserving programmes run lot by lot, over a golden-master net that is proved non-blind by mutation, with a doctrine-bound judge for the blocked cases | Morphy · Goldy · Campy · Grey Area |
+| 🛡️ | **Automated security & supply chain** — SAST, dependency/SCA, diff-scoped CVE & malware shields on every PR | Seki · Depsy · Code Red · Shieldy |
 | ⬆️ | **Upgrade dependencies safely** — multi-stack agentic upgrades with a review gate | Renovacy · Vetty |
-| 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography and ADR re-challenge | Doki · Wikky · Adry · ReArchi |
+| 📚 | **Keep docs & knowledge aligned** — docs alignment, wiki generation, ADR cartography and ADR re-challenge | Doki · Wikky · Adry · White Elephant |
 | ♿ | **Accessibility audits** — RGAA / WCAG on the pinned ultra11y engine; the engine finds and gates, agents only adjudicate | Acci |
 | 🧪 | **Close the end-to-end coverage gap** — inventory an app's features from the outside, keep a committed feature×coverage matrix, write the missing specs | Endy |
 | 📈 | **Make a codebase observable** — error tracking, standardized structured logs, opt-in tracing | Obsy |
-| 🌐 | **Stand up a live review environment** — deploy the current commit and hand back a real https URL for e2e tests and human review | Envy |
-| 🗂️ | **Triage & route work** — classify board cards, auto-open PRs, answer PR questions | Triagy · Revi |
+| 🌐 | **Stand up a live review environment** — deploy the current commit and hand back a real https URL for e2e tests and human review | Green Room |
+| 🗂️ | **Triage & route work** — classify board cards, auto-open PRs, answer PR questions | Right Direction · Revi |
 | 📡 | **Watch & react** — feed/veille monitoring and digests | Vigie |
-| 🧭 | **A strategic partner** — a conversational co-CTO and roadmap, an architectural visionary | Nexie · Evoly |
+| 🧭 | **A strategic partner** — a conversational co-CTO and roadmap, an architectural visionary | Nexie · Deep Blue |
 
 [Browse the full catalogue →](examples.md)
 

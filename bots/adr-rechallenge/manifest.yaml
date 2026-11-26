@@ -1,6 +1,6 @@
 name: adr-rechallenge
-display_name: ReArchi
-icon: ⚖️
+display_name: White Elephant
+icon: 🐘
 version: 0.1.4
 ## 0.1.4 — commit_changes answers with its declared `commit_result`
 ## (`success`, `output: "committed <sha>"` or `"nothing to commit"`) and
@@ -48,7 +48,7 @@ invocations:
   - kind: command
     mode: board
     args_var: scope_notes
-    command: { name: rearchi, aliases: [adr-rechallenge], scope: any, min_replier_role: maintainer }
+    command: { name: white-elephant, aliases: [rearchi, adr-rechallenge], scope: any, min_replier_role: maintainer }
   - kind: board
 
 ## Studio launch-form hierarchy: `primary` inputs render top-level in

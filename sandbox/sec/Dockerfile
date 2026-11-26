@@ -131,7 +131,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # ---------------------------------------------------------------------
 # Layer 5 — supply-shield analyzers (MANDATORY): @nodesecure/js-x-ray for
 # npm malware AST analysis + osv-scanner for the CVE floor. Used by the
-# supply-shield (Shieldy) and supply-shield-cve (Vulny) bots.
+# supply-shield (Shieldy) and supply-shield-cve (Code Red) bots.
 #
 # js-x-ray 15.x is ESM-only, so it cannot be imported by a bare specifier
 # from an arbitrary cwd. We ship a SELF-CONTAINED tool at

@@ -16,7 +16,7 @@ description: Catalog of iterion bots — walk the decision tree to pick which bo
      manifest.yaml instead. Everything OUTSIDE the markers is editorial
      routing reasoning maintained by hand. This template lives at the
      bundle ROOT (not skills/) so it is never mirrored as a skill; the
-     generated copy Triagy actually reads is skills/iterion-bot-catalog.md.
+     generated copy Right Direction actually reads is skills/iterion-bot-catalog.md.
 
      TODO: the decision tree + distinguishers below are duplicated with
      bots/whats-next/iterion-bot-catalog-static.md (iterion has no

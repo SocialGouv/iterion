@@ -1,4 +1,4 @@
-# arbitrate (Themis) ⚖️
+# arbitrate (Grey Area, formerly Themis) ⚖️
 
 Judges the divergence cases a modernisation programme leaves blocked, by
 applying the target repository's **written arbitration doctrine** — and

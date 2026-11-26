@@ -59,7 +59,7 @@ the reason the scratch default exists).
 
 `kind` discriminates verdict axes that share this host-wide file:
 `malware` (this bot + supply-shield/Shieldy) vs `cve`
-(supply-shield-cve/Vulny, which adds `advisory_db_date` + a short ttl).
+(supply-shield-cve/Code Red, which adds `advisory_db_date` + a short ttl).
 Each reader consults only its own `kind`; a legacy line with no `kind`
 is treated as `malware`.
 

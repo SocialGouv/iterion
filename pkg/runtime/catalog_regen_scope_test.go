@@ -54,7 +54,7 @@ func catalogRegenWorkspace(t *testing.T, manifestNames map[string]string) (ws st
 
 	for _, o := range []struct{ name, persona string }{
 		{"whats-next", "Nexie"},
-		{"issue-triage", "Triagy"},
+		{"issue-triage", "Right Direction"},
 	} {
 		dir := filepath.Join(ws, "bots", o.name)
 		write(filepath.Join(dir, manifest(o.name)),
@@ -316,5 +316,5 @@ func personaOf(owner string) string {
 	if owner == "whats-next" {
 		return "Nexie"
 	}
-	return "Triagy"
+	return "Right Direction"
 }

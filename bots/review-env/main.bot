@@ -1,5 +1,5 @@
 ## ═══════════════════════════════════════════════════════════════════
-## review-env (Envy) — deploy the CURRENT workspace's already-published
+## review-env (Green Room) — deploy the CURRENT workspace's already-published
 ## image to the operator-attached platform, and hand back a LIVE https URL.
 ##
 ## One job, extracted so any flow can lease it: end-to-end tests, screen

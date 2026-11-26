@@ -1,9 +1,9 @@
-# Evoly — strategic / architectural evolution partner
+# Deep Blue (formerly Evoly) — strategic / architectural evolution partner
 
-Evoly (`evolve`) is the bot you reach for when a project is **mature and
+Deep Blue (`evolve`) is the bot you reach for when a project is **mature and
 stable** and the question worth answering is *"where should this go
 next?"* — a quarter and beyond. It is the strategic layer **above**
-Nexie (whats-next): Nexie decides what to ship this week; Evoly decides
+Nexie (whats-next): Nexie decides what to ship this week; Deep Blue decides
 where the project should be in a year, and feeds Nexie the work.
 
 ## What it does
@@ -25,13 +25,13 @@ where the project should be in a year, and feeds Nexie the work.
    them up on its next survey; you can launch any by dragging it to
    `ready` on the board.
 
-Evoly **proposes and architects** — it never edits code or commits.
+Deep Blue **proposes and architects** — it never edits code or commits.
 Implementation is handed to feature-dev / bmady via Nexie.
 
 ## Run it
 
 ```sh
-# Interactive (the normal way — Evoly will ask you questions):
+# Interactive (the normal way — Deep Blue will ask you questions):
 iterion run bots/evolve/main.bot
 
 # With a steering hint:
@@ -46,11 +46,11 @@ vision review and the home-base pivot. Answer in the studio or with
 
 - **Per-bot cross-session memory** (`visibility: "bot"`). The vision
   accumulates under `~/.iterion/projects/<repo-key>/bots/evolve/memory/vision/`
-  — private to Evoly, surviving across sessions, never leaking into
+  — private to Deep Blue, surviving across sessions, never leaking into
   Nexie or any other bot's context.
 - **Mid-investigation `ask_user`**. The investigation agent interrogates
   you only when it must (an ambiguity the code can't resolve), the run
-  pauses for your answer, and Evoly persists each answer to memory so it is
+  pauses for your answer, and Deep Blue persists each answer to memory so it is
   never asked twice.
 
 ## How it partners with Nexie
@@ -77,5 +77,5 @@ Override per node via `ITERION_EVOLVE_MODEL_GPT`,
 Memory tools are claw-only by design; this bot is therefore all-claw on
 its memory-bearing nodes. Wiring per-bot memory into the `claude_code`
 backend is a larger, separate piece of engine work (a `__mcp-memory`
-subprocess) and is intentionally out of scope here — Evoly does not need
+subprocess) and is intentionally out of scope here — Deep Blue does not need
 it.

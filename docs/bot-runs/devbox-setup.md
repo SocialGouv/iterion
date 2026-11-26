@@ -1,4 +1,4 @@
-# devbox-setup (Devy) — dogfood bilan
+# devbox-setup (Devboxing, formerly Devy) — dogfood bilan
 
 Index + template: [README.md](README.md). Newest first.
 

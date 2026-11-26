@@ -109,7 +109,7 @@ type Entry struct {
 	// forge:-only bundle. Carried by discovery so the studio Integrations
 	// picker can group bots by trigger and the command router / orchestrator
 	// can resolve a command to a bot. Empty for loose .bot files and bots
-	// that declare no invocations (orchestrators like Nexie/Evoly).
+	// that declare no invocations (orchestrators like Nexie/Deep Blue).
 	Invocations []bundle.Invocation `json:"invocations,omitempty" yaml:"invocations,omitempty"`
 
 	// WhenToUse is the orchestrator-facing "use when" guidance from the

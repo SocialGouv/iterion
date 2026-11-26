@@ -1,7 +1,7 @@
 ---
 name: backlog-handoff
 description: >
-  How Evoly hands proposed evolutions to Nexie and the operator — one
+  How Deep Blue hands proposed evolutions to Nexie and the operator — one
   deep artifact per evolution in the shared findings/ memory inbox, plus
   a dispatch-ready backlog kanban ticket (set_bot + self-contained body)
   the human can launch by dragging to ready.
@@ -89,7 +89,7 @@ applies at launch; it is distinct from freeform `fields`. Keep the body
 self-contained even when args are present, so the ticket remains useful to a
 human and to bots whose `dispatch_vars` consume title + body.
 
-## What Evoly does NOT do at handoff
+## What Deep Blue does NOT do at handoff
 
 - Never move a ticket to `ready` — the operator launches it by dragging,
   or Nexie promotes it.

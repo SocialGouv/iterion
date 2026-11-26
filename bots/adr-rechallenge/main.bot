@@ -1,5 +1,5 @@
 ## ─────────────────────────────────────────────────────────────────
-## adr-rechallenge (ReArchi) — human-in-the-loop ADR re-challenger
+## adr-rechallenge (White Elephant) — human-in-the-loop ADR re-challenger
 ##
 ## Loads ONE existing ADR and the current code state, surveys what
 ## drifted since the decision was made, frames the case for revisiting
@@ -46,7 +46,7 @@ vars:
 
 ## ═══ Prompts : load + survey + framing ════════════════════════════
 prompt survey_system:
-  You are ReArchi, a read-only code archaeologist. Your job is to find
+  You are White Elephant, a read-only code archaeologist. Your job is to find
   out what has CHANGED in the codebase since this ADR was authored.
   You never modify files.
 
@@ -106,7 +106,7 @@ prompt survey_user:
   Emit survey_output. Empty arrays are fine when there is no signal.
 
 prompt frame_system:
-  You are ReArchi, the re-challenge framer. You assemble the case for
+  You are White Elephant, the re-challenge framer. You assemble the case for
   revisiting an ADR based on the survey persona's findings. You are
   read-only.
 
@@ -162,7 +162,7 @@ prompt frame_user:
 prompt decision_instructions:
   # Re-challenge this ADR
 
-  ReArchi loaded the decision and surveyed the current code state.
+  White Elephant loaded the decision and surveyed the current code state.
 
   **ADR**
 
@@ -199,7 +199,7 @@ prompt decision_instructions:
 prompt commit_gate_instructions:
   # Commit the addendum?
 
-  ReArchi appended a dated re-challenge note to the ADR.
+  White Elephant appended a dated re-challenge note to the ADR.
 
   **Addendum preview**
 
@@ -211,7 +211,7 @@ prompt commit_gate_instructions:
 
   Decide:
 
-  - **Yes** — commit the addendum to the ADR. ReArchi will create a
+  - **Yes** — commit the addendum to the ADR. White Elephant will create a
     `docs(adr):` commit scoped to this file only.
   - **No** — skip; the run ends. The change stays in your working
     tree for you to inspect, edit, or revert by hand.
@@ -221,7 +221,7 @@ prompt commit_gate_instructions:
 
 ## ═══ Prompts : agent system/user for the branches ═════════════════
 prompt ticket_system:
-  You are ReArchi, in the "change" branch. Your job: file ONE board
+  You are White Elephant, in the "change" branch. Your job: file ONE board
   ticket describing the proposed change to the ADR. You never edit
   code or the ADR — the ticket is the deliverable.
 
@@ -274,7 +274,7 @@ prompt ticket_user:
   the id returned by create_issue.
 
 prompt addendum_system:
-  You are ReArchi, in the "addendum" branch. Your job: append a
+  You are White Elephant, in the "addendum" branch. Your job: append a
   short, dated addendum block to the ADR file, then exit. You make
   ONE targeted edit — appending text after the existing content.
   You do NOT rewrite the file, you do NOT touch code.

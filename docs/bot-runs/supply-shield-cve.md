@@ -1,4 +1,4 @@
-# supply-shield-cve (Vulny) — run bilans
+# supply-shield-cve (Code Red, formerly Vulny) — run bilans
 
 Newest first. See [README](README.md) for the template.
 

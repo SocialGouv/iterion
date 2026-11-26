@@ -37,7 +37,7 @@ workflow w:
 	}
 }
 
-// TestMemoryVisibilityBotCompiles pins the exact DSL shape Evoly uses —
+// TestMemoryVisibilityBotCompiles pins the exact DSL shape Deep Blue uses —
 // the first shipped consumer of per-bot memory (visibility: "bot"). It
 // proves the full block (autoload + read + write + pre_compact_inject)
 // survives compilation with the bot axis intact.

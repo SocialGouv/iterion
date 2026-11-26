@@ -57,7 +57,7 @@ repo's history (source, docs, wiki, config, versioned state — anything
 a test net, because it commits; the two supply-shields are read-only
 even though they read dependencies deeply, because a finding goes to
 the board and no commit exists); `read-only` = the run writes nothing
-anywhere. A conversational or board-only bot (Nexie, Copi, Triagy)
+anywhere. A conversational or board-only bot (Nexie, Copi, Right Direction)
 targets no repository and legitimately carries neither.
 
 Two things to know:

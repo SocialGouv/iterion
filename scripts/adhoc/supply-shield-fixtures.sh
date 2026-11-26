@@ -8,7 +8,7 @@
 #                      credential-exfiltrating postinstall (+ node_modules)
 #                      → supply-shield (Shieldy) must report risk HIGH.
 #   - cve-target     : adds lodash@4.17.4 (many published advisories)
-#                      → supply-shield-cve (Vulny) must report the CVEs.
+#                      → supply-shield-cve (Code Red) must report the CVEs.
 #
 # Usage:
 #   scripts/adhoc/supply-shield-fixtures.sh [OUT_DIR]   # default: /tmp/supply-shield-fixtures

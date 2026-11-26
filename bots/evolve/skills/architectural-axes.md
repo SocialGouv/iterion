@@ -1,7 +1,7 @@
 ---
 name: architectural-axes
 description: >
-  A vocabulary of evolution axes Evoly draws from when synthesising a
+  A vocabulary of evolution axes Deep Blue draws from when synthesising a
   vision — reliability, performance, DX, modularity, and more. Free-form
   by design (not a closed enum); invent a new axis when the evidence
   needs one. Stack-agnostic.

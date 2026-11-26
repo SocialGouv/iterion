@@ -1,5 +1,5 @@
 name: review-env
-display_name: Envy
+display_name: Green Room
 icon: 🌐
 version: 0.1.4
 ## 0.1.2 — the preflight's uncommitted-changes count leaves iterion's `.claude/`

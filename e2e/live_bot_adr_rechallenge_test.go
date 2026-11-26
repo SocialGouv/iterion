@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// TestLive_Bot_AdrRechallenge runs the adr-rechallenge bot (ReArchi)
-// against an existing ADR plus drifted code. ReArchi loads the ADR,
+// TestLive_Bot_AdrRechallenge runs the adr-rechallenge bot (White Elephant)
+// against an existing ADR plus drifted code. White Elephant loads the ADR,
 // surveys current code, frames keep/change/addendum arguments, and pauses
 // at a human decision gate. The harness auto-resume driver answers that
 // gate (it selects the first option, "keep"), so this exercises the
@@ -82,7 +82,7 @@ type Store struct{ m map[string]string }
 	assessQuality(t, res, qualityInput{
 		kind:          "bot",
 		name:          "adr-rechallenge",
-		persona:       "ReArchi",
+		persona:       "White Elephant",
 		primaryFamily: "anthropic",
 		task:          "Re-challenge an in-memory-storage ADR against drifted code (now needing persistence); frame keep/change/addendum arguments.",
 		workProduct:   "## decision\n" + sprintAny(dec) + "\n\n## framed arguments\n" + sprintAny(frame),

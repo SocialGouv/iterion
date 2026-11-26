@@ -4,7 +4,7 @@ This page covers the two **manual audit** bundles — CLI-launched,
 whole-tree or `diff_base`-scoped, reporting to the kanban board. For
 the **push-driven** supply-chain shields that gate every PR/push —
 [`supply-shield`](../bots/supply-shield/) (Shieldy, malware axis) and
-[`supply-shield-cve`](../bots/supply-shield-cve/) (Vulny, CVE axis),
+[`supply-shield-cve`](../bots/supply-shield-cve/) (Code Red, CVE axis),
 diff-scoped by default and reporting back onto the forge (sticky
 comment + inline reviews + SARIF) — see their run bilans
 ([supply-shield.md](bot-runs/supply-shield.md),
