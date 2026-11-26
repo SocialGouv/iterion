@@ -43,8 +43,12 @@ type Lander struct {
 	Save func(*Report) error
 	// HeadWait bounds the wait for GitHub to report a pushed branch update
 	// as the pull request's head (0 = 60 s); HeadPoll is the polling step
-	// (0 = 2 s).
+	// (0 = 2 s) — also the step of MergeWait.
 	HeadWait, HeadPoll time.Duration
+	// MergeWait bounds the wait, after a merge error that is not a known
+	// refusal, for GitHub to finish a merge it may still be running
+	// (0 = 30 s).
+	MergeWait time.Duration
 }
 
 func (l *Lander) logf(format string, args ...any) {
@@ -268,6 +272,10 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 				if _, err := l.Git.run(ctx, l.Dir, "push", "--quiet", "--force-with-lease=refs/heads/"+s.PR.HeadRef+":"+s.PR.HeadSHA, l.Remote, mergeHead+":refs/heads/"+s.PR.HeadRef); err != nil {
 					return l.stop(rep, fmt.Sprintf("stopped before #%d: pushing the train's resolution: %v", n, err))
 				}
+				rep.BranchUpdates = append(rep.BranchUpdates, BranchUpdate{PR: n, From: s.PR.HeadSHA, To: mergeHead})
+				if err := l.saveOrLog(rep); err != nil {
+					return l.stop(rep, fmt.Sprintf("stopped before #%d: saving the report: %v", n, err))
+				}
 				if err := l.waitHead(ctx, n, mergeHead); err != nil {
 					return l.stop(rep, fmt.Sprintf("stopped before #%d: its branch now carries the train's resolution %s (a fast-forward of its head), but %v", n, short(mergeHead), err))
 				}
@@ -314,7 +322,7 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 			return err
 		}
 		if err := l.GH.Merge(ctx, n, mergeHead, subject, body); err != nil {
-			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, fmt.Sprintf("gh reported the merge failed: %v", err))
+			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, fmt.Sprintf("gh reported the merge failed: %v", err), isRefusal(err))
 		}
 		rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, UpdatedBranch: updated})
 		land := &rep.Landed[len(rep.Landed)-1]
@@ -327,7 +335,13 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 		}
 		if !pr.Merged {
 			rep.Landed = rep.Landed[:len(rep.Landed)-1]
-			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, fmt.Sprintf("gh exited 0 but #%d reads not merged (state %s, auto-merge %v) — gh does that for a pull request already in a merge queue", n, pr.State, pr.AutoMerge))
+			why := fmt.Sprintf("gh exited 0 but #%d reads not merged (state %s, auto-merge %v)", n, pr.State, pr.AutoMerge)
+			// gh exits 0 for a pull request already in a merge queue: say so
+			// when it is — it may still land there, on the queue's terms.
+			if queued, qerr := l.GH.QueueEntries(ctx); qerr == nil && slices.Contains(queued, n) {
+				return l.notMerged(ctx, rep, n, cur, mergeHead, updated, why+fmt.Sprintf(" — it sits in the merge queue, where it may still land on the queue's terms: dequeue it"), true)
+			}
+			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, why, false)
 		}
 		land.Merge = pr.MergeCommit
 		tip, err := l.fetchMain(ctx)
@@ -394,26 +408,96 @@ func (l *Lander) mainStill(ctx context.Context, rep *Report, n int, cur string) 
 		return l.stop(rep, fmt.Sprintf("stopped before #%d: reading main: %v", n, err))
 	}
 	if tip != cur {
-		return l.stop(rep, fmt.Sprintf("stopped before #%d: main moved to %s (%q) after %s — merging now would land a tree nobody gated; the rest needs a new train on the current main", n, short(tip), l.subject(ctx, tip), short(cur)))
+		return l.stop(rep, fmt.Sprintf("stopped before #%d: main moved to %s (%q) after %s — merging now would land a tree nobody gated; the rest needs a new train on the current main%s", n, short(tip), l.subject(ctx, tip), short(cur), l.branchNote(rep, n)))
 	}
 	return nil
 }
 
-// notMerged ends a landing whose merge did not read as done. Whether it
-// landed is not taken from gh's word either way: main is read back, and if
-// it moved, the move is recorded as an unverified landing of n — a merge
-// that went through behind an error is still on main.
-func (l *Lander) notMerged(ctx context.Context, rep *Report, n int, cur, mergeHead string, updated bool, why string) error {
-	tip, err := l.fetchMain(ctx)
-	if err != nil {
-		rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, UpdatedBranch: updated})
-		return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, and main could not be read back (%v) — check main by hand", n, why, err))
+// refusalMarkers are GitHub's answers to a merge it did NOT perform.
+var refusalMarkers = []string{"Base branch was modified", "Head branch was modified", "not mergeable", "is not mergeable", "Head sha didn't match", "expected head sha", "Pull request is in clean status"}
+
+func isRefusal(err error) bool {
+	for _, m := range refusalMarkers {
+		if strings.Contains(err.Error(), m) {
+			return true
+		}
 	}
-	if tip == cur {
-		return l.stop(rep, fmt.Sprintf("stopped at #%d: %s; main is still %s — nothing of it landed", n, why, short(cur)))
+	return false
+}
+
+// notMerged ends a landing whose merge did not read as done. Whether n
+// landed is asked of GitHub and of main, never inferred from one of them:
+//   - n reads merged (now, or within MergeWait when the error was not a known
+//     refusal — GitHub can finish a merge after answering with a timeout):
+//     n landed, recorded unverified;
+//   - main's tip is exactly n's squash (its parent is cur and its tree is
+//     GitHub's merge of n's head onto cur): n landed, its read-back lagging;
+//   - main moved to anything else: someone else pushed — nothing of n
+//     landed, and the move is named;
+//   - main unreadable, or n unknown after the wait: n is uncertain — kept out
+//     of Landed (no comment, no cancelled runs), the exit still partial.
+func (l *Lander) notMerged(ctx context.Context, rep *Report, n int, cur, mergeHead string, updated bool, why string, refused bool) error {
+	wait := l.MergeWait
+	if wait == 0 {
+		wait = 30 * time.Second
 	}
-	rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, Merge: tip, UpdatedBranch: updated})
-	return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, but main moved to %s (%q) — recorded as an unverified landing; check main by hand", n, why, short(tip), l.subject(ctx, tip)))
+	poll := l.HeadPoll
+	if poll == 0 {
+		poll = 2 * time.Second
+	}
+	if refused {
+		wait = 0
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		pr, err := l.GH.PullRequest(ctx, n)
+		if err == nil && pr.Merged {
+			rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, Merge: pr.MergeCommit, UpdatedBranch: updated})
+			return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, but #%d reads merged as %s — recorded as an unverified landing; check main by hand", n, why, n, short(pr.MergeCommit)))
+		}
+		tip, ferr := l.fetchMain(ctx)
+		if ferr == nil && tip != cur {
+			parent, perr := l.Git.revParse(ctx, l.Dir, tip+"^")
+			tipTree, terr := l.Git.revParse(ctx, l.Dir, tip+"^{tree}")
+			want, _, merr := l.mergeTree(ctx, cur, mergeHead)
+			if perr == nil && terr == nil && merr == nil && parent == cur && tipTree == want {
+				rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, Merge: tip, UpdatedBranch: updated})
+				return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, but main's tip %s is #%d's squash — recorded as an unverified landing; check main by hand", n, why, short(tip), n))
+			}
+			return l.stop(rep, fmt.Sprintf("stopped at #%d: %s; main moved to %s (%q), which is not #%d's squash, and #%d reads not merged — nothing of #%d landed%s", n, why, short(tip), l.subject(ctx, tip), n, n, n, l.branchNote(rep, n)))
+		}
+		if ferr == nil && refused {
+			return l.stop(rep, fmt.Sprintf("stopped at #%d: %s; main is still %s — nothing of it landed%s", n, why, short(cur), l.branchNote(rep, n)))
+		}
+		if time.Now().After(deadline) {
+			rep.Uncertain = append(rep.Uncertain, n)
+			reason := "main is still " + short(cur)
+			if ferr != nil {
+				reason = fmt.Sprintf("main could not be read back (%v)", ferr)
+			}
+			rep.Unlanded = fmt.Sprintf("stopped at #%d: %s; %s and #%d does not read merged after %s — UNCERTAIN, check #%d and main by hand", n, why, reason, n, wait, n)
+			if serr := l.saveOrLog(rep); serr != nil {
+				return errors.Join(fmt.Errorf("%w: %s", errPartial, rep.Unlanded), serr)
+			}
+			return fmt.Errorf("%w: %s", errPartial, rep.Unlanded)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+// branchNote says, in a stop message, that n's branch already carries the
+// train's resolution.
+func (l *Lander) branchNote(rep *Report, n int) string {
+	for _, u := range rep.BranchUpdates {
+		if u.PR == n {
+			return fmt.Sprintf(" (its branch already carries the train's resolution %s)", short(u.To))
+		}
+	}
+	return ""
 }
 
 // afterLanding cancels the pull request runs still in flight for each landed
