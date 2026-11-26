@@ -29,10 +29,13 @@ var snapshotBlob string
 
 // SnapshotSchema is the snapshot file's format version. A reader that does
 // not match refuses the file rather than guess. Schema 2 carries the three
-// capability flags beside the numbers; the file is EMBEDDED, so the constant
-// and the bytes it judges ship in the same binary — a mismatch is reachable
-// only by hand-editing the snapshot, which is what the refusal names.
-const SnapshotSchema = 2
+// capability flags beside the numbers; schema 3 adds image_input, read from
+// models.dev's modalities.input — a schema-2 file states it for no row, so
+// every route would read unknown and no text-only model would refuse an
+// image. The file is EMBEDDED, so the constant and the bytes it judges ship
+// in the same binary — a mismatch is reachable only by hand-editing the
+// snapshot, which is what the refusal names.
+const SnapshotSchema = 3
 
 // SnapshotHeader is the file's first line.
 type SnapshotHeader struct {
@@ -43,7 +46,8 @@ type SnapshotHeader struct {
 }
 
 // snapshotEntry is one line: the numeric fields the gateway catalog
-// resolves, plus the three capability flags models.dev publishes. The flags
+// resolves, plus the capability flags models.dev publishes (image_input
+// read from its modalities.input). The flags
 // are `*bool,omitempty` for the same reason Spec's are — a flag the source
 // did not state is ABSENT from the line and reads unknown, while a stated
 // false crosses as false. The distinction is the point: `tool_call:false` is
@@ -58,6 +62,7 @@ type snapshotEntry struct {
 	Reasoning        *bool   `json:"reasoning,omitempty"`
 	ToolCall         *bool   `json:"tool_call,omitempty"`
 	Temperature      *bool   `json:"temperature,omitempty"`
+	ImageInput       *bool   `json:"image_input,omitempty"`
 }
 
 var (
@@ -141,6 +146,7 @@ func ReadSnapshot(raw []byte) (SnapshotHeader, map[string]Spec, error) {
 			Reasoning:       e.Reasoning,
 			ToolCall:        e.ToolCall,
 			Temperature:     e.Temperature,
+			ImageInput:      e.ImageInput,
 		}
 	}
 	return hdr, index, nil
@@ -223,6 +229,7 @@ func WriteSnapshot(body []byte, sourceDigest string, asOf time.Time) ([]byte, er
 			Reasoning:        sp.Reasoning,
 			ToolCall:         sp.ToolCall,
 			Temperature:      sp.Temperature,
+			ImageInput:       sp.ImageInput,
 		})
 		if err != nil {
 			return nil, err
