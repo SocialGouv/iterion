@@ -584,7 +584,13 @@ func TestLandWaitsForAMergeGitHubFinishesAfterATimeout(t *testing.T) {
 	rep := greenLot(t, f, prs)
 	gh := newFakeGitHub(t, f, prs)
 	gh.lateMerge[1] = true
-	if err := lander(f, gh).Land(context.Background(), rep); err != nil {
+	l := lander(f, gh)
+	// The fake finishes the merge on a read count, not a clock; the wait only
+	// has to outlast three reads, each a git exec that a loaded runner can
+	// stall well past the shared 50 ms (see load-margins.md). Merged ends the
+	// wait at once, so the bound costs nothing on a fast host.
+	l.MergeWait = 30 * time.Second
+	if err := l.Land(context.Background(), rep); err != nil {
 		t.Fatalf("a merge GitHub finished after a timeout stopped the landing: %v", err)
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] || !rep.Landed[0].Verified {
