@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/testfs"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dryrun"
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
@@ -288,7 +289,10 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 	// Every node after prepare reads run_dir the way the edges hand it over:
 	// prepare's own output. The values map carries that under `input.run_dir`.
 	in := func(extra map[string]any) map[string]any {
-		v := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": std, "run.id": runID}
+		// wave_batches 0 dispatches every batch in one round and max_reask -1
+		// leaves the re-ask count to the loop, the shape these subtests were
+		// written against; the waves have their own subtest (#3746).
+		v := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": std, "run.id": runID, "input.wave_batches": 0, "input.max_reask": -1, "input.batch_size": 8}
 		maps.Copy(v, extra)
 		return v
 	}
@@ -386,6 +390,34 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 		}
 		if rgaaRate(rgaaDocCounts{Conformes: 23, NC: 17}) != 57 {
 			t.Fatal("the Go twin of the rate helper rounds 23/40 to 58")
+		}
+	})
+
+	t.Run("the_wave_planner_asks_fresh_criteria_first_and_sizes_the_wave_it_plans", func(t *testing.T) {
+		// #3746: plan_batches dispatches L.planWave's wave and fold_probe hands
+		// its size to the loop budget guard. Theme chunks vary (2.x has two
+		// criteria, 1.x ten), so the wave's size is the sum of its chunks,
+		// never wave_batches × batch_size; criteria never asked go before
+		// re-asks, theme by theme in numeric order (10 after 3).
+		ids := []string{"10.1", "3.3", "3.2", "3.1", "2.2", "2.1"}
+		for i := 10; i >= 1; i-- {
+			ids = append(ids, fmt.Sprintf("1.%d", i))
+		}
+		idsJSON, _ := json.Marshal(ids)
+		probe := map[string]string{"_wave": "const RUN = {{input.run_dir}};\nconst L = require(require(\"path\").join(RUN, \"bin\", \"lib.js\")).init(RUN);\nconst ids = " + string(idsJSON) + ", asked = { \"1.1\": 1, \"1.2\": 2, \"3.1\": 1 };\nconst p = L.planWave(ids, asked, 8, 2);\nL.out({ ok: true, chunks: p.chunks.map((c) => c.theme + \":\" + c.ids.join(\",\")), size: p.size, wave: p.wave.length, all: L.planWave(ids, asked, 8, 0).size, fallback: L.planWave(ids, {}, 0, 1).size });\n"}
+		r := rgaaRunNode(t, probe, "_wave", site, env, in(nil))
+		if r.Code != 0 {
+			t.Fatalf("planWave died: %s", r.Stderr)
+		}
+		want := []string{"1:1.3,1.4,1.5,1.6,1.7,1.8,1.9,1.10", "2:2.1,2.2", "3:3.2,3.3", "10:10.1", "1:1.1,1.2", "3:3.1"}
+		if got := rgaaStrings(r.Out["chunks"]); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("planWave chunks %v, want %v", got, want)
+		}
+		if rgaaInt(r.Out["wave"]) != 2 || rgaaInt(r.Out["size"]) != 10 {
+			t.Fatalf("a 2-batch wave is %v batches of %v criteria, want 2 of 10 (8 + 2), not 2 × 8", r.Out["wave"], r.Out["size"])
+		}
+		if rgaaInt(r.Out["all"]) != len(ids) || rgaaInt(r.Out["fallback"]) != 8 {
+			t.Fatalf("wave_batches 0 sizes %v (want %d); batch_size 0 sizes one batch at %v (want the default 8)", r.Out["all"], len(ids), r.Out["fallback"])
 		}
 	})
 
@@ -811,6 +843,150 @@ L.out({ ok: true, cases: out });
 		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.batch_size": 0}))
 		if r.Code != 0 || rgaaInt(r.Out["count"]) != len(round0) {
 			t.Fatalf("batch_size 0 planned %v batches, the default plans %d", r.Out["count"], len(round0))
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("plan_batches_dispatches_one_wave_and_fold_probe_holds_the_rest_pending", func(t *testing.T) {
+		// #3746: a round carries at most wave_batches batches, so each round
+		// is one iteration of the re-ask loop the budget guard can decline.
+		// The criteria no wave has carried yet stay pending with no prior
+		// issue; one already asked is re-asked only while it has asks left.
+		dir := rgaaRunCopy(t, run)
+		// The copy carries the round the subtest above planned; this one
+		// starts from the worklist's own round 0.
+		for _, p := range []string{filepath.Join(dir, "batches"), filepath.Join(dir, "asked.json"), filepath.Join(dir, "asked")} {
+			testfs.RemoveAll(t, dir, p)
+		}
+		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.run_dir": dir, "input.batch_size": 8, "input.wave_batches": 1}))
+		if r.Code != 0 {
+			t.Fatalf("plan_batches died: %s", r.Stderr)
+		}
+		raw, _ := json.Marshal(r.Out["batches"])
+		var wave []batch
+		if err := json.Unmarshal(raw, &wave); err != nil {
+			t.Fatal(err)
+		}
+		if len(wave) != 1 || rgaaInt(r.Out["count"]) != 1 || wave[0].ID != round0[0].ID {
+			t.Fatalf("wave_batches 1 planned %d batches (%v), want the first batch %s alone", len(wave), r.Out["count"], round0[0].ID)
+		}
+		if held := rgaaInt(r.Out["held"]); held != len(ids)-len(wave[0].IDs) {
+			t.Fatalf("held %d criteria back, want %d", held, len(ids)-len(wave[0].IDs))
+		}
+		if planned, _ := filepath.Glob(filepath.Join(dir, "batches", "r0-*.json")); len(planned) != 1 {
+			t.Fatalf("the wave wrote %d batch files, want 1 — merge_verdicts reads every planned batch of the round as dispatched", len(planned))
+		}
+		var asked map[string]int
+		rgaaReadJSON(t, filepath.Join(dir, "asked.json"), &asked)
+		if len(asked) != len(wave[0].IDs) {
+			t.Fatalf("asked.json counts %v, want the wave's %v", asked, wave[0].IDs)
+		}
+		inWave := map[string]bool{}
+		for _, id := range wave[0].IDs {
+			inWave[id] = true
+			if asked[id] != 1 {
+				t.Fatalf("asked.json counts %s %d times, want 1", id, asked[id])
+			}
+		}
+		mergeVerdicts(t, dir, 0)
+		probe := func(maxReask int) map[string]any {
+			return rgaaOK(t, "fold_probe", rgaaRunNode(t, scripts, "fold_probe", site, env, in(map[string]any{"input.run_dir": dir, "input.round": 0, "input.max_reask": maxReask, "input.wave_batches": 1})))
+		}
+		// One re-ask left: the lost wave is re-asked with its reason, the held
+		// criteria ride as fresh asks with no prior issue.
+		out := probe(1)
+		_, pendingIDs, issues := readPending(t, dir)
+		if len(pendingIDs) != len(ids) || rgaaInt(out["not_asked"]) != len(ids)-len(wave[0].IDs) || rgaaInt(out["reask_spent"]) != 0 {
+			t.Fatalf("max_reask 1: pending %d of %d, not_asked %v, reask_spent %v", len(pendingIDs), len(ids), out["not_asked"], out["reask_spent"])
+		}
+		for _, id := range pendingIDs {
+			if _, has := issues[id]; has != inWave[id] {
+				t.Fatalf("criterion %s (in the wave: %v) carries prior issue %q", id, inWave[id], issues[id])
+			}
+		}
+		// The guard's work signal is the wave that runs: plan_batches, handed
+		// this pending.json, dispatches exactly next_wave criteria — the
+		// criteria no wave has carried first, so a declined wave leaves
+		// second chances open, never a first ask. A replay of the round plans
+		// the same wave and counts it once.
+		next := rgaaRunCopy(t, dir)
+		planWave := func() ([]batch, map[string]int) {
+			t.Helper()
+			r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.run_dir": next, "input.batch_size": 8, "input.wave_batches": 1}))
+			if r.Code != 0 {
+				t.Fatalf("plan_batches round 1 died: %s", r.Stderr)
+			}
+			raw, _ := json.Marshal(r.Out["batches"])
+			var w []batch
+			if err := json.Unmarshal(raw, &w); err != nil {
+				t.Fatal(err)
+			}
+			var counts map[string]int
+			rgaaReadJSON(t, filepath.Join(next, "asked.json"), &counts)
+			return w, counts
+		}
+		wave1, _ := planWave()
+		size1 := 0
+		for _, b := range wave1 {
+			size1 += len(b.IDs)
+			for _, id := range b.IDs {
+				if inWave[id] || b.PriorIssues[id] != "" {
+					t.Fatalf("round 1 re-asks %s (prior issue %q) while %d criteria still wait for their first ask", id, b.PriorIssues[id], len(ids)-len(wave[0].IDs))
+				}
+			}
+		}
+		if nw := rgaaInt(out["next_wave"]); nw != size1 {
+			t.Fatalf("fold_probe announced a next wave of %d criteria, plan_batches dispatched %d (%v)", nw, size1, wave1)
+		}
+		replay, counts := planWave()
+		if fmt.Sprint(replay) != fmt.Sprint(wave1) {
+			t.Fatalf("a replay of round 1 planned %v, the first pass %v", replay, wave1)
+		}
+		for _, b := range wave1 {
+			for _, id := range b.IDs {
+				if counts[id] != 1 {
+					t.Fatalf("after a replay of round 1, asked.json counts %s %d times, want 1", id, counts[id])
+				}
+			}
+		}
+		// No re-ask: the asked wave stays open (« à évaluer » in the fold),
+		// the held criteria are still owed their first ask.
+		out = probe(0)
+		_, pendingIDs, _ = readPending(t, dir)
+		if len(pendingIDs) != len(ids)-len(wave[0].IDs) || rgaaInt(out["reask_spent"]) != len(wave[0].IDs) {
+			t.Fatalf("max_reask 0: pending %d, reask_spent %v, want %d and %d", len(pendingIDs), out["reask_spent"], len(ids)-len(wave[0].IDs), len(wave[0].IDs))
+		}
+		for _, id := range pendingIDs {
+			if inWave[id] {
+				t.Fatalf("max_reask 0 re-asks %s, which its wave already carried", id)
+			}
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("write_fragment_reads_a_criterion_id_spelled_in_the_singular", func(t *testing.T) {
+		// #3746: deepseek-class models answer `criterionId` for the
+		// contract's `criteriaId`. Read as foreign, a whole batch of sound
+		// verdicts was dropped and re-asked.
+		dir := rgaaRunCopy(t, run)
+		b := round0[0]
+		var verdicts []any
+		for i, id := range b.IDs {
+			key := []string{"criterionId", "criterion_id", "criteriaId"}[i%3]
+			verdicts = append(verdicts, map[string]any{key: id, "verdict": "manual", "reason": "undecidable", "justification": "needs a human"})
+		}
+		out := writeFragment(t, dir, b, verdicts)
+		if rgaaInt(out["written"]) != len(b.IDs) || rgaaInt(out["foreign"]) != 0 {
+			t.Fatalf("write_fragment kept %v of %d verdicts, %v foreign: %v", out["written"], len(b.IDs), out["foreign"], out)
+		}
+		// A criterion outside the batch is still foreign, whatever its key.
+		out = writeFragment(t, dir, b, []any{map[string]any{"criterionId": "99.1", "verdict": "manual", "reason": "undecidable", "justification": "x"}})
+		if rgaaInt(out["foreign"]) != 1 || rgaaInt(out["written"]) != 0 {
+			t.Fatalf("a criterion outside the batch was kept: %v", out)
 		}
 	})
 	if t.Failed() {
@@ -3495,21 +3671,30 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 		}
 		return out
 	}
-	// The three ways the trial is skipped: disabled, nothing on trial, the
-	// budget share spent (25 $ of a 30 $ cap past a 0.6 share).
+	// The four ways the trial is skipped: disabled, nothing on trial, the
+	// cost share spent (25 $ of a 30 $ cap past a 0.6 share), the token share
+	// spent — on a cheap or unpriced route the token cap runs out first
+	// (#3746).
+	gateCtx := func(input map[string]any, cost float64, tokens int64) *expr.Context {
+		return &expr.Context{
+			Input: func(p []string) any { return input[p[0]] },
+			Run: func(p []string) any {
+				return map[string]any{"cost_usd": cost, "max_cost_usd": 30.0, "tokens": tokens, "max_tokens": int64(10_000_000)}[p[0]]
+			},
+		}
+	}
 	for name, c := range map[string]struct {
-		input map[string]any
-		cost  float64
+		input  map[string]any
+		cost   float64
+		tokens int64
 	}{
-		"disabled":   {map[string]any{"refute_enabled": false, "claims": int64(4), "share": 0.6}, 1},
-		"no claims":  {map[string]any{"refute_enabled": true, "claims": int64(0), "share": 0.6}, 1},
-		"over share": {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 25},
+		"disabled":         {map[string]any{"refute_enabled": false, "claims": int64(4), "share": 0.6}, 1, 1_000_000},
+		"no claims":        {map[string]any{"refute_enabled": true, "claims": int64(0), "share": 0.6}, 1, 1_000_000},
+		"over share":       {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 25, 1_000_000},
+		"over token share": {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 1, 7_000_000},
 	} {
 		cn := wf.Nodes["budget_gate"].(*ir.ComputeNode)
-		ctx := &expr.Context{
-			Input: func(p []string) any { return c.input[p[0]] },
-			Run:   func(p []string) any { return map[string]any{"cost_usd": c.cost, "max_cost_usd": 30.0}[p[0]] },
-		}
+		ctx := gateCtx(c.input, c.cost, c.tokens)
 		out := map[string]any{}
 		for _, e := range cn.Exprs {
 			v, err := e.AST.Eval(ctx)
@@ -3520,6 +3705,18 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 		}
 		if out["run_refuter"] != false || out["applied_floor"] != false || out["degraded_floor"] != false {
 			t.Errorf("budget_gate skipped (%s) hands review_gate run_refuter=%v applied=%v degraded=%v, want all false", name, out["run_refuter"], out["applied_floor"], out["degraded_floor"])
+		}
+	}
+	{
+		cn := wf.Nodes["budget_gate"].(*ir.ComputeNode)
+		ctx := gateCtx(map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 1, 5_000_000)
+		for _, e := range cn.Exprs {
+			if e.Key != "run_refuter" {
+				continue
+			}
+			if v, err := e.AST.Eval(ctx); err != nil || v != true {
+				t.Errorf("budget_gate under both shares: run_refuter=%v (%v), want true", v, err)
+			}
 		}
 	}
 	for _, flags := range [][2]bool{{true, false}, {false, true}, {false, false}, {true, true}} {
@@ -3926,6 +4123,39 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 		}
 		if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), "never a path reconstructed from memory") {
 			t.Errorf("%s does not name the batch's listed absolute paths as the only ones to open", skill)
+		}
+	}
+}
+
+// #3746: on a claw gateway route the agents' default effort must be one the
+// gateway model takes with no platform table — deepseek-v4.1 refuses
+// `medium` (low/high/xhigh/max), and no table maps it on a fresh deployment,
+// so a `medium` refute failed every batch at its first request. `high` is a
+// level claude_code, codex and that gateway all take. The timeout gives a
+// slow gateway's long turns room: at 25m whole batches were cut mid-turn.
+func TestRgaaAuditAgentDefaultsRunOnAGatewayRoute(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	gatewayEfforts := map[string]bool{"low": true, "high": true, "xhigh": true, "max": true}
+	for _, name := range []string{"adjudicate", "refute"} {
+		var llm ir.LLMFields
+		switch n := wf.Nodes[name].(type) {
+		case *ir.AgentNode:
+			llm = n.LLMFields
+		case *ir.JudgeNode:
+			llm = n.LLMFields
+		default:
+			t.Fatalf("node %s is %T, want an agent or a judge", name, wf.Nodes[name])
+		}
+		effort := os.Expand(llm.ReasoningEffort, func(string) string { return "" })
+		if i := strings.Index(llm.ReasoningEffort, ":-"); i >= 0 {
+			effort = strings.TrimSuffix(llm.ReasoningEffort[i+2:], "}")
+		}
+		if !gatewayEfforts[effort] {
+			t.Errorf("%s defaults to reasoning_effort %q (%s), which deepseek-v4.1 refuses — want one of low/high/xhigh/max", name, effort, llm.ReasoningEffort)
+		}
+		d, err := time.ParseDuration(llm.Timeout)
+		if err != nil || d < 45*time.Minute {
+			t.Errorf("%s timeout %q: want at least 45m, a slow gateway's batch is cut mid-turn below it", name, llm.Timeout)
 		}
 	}
 }

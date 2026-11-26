@@ -136,7 +136,8 @@
       }
     ],
     "count": 2,
-    "round": 0
+    "round": 0,
+    "held": 0
   },
   "write_fragment": {
     "batch_id": "r0-b01",
@@ -167,6 +168,9 @@
     "pending_ids": [
       "1.2"
     ],
+    "next_wave": 1,
+    "not_asked": 0,
+    "reask_spent": 0,
     "applied": 2,
     "rejected": 1,
     "unfilled": 0,

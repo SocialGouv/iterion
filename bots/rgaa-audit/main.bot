@@ -116,10 +116,17 @@ vars:
   ## bounded re-asks of the refusals the fold names (0 = none).
   batch_size: int = 8
   max_reask: int = 1
+  ## Batches dispatched per round (a wave; 0 = every batch at once). Each
+  ## wave is one iteration of the re-ask loop, so the loop budget guard can
+  ## decline the next one when the budget runs short: what was decided is
+  ## folded and the rest is reported « à évaluer » (#3746). `max_rounds`
+  ## bounds the loop — the waves plus their re-asks.
+  wave_batches: int = 4
+  max_rounds: int = 40
   ## Second reader over the draft report (NC claims AND landed conformities;
   ## NA verdicts are not on trial — the engine's trial does not list them).
   ## Skipped — visibly, in the annex — when the run has already spent more
-  ## than `refuter_budget_share` of its cost cap.
+  ## than `refuter_budget_share` of its cost cap or of its token cap.
   refute_enabled: bool = true
   refuter_budget_share: float = 0.6
   refute_batch_size: int = 10
@@ -176,6 +183,12 @@ prompt adjudicate_system:
   this node: calling anything else is an error that costs a step and
   changes nothing. Your answer is the structured verdict list you return —
   there is no file to write it to.
+
+  Some runtimes also hand you a `todo_write` task list, and a generic
+  preamble may ask you to keep one. Do NOT use it here: this batch is its
+  own list, every call to it re-sends the whole conversation and pays for
+  nothing the verdicts need. Issue independent reads together, in one step,
+  and return as soon as every criterion of the batch is decided.
 
   The skills named above (`rgaa-audit`, `ultra11y-engine`,
   `adjudication-protocol`) are ALREADY in this context: a skill is a name,
@@ -289,6 +302,12 @@ prompt refute_system:
   or edit tool, no todo or planning tool, no web tool and no MCP server on
   this node: calling anything else is an error that costs a step and
   changes nothing. Your answer is the structured verdict list you return.
+
+  Some runtimes also hand you a `todo_write` task list, and a generic
+  preamble may ask you to keep one. Do NOT use it here: this batch is its
+  own list, every call to it re-sends the whole conversation and pays for
+  nothing the verdicts need. Issue independent reads together, in one step,
+  and return as soon as every claim of the batch is ruled on.
 
   For EVERY claim `n` in the batch:
     1. Open the cited file at the cited line. Read the surrounding element.
@@ -504,11 +523,13 @@ schema worklist_output:
 schema plan_input:
   run_dir: string
   batch_size: int
+  wave_batches: int
 
 schema plan_output:
   batches: json
   count: int
   round: int
+  held: int
 
 schema adjudicate_input:
   batch_id: string
@@ -566,6 +587,9 @@ schema probe_input:
   workspace_dir: string
   standard: string
   round: int
+  max_reask: int
+  wave_batches: int
+  batch_size: int
 
 schema probe_output:
   ok: bool
@@ -573,6 +597,9 @@ schema probe_output:
   reason: string
   pending: int
   pending_ids: json
+  next_wave: int
+  not_asked: int
+  reask_spent: int
   applied: int
   rejected: int
   unfilled: int
@@ -847,15 +874,23 @@ agent adjudicate:
   system: adjudicate_system
   user: adjudicate_user
   tools: [read_file, glob, grep]
-  tool_max_steps: 80
+  ## Every step re-sends the whole conversation (~30k tokens on a claw
+  ## route), and at 80 steps a batch of 8 cost up to 4M tokens: 48 is six
+  ## rounds of reads a criterion, the protocol's own pace (#3746).
+  tool_max_steps: 48
   reasoning_effort: "${ITERION_RGAA_EFFORT_ADJUDICATE:-high}"
-  timeout: "25m"
+  ## A claw gateway step re-sends the conversation; at 25m a slow gateway
+  ## cut whole batches mid-turn and their spend bought nothing (#3746).
+  timeout: "45m"
   readonly: true
 
 ## The second reader: a judge per batch of claims, same read-only posture.
 ## Opus by default, like the adjudicator; a cross-family reader is one env
 ## dial away (ITERION_RGAA_BACKEND_REFUTE=claw ITERION_RGAA_MODEL_REFUTE=…).
-## No MCP server either.
+## No MCP server either. Effort `high`, a level every backend and gateway
+## model takes: deepseek-v4.1 refuses `medium` (low/high/xhigh/max only),
+## and on a gateway no table maps it, so `medium` failed every refute
+## batch at its first request (#3746).
 judge refute:
   mcp:
     inherit: false
@@ -866,9 +901,9 @@ judge refute:
   system: refute_system
   user: refute_user
   tools: [read_file, glob, grep]
-  tool_max_steps: 60
-  reasoning_effort: "${ITERION_RGAA_EFFORT_REFUTE:-medium}"
-  timeout: "20m"
+  tool_max_steps: 48
+  reasoning_effort: "${ITERION_RGAA_EFFORT_REFUTE:-high}"
+  timeout: "45m"
   readonly: true
 
 ## ─── Routers ──────────────────────────────────────────────────────────
@@ -1155,7 +1190,33 @@ tool prepare:
         return rep;
       };
 
-      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf, foldJSON, scanOutcome };
+      // The batches of a round, in dispatch order, and the wave of them that
+      // goes out (#3746). Criteria no wave has carried yet come first, so a
+      // wave the loop budget guard declines leaves second chances « à
+      // évaluer », never a criterion with no ask at all; then theme by theme,
+      // in criterion order, cut into chunks of batchSize (8 when unset).
+      // plan_batches dispatches this wave and fold_probe sizes the next one
+      // from it, so the guard's sized_by signal is the wave that runs.
+      // waveBatches 0 (or less) is every chunk at once.
+      const planWave = (ids, asked, batchSize, waveBatches) => {
+        const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 8;
+        const themeOf = (id) => String(id).split(".")[0];
+        const indexOf = (id) => Number(String(id).split(".")[1] || 0);
+        const reask = (id) => (Number((asked || {})[id] || 0) > 0 ? 1 : 0);
+        const sorted = ids.slice().sort((a, b) => reask(a) - reask(b) || Number(themeOf(a)) - Number(themeOf(b)) || indexOf(a) - indexOf(b));
+        const groups = [];
+        for (const id of sorted) {
+          const last = groups[groups.length - 1];
+          if (last && last.reask === reask(id) && last.theme === themeOf(id)) last.ids.push(id);
+          else groups.push({ reask: reask(id), theme: themeOf(id), ids: [id] });
+        }
+        const chunks = [];
+        for (const g of groups) for (let i = 0; i < g.ids.length; i += size) chunks.push({ theme: g.theme, ids: g.ids.slice(i, i + size) });
+        const wave = Number.isInteger(waveBatches) && waveBatches > 0 ? chunks.slice(0, waveBatches) : chunks;
+        return { chunks: chunks, wave: wave, size: wave.reduce((n, c) => n + c.ids.length, 0) };
+      };
+
+      const api = { init, sha256, fingerprint, exists, readJSON, writeJSON, out, refuse, die, auditPath, statePath, commitAudit, checkAudit, once, record, engine, engineJSON, std, countDoc, rate, flagged, undecided, reportLines, reportParts, reportFile, copyReportFiles, generateReport, sameCounts, layer, layers, listJSON, isObj, asText, asLine, citation, finding, recommendation, nearestAnchor, restoreFrom, rejectedOf, foldJSON, scanOutcome, planWave };
       return api;
     }
     fs.writeFileSync(path.join(RUN, "bin", "lib.js"), "module.exports = (" + helpers.toString() + ")();\n");
@@ -1499,8 +1560,9 @@ tool worklist:
   output: worklist_output
 
 ## Batches for the fan-out: the pending criteria (all of them on round 0,
-## the fold's named refusals on a re-ask), grouped by theme, at most
-## batch_size each. File-driven and idempotent: a resume replans the same.
+## then the held ones and the fold's named refusals), never-asked first,
+## grouped by theme, at most batch_size each — one wave of them per round
+## (L.planWave). File-driven and idempotent: a resume replans the same.
 tool plan_batches:
   script: |
     const path = require("path");
@@ -1510,26 +1572,30 @@ tool plan_batches:
     // The agent opens the batch's own files, spelled out — never a path it
     // reconstructs from a directory and an id.
     const wl = L.readJSON(path.join(RUN, "worklist.json"));
-    const asked = Number({{input.batch_size}});
-    const size = Number.isInteger(asked) && asked > 0 ? asked : 8;
-    const byTheme = {};
-    const themeOf = (id) => String(id).split(".")[0];
-    const ids = pending.ids.slice().sort((a, b) => { const ta = Number(themeOf(a)), tb = Number(themeOf(b)); if (ta !== tb) return ta - tb; return Number(String(a).split(".")[1] || 0) - Number(String(b).split(".")[1] || 0); });
-    for (const id of ids) (byTheme[themeOf(id)] = byTheme[themeOf(id)] || []).push(id);
-    const batches = [];
-    for (const theme of Object.keys(byTheme).sort((a, b) => Number(a) - Number(b))) {
-      const list = byTheme[theme];
-      for (let i = 0; i < list.length; i += size) {
-        const chunk = list.slice(i, i + size);
-        const id = "r" + pending.round + "-b" + String(batches.length + 1).padStart(2, "0");
-        const prior = {};
-        for (const c of chunk) if (pending.issues && pending.issues[c]) prior[c] = pending.issues[c];
-        const b = { id: id, round: pending.round, theme: theme, ids: chunk, count: chunk.length, prior_issues: prior, item_paths: chunk.map((c) => path.join(wl.items_dir, c + ".json")), brief_paths: chunk.map((c) => path.join(wl.briefs_dir, c + ".md")) };
-        L.writeJSON(path.join(RUN, "batches", id + ".json"), b);
-        batches.push(b);
-      }
+    const askedPath = path.join(RUN, "asked.json");
+    // The ask counts as they stood before this round's wave: a replay of the
+    // round reads them back, so it plans the same wave and counts it once.
+    const beforePath = path.join(RUN, "asked", "before-r" + pending.round + ".json");
+    if (!L.exists(beforePath)) L.writeJSON(beforePath, L.exists(askedPath) ? L.readJSON(askedPath) : {});
+    const askedCount = L.readJSON(beforePath);
+    // One WAVE per round (#3746): at most wave_batches batches are dispatched,
+    // the rest stay pending for the next round. Each round is then one
+    // iteration of the re-ask loop, which the loop budget guard prices and
+    // declines when the budget cannot pay for it — the run folds what was
+    // decided and reports the rest « à évaluer » instead of hitting the cap
+    // in the middle of a fan-out. 0 (or less) dispatches every batch at once.
+    const plan = L.planWave(pending.ids, askedCount, Number({{input.batch_size}}), Number({{input.wave_batches}}));
+    const wave = plan.wave.map((chunk, i) => {
+      const prior = {};
+      for (const c of chunk.ids) if (pending.issues && pending.issues[c]) prior[c] = pending.issues[c];
+      return { id: "r" + pending.round + "-b" + String(i + 1).padStart(2, "0"), round: pending.round, theme: chunk.theme, ids: chunk.ids, count: chunk.ids.length, prior_issues: prior, item_paths: chunk.ids.map((c) => path.join(wl.items_dir, c + ".json")), brief_paths: chunk.ids.map((c) => path.join(wl.briefs_dir, c + ".md")) };
+    });
+    for (const b of wave) {
+      L.writeJSON(path.join(RUN, "batches", b.id + ".json"), b);
+      for (const c of b.ids) askedCount[c] = Number(askedCount[c] || 0) + 1;
     }
-    L.out({ batches: batches, count: batches.length, round: pending.round });
+    L.writeJSON(askedPath, askedCount);
+    L.out({ batches: wave, count: wave.length, round: pending.round, held: pending.ids.length - plan.size });
   language: js
   input: plan_input
   output: plan_output
@@ -1560,7 +1626,11 @@ tool write_fragment:
     const verdictOf = (x) => { if (x === undefined || x === null) return null; const w = String(x), k = w.trim().toLowerCase(); return VERDICTS.find((d) => d.toLowerCase() === k) || w; };
     for (const v of raw) {
       if (!L.isObj(v)) { malformed++; continue; }
-      const id = String(v.criteriaId || v.id || "");
+      // The contract's key is criteriaId; a model that spells it in the
+      // singular (criterionId, criterion_id) still names a criterion of
+      // its batch — read as foreign, a whole batch of sound verdicts was
+      // thrown away and re-asked (#3746).
+      const id = String(v.criteriaId || v.criterionId || v.criteria_id || v.criterion_id || v.id || "");
       if (!allowed.has(id)) { foreign++; continue; }
       count[id] = (count[id] || 0) + 1;
       const o = { criteriaId: id, verdict: verdictOf(v.verdict), justification: typeof v.justification === "string" ? v.justification : "" };
@@ -1709,12 +1779,29 @@ tool fold_probe:
     for (const id of rejected) if (!issues[id]) issues[id] = "refused by the fold" + (general.length ? ": " + general.join(" | ") : "");
     for (const id of gaps) if (!issues[id]) issues[id] = "missing from the adjudication (coverage gap)";
     for (const id of flaggedOpen) if (!rejected.includes(id) && !gaps.includes(id) && !unfilled.includes(id)) issues[id] = "the engine found no subject for this criterion and a manual verdict leaves the report inconsistent — decide NA (no subject in the audited scope) or C/NC on the evidence";
-    const pendingIds = Array.from(new Set([].concat(rejected, gaps, unfilled, flaggedOpen))).sort();
+    const openIds = Array.from(new Set([].concat(rejected, gaps, unfilled, flaggedOpen))).sort();
+    // A criterion no wave has carried yet is pending with no prior issue; one
+    // already asked is re-asked while it has asks left (max_reask re-asks
+    // after its first ask), and past that it stays open — « à évaluer » in
+    // the fold — exactly as when the re-ask loop was spent (#3746).
+    const askedPath = path.join(RUN, "asked.json");
+    const askedCount = L.exists(askedPath) ? L.readJSON(askedPath) : null;
+    const reaskAsked = Number({{input.max_reask}});
+    const maxReask = Number.isInteger(reaskAsked) && reaskAsked >= 0 ? reaskAsked : Infinity;
+    const timesAsked = (id) => askedCount ? Number(askedCount[id] || 0) : 1;
+    const notAsked = openIds.filter((id) => timesAsked(id) === 0);
+    const reaskSpent = openIds.filter((id) => timesAsked(id) > maxReask);
+    const pendingIds = openIds.filter((id) => timesAsked(id) === 0 || timesAsked(id) <= maxReask);
     const pendingIssues = {};
-    for (const id of pendingIds) pendingIssues[id] = issues[id] || "no verdict received";
+    for (const id of pendingIds) if (timesAsked(id) > 0) pendingIssues[id] = issues[id] || "no verdict received";
     L.writeJSON(path.join(RUN, "pending.json"), { round: round + 1, ids: pendingIds, issues: pendingIssues });
     L.writeJSON(path.join(RUN, "issues.json"), issues);
-    L.out({ ok: true, fail_code: "", reason: "", pending: pendingIds.length, pending_ids: pendingIds, applied: applied, rejected: rejected.length, unfilled: unfilled.length, flagged_open: flaggedOpen.length, round: round });
+    // The size of the next wave, in criteria — the loop's work signal: the
+    // budget guard scales the last wave's cost by it. Planned the way
+    // plan_batches will plan it, from the same pending ids and asked.json:
+    // theme chunks vary in size, so a wave's capacity is not its size.
+    const nextWave = L.planWave(pendingIds, askedCount || {}, Number({{input.batch_size}}), Number({{input.wave_batches}})).size;
+    L.out({ ok: true, fail_code: "", reason: "", pending: pendingIds.length, pending_ids: pendingIds, next_wave: nextWave, not_asked: notAsked.length, reask_spent: reaskSpent.length, applied: applied, rejected: rejected.length, unfilled: unfilled.length, flagged_open: flaggedOpen.length, round: round });
   language: js
   input: probe_input
   output: probe_output
@@ -2246,14 +2333,16 @@ compute render_gate:
     reason: "if(input.rendered == 'required' && !input.browser_ok, 'rendered=required but no browser can scan the page sample: ' + input.browser_reason, '')"
 
 ## The second reader is skipped, visibly, once the run has spent more than
-## its share of the cost cap (a cap of 0 is unbounded, never "nothing left").
+## its share of the cost cap or of the token cap (a cap of 0 is unbounded,
+## never "nothing left") — on a cheap or unpriced route the token cap is the
+## one that runs out (#3746).
 ## The constant outputs are the floor the skip path hands review_gate.
 compute budget_gate:
   input: budget_gate_input
   output: budget_gate_output
   expr:
-    run_refuter: "input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share)"
-    skipped: "!(input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share))"
+    run_refuter: "input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share) && (run.max_tokens == 0 || run.tokens <= run.max_tokens * input.share)"
+    skipped: "!(input.refute_enabled && input.claims > 0 && (run.max_cost_usd == 0 || run.cost_usd <= run.max_cost_usd * input.share) && (run.max_tokens == 0 || run.tokens <= run.max_tokens * input.share))"
     applied_floor: "false"
     degraded_floor: "false"
     zero: "0"
@@ -2364,11 +2453,17 @@ workflow rgaa_audit:
 
   entry: prepare
 
+  ## The cost cap is the real guard. The token cap is sized for a claw
+  ## route, which books every tool-loop step's whole prompt (claude_code
+  ## books ~30k tokens a batch, claw ~1–3M): 3M stopped a full `src/**` run
+  ## of ~100 criteria after two batches (#3746). 80M keeps a
+  ## deepseek-flash-class route under the $30 cap first; past either cap the
+  ## loop budget guard declines the next wave, never a fan-out mid-flight.
   budget:
     max_parallel_branches: 4
     max_duration: "${ITERION_RGAA_MAX_DURATION:-3h}"
     max_cost_usd: 30
-    max_tokens: 3000000
+    max_tokens: 80000000
     max_iterations: 300
 
   prepare -> static_audit when ok with {
@@ -2457,6 +2552,7 @@ workflow rgaa_audit:
   worklist -> plan_batches when ok with {
     run_dir: "{{outputs.prepare.run_dir}}",
     batch_size: "{{vars.batch_size}}",
+    wave_batches: "{{vars.wave_batches}}",
   }
 
   worklist -> audit_integrity when "outputs.worklist.fail_code == 'AUDIT_INTEGRITY'"
@@ -2498,13 +2594,19 @@ workflow rgaa_audit:
     workspace_dir: "{{vars.workspace_dir}}",
     standard: "{{vars.standard}}",
     round: "{{outputs.plan_batches.round}}",
+    max_reask: "{{vars.max_reask}}",
+    wave_batches: "{{vars.wave_batches}}",
+    batch_size: "{{vars.batch_size}}",
   }
 
-  ## Bounded re-ask of the refusals the fold named; the bare edge is the
-  ## exit, taken when nothing is pending or the re-asks are spent.
-  fold_probe -> plan_batches when "outputs.fold_probe.pending > 0" as reask("vars.max_reask") with {
+  ## The next wave, or a bounded re-ask of the refusals the fold named; the
+  ## bare edge is the exit, taken when nothing is pending, the rounds are
+  ## spent, or the loop budget guard declines a wave the budget cannot pay
+  ## for (#3746) — priced by the size of the next wave against the last.
+  fold_probe -> plan_batches when "outputs.fold_probe.pending > 0" as reask("vars.max_rounds") sized_by "outputs.fold_probe.next_wave" with {
     run_dir: "{{outputs.prepare.run_dir}}",
     batch_size: "{{vars.batch_size}}",
+    wave_batches: "{{vars.wave_batches}}",
   }
 
   fold_probe -> fold_final with {

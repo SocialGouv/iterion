@@ -13,6 +13,15 @@ func ExecuteTodoWrite(ctx context.Context, input map[string]any) (string, error)
 	return intl.ExecuteTodoWrite(input)
 }
 
+// ExecuteTodoWriteScoped reads or writes the todo list of one scope (see
+// ScopedTodosPath); an empty scope is ExecuteTodoWrite.
+func ExecuteTodoWriteScoped(ctx context.Context, input map[string]any, scope string) (string, error) {
+	return intl.ExecuteTodoWriteAt(input, intl.ScopedTodosPath(scope))
+}
+
+// ScopedTodosPath is the file ExecuteTodoWriteScoped reads and writes.
+func ScopedTodosPath(scope string) string { return intl.ScopedTodosPath(scope) }
+
 func WebSearchTool() api.Tool { return intl.WebSearchTool() }
 
 // ExecuteWebSearch reads BRAVE_API_KEY (or compatible) from env;

@@ -50,6 +50,7 @@ import (
 type IOTask struct {
 	NodeID                string           `json:"node_id"`
 	Iteration             int              `json:"iteration,omitempty"`
+	TodoScope             string           `json:"todo_scope,omitempty"`
 	SystemPrompt          string           `json:"system_prompt,omitempty"`
 	SystemPromptMode      SystemPromptMode `json:"system_prompt_mode,omitempty"`
 	UserPrompt            string           `json:"user_prompt,omitempty"`
@@ -311,6 +312,7 @@ func ToIOTask(t Task) IOTask {
 	return IOTask{
 		NodeID:                 t.NodeID,
 		Iteration:              t.Iteration,
+		TodoScope:              t.TodoScope,
 		SystemPrompt:           t.SystemPrompt,
 		SystemPromptMode:       t.SystemPromptMode,
 		UserPrompt:             t.UserPrompt,
@@ -385,6 +387,7 @@ func FromIOTask(t IOTask) Task {
 	return Task{
 		NodeID:                 t.NodeID,
 		Iteration:              t.Iteration,
+		TodoScope:              t.TodoScope,
 		SystemPrompt:           t.SystemPrompt,
 		SystemPromptMode:       t.SystemPromptMode,
 		UserPrompt:             t.UserPrompt,

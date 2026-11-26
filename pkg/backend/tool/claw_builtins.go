@@ -438,8 +438,35 @@ func RegisterClawSimple(reg *Registry) error {
 // (~/.claw-code/todos/<workspace-fingerprint>.json, CLAW_TODOS_DIR override)
 // so agent runs never dirty git status/diff — each iterion worktree run gets
 // its own file via its worktree path's fingerprint. No dependency.
+//
+// The workspace fingerprint alone is not a session: the parallel branches of
+// a fan-out share one worktree, and so do the rounds of a loop and two runs
+// on one checkout. Keyed by it alone they read and overwrite one checklist —
+// an rgaa-audit adjudicator "reconciled" another batch's todo list and ruled
+// on that batch's criteria instead of its own (#3746). The executor stamps
+// the delegation's own scope on the context (WithTodoScope) and the list is
+// keyed by it; a context with no scope keeps the per-workspace file.
 func RegisterClawTodo(reg *Registry) error {
-	return RegisterClawTool(reg, clawtools.TodoWriteTool(), clawtools.ExecuteTodoWrite)
+	return RegisterClawTool(reg, clawtools.TodoWriteTool(), func(ctx context.Context, input map[string]any) (string, error) {
+		return clawtools.ExecuteTodoWriteScoped(ctx, input, TodoScopeFromContext(ctx))
+	})
+}
+
+type todoScopeKey struct{}
+
+// WithTodoScope returns a derived ctx whose todo_write calls read and write
+// the checklist of scope — one per delegation. Empty scope is a no-op.
+func WithTodoScope(ctx context.Context, scope string) context.Context {
+	if scope == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, todoScopeKey{}, scope)
+}
+
+// TodoScopeFromContext returns the scope set by WithTodoScope, or "".
+func TodoScopeFromContext(ctx context.Context) string {
+	s, _ := ctx.Value(todoScopeKey{}).(string)
+	return s
 }
 
 // AskUserHandler is invoked when the LLM calls ask_user. Returning an
