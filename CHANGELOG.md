@@ -3,6 +3,28 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.0](https://github.com/SocialGouv/iterion/compare/v7.39.0...v7.40.0) (2026-11-26)
+
+### Features
+
+* **bots:** name personas with a colour or an -ion ending, and rename seven ([#3776](https://github.com/SocialGouv/iterion/issues/3776)) ([#3793](https://github.com/SocialGouv/iterion/issues/3793)) ([0d096c1](https://github.com/SocialGouv/iterion/commit/0d096c19160e8864ea1b4b9b3370263df4e91dee)), references [#3784](https://github.com/SocialGouv/iterion/issues/3784)
+
+    <details><summary>why</summary>
+
+    Catalog personas followed an unwritten -y/-i habit. It no longer kept names apart (14 pairs within edit distance 2) and did not mark a name as iterion's. docs/agents/bots/naming.md states the doctrine: - a persona carries one colour from a closed English lexicon, or its last word ends in -ion; - review judges humour first, then explicitness; - jokers are named one by one, each with its reason; - the 32 existing names are grandfathered.
+
+    </details>
+
+### Bug Fixes
+
+* **ci:** train — a landed lot exits 0 even when its worktree cannot be removed ([#3736](https://github.com/SocialGouv/iterion/issues/3736)) ([#3792](https://github.com/SocialGouv/iterion/issues/3792)) ([d0b3c9d](https://github.com/SocialGouv/iterion/commit/d0b3c9df7d826603cb65f000abb23f7a3eb9c273)), references [#3759](https://github.com/SocialGouv/iterion/issues/3759)
+
+    <details><summary>why</summary>
+
+    Revi Rf9cffc: once Land had merged every pull request, a failure in removeWorktree reached main() as a plain error and exited 2. The contract defines 2 as "a precondition refused — no verdict", so a script trusting the code would conclude nothing landed while main carried the whole lot. Two ways to hit it: a read-only .git/worktrees, or a symlinked state directory (#3759).
+
+    </details>
+
 ## [7.39.0](https://github.com/SocialGouv/iterion/compare/v7.38.4...v7.39.0) (2026-11-26)
 
 ### Features
