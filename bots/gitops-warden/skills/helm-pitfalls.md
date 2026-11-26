@@ -3,7 +3,7 @@ name: helm-pitfalls
 description: Verified Helm traps for a merge verdict: renamed values keys dropping config silently, subchart aliases and conditions, StatefulSet immutability, frozen rendered tags
 ---
 
-> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated.
+> Curated for the gitops review bot from devops-agent-as-markdowns@a0d22bc (operator-local documentation of the platform). Trimmed to what a merge verdict needs; concrete host names are templated. Paths shown in backticks without a link (`15-build-ci/…`, `20-cd-pattern/…`, `scripts/…`, `.repos/…`, sibling pages) name files of that source, which this bundle does not ship.
 
 # Helm — pièges vérifiés (conditions, sous-charts, changement de chart)
 
@@ -127,7 +127,7 @@ Quand un rendu est **figé** dans un repo gitops (plutôt que régénéré par l
 - **clés vides sérialisées `null`** — un `envFrom:` sans contenu produit `envFrom: null`. Valide pour `kubectl` et `kubeconform`, mais c'est du bruit et une source de diff parasite côté ArgoCD.
 - **`automountServiceAccountToken`** — beaucoup de charts ne l'exposent pas ; un composant qui n'appelle pas l'API Kubernetes n'a aucune raison de monter un token.
 
-⚠️ Tout post-traitement d'un rendu figé doit vivre **dans un script de génération versionné**, jamais en édition manuelle : sinon il est perdu à la prochaine régénération. Et le vrai remède reste de **ramener le composant dans un chart** rendu par la CI — un rendu figé n'est jamais mis à jour, c'est ainsi qu'un `:latest` cassé peut tourner 286 jours sans que personne ne le voie (cf. [runbook sirena](../30-migrations/sirena.md#sortie-de-bitnami--bascule-redis--valkey-2026-07-27)).
+⚠️ Tout post-traitement d'un rendu figé doit vivre **dans un script de génération versionné**, jamais en édition manuelle : sinon il est perdu à la prochaine régénération. Et le vrai remède reste de **ramener le composant dans un chart** rendu par la CI — un rendu figé n'est jamais mis à jour, c'est ainsi qu'un `:latest` cassé peut tourner 286 jours sans que personne ne le voie (cf. runbook sirena (`30-migrations/sirena.md#sortie-de-bitnami--bascule-redis--valkey-2026-07-27`)).
 
 ## 8. 🪤 Wrapper autour d'un chart tiers : le « double niveau » est souvent la seule option
 
@@ -156,9 +156,9 @@ mv helm_charts/generated_manifests/sirena/charts/* <gitops>/deployment-targets/<
 
 ## Voir aussi
 
-- [Pattern CD — vue d'ensemble](overview.md) : chart agnostique dans le repo app ⇄ repo gitops.
-- [Secrets via External Secrets](secrets-externalsecrets.md) : pièges ESO, dont `target.immutable` (le Secret n'est écrit qu'une fois — ajouter une clé n'a d'effet qu'après suppression).
-- [Runbook sirena](../30-migrations/sirena.md) : le terrain d'où viennent les pièges 1, 2, 3, 5, 6 et 7.
+- Pattern CD — vue d'ensemble (`overview.md`) : chart agnostique dans le repo app ⇄ repo gitops.
+- Secrets via External Secrets (`secrets-externalsecrets.md`) : pièges ESO, dont `target.immutable` (le Secret n'est écrit qu'une fois — ajouter une clé n'a d'effet qu'après suppression).
+- Runbook sirena (`30-migrations/sirena.md`) : le terrain d'où viennent les pièges 1, 2, 3, 5, 6 et 7.
 
 # Documentation des charts Helm : `helm-docs`
 
@@ -249,4 +249,4 @@ docker run --rm --volume "$(pwd):/helm-docs" jnorwood/helm-docs:latest \
 ```
 ⚠ Comme `alpine/helm`, l'image a pour `ENTRYPOINT` `helm-docs` — en CI, penser à
 `entrypoint: [""]` (sinon `sh -c "..."` devient `helm-docs sh -c "..."`, même piège documenté
-côté [ci-common](../10-platforms/ci-common.md)/[gitops-cd-component](../20-cd-pattern/gitops-cd-component.md)).
+côté ci-common (`10-platforms/ci-common.md`)/gitops-cd-component (`20-cd-pattern/gitops-cd-component.md`)).

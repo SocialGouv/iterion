@@ -416,7 +416,7 @@ authenticated by signed state + an agent-binding cookie:
 |---|---|---|
 | GET | `/connections` | list connections |
 | POST | `/connections` | connect (`mode: pat` \| `oauth` \| `app`) → `{connection}`, `{authorize_url}`, or `{install_url}` (GitHub-only `app`) |
-| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), toggle `security_read_enabled`, or replace a PAT connection's token (`{"pat": "<token>"}`, sent alone — see [Renewing a token](#renewing-a-token)) |
+| PATCH | `/connections/{conn_id}` | pin or clear the hook base (`{"webhook_base_url": "<base>" \| ""}`, sent alone), toggle `security_read_enabled`, or replace a PAT connection's token (`{"pat": "<token>"}`, sent alone — see [Renewing a token](#renewing-a-token-in-place-keeping-the-connection)) |
 | POST | `/connections/{conn_id}/reauthorize` | OAuth connections: start the re-authorisation of the EXISTING connection (dead grant, `needs_reauth`) → `{authorize_url}`; the callback seals the fresh pair into the same row |
 | DELETE | `/connections/{conn_id}` | disconnect (deprovisions every repo first) |
 | GET | `/connections/{conn_id}/health` | stored + live connection and token health |

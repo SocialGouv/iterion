@@ -8,7 +8,7 @@ A memory space is a quota-governed tree of Markdown documents addressed by a vis
 
 The surfaces that write a space meet at `knowledge.MemoryStore.WriteDocument`, which two adapters implement: Mongo in cloud mode, the filesystem everywhere else. Three of them carry refusals of their own; `iterion memory import` is a fourth, entering at the seam with nothing above it but the per-entry checks of `ImportSpace`. The refusals before the seam belong to the caller, the ones after it to the adapter — and the two adapters do not refuse the same things.
 
-The diagram lives on the feature page: [a write, end to end](../memory-and-knowledge.md#a-write-end-to-end).
+The steps below are the record of that path; the feature page, [memory and knowledge spaces](../memory-and-knowledge.md), carries no diagram of it.
 
 ## Steps
 
