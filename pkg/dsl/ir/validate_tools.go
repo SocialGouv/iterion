@@ -14,10 +14,13 @@ const (
 )
 
 // toolNodeRefusedFix is C159's fix on a tool node. The catalog's fix offers
-// rerouting to a backend, which a tool node cannot use: ClawExecutor runs its
-// registry recipe on claw's registry whatever the backend.
-const toolNodeRefusedFix = "A tool node's registry `command:` runs on claw's registry whatever the backend, and no backend serves this tool: " +
-	"do the work as a shell `command:` or a `script:` (the message names the replacement); " +
+// an agent or judge node rerouting to a backend that serves the capability; a
+// tool node cannot use it, since ClawExecutor runs its registry recipe on
+// claw's registry whatever the backend. The fix says that and nothing about
+// other backends, so both hints hold in one validate output.
+const toolNodeRefusedFix = "A tool node's registry `command:` runs on claw's registry whatever the backend: " +
+	"a tool node takes no `backend:`, and the workflow `default_backend` leaves its recipe on that registry. " +
+	"Do the work as a shell `command:` or a `script:` (the message names the replacement); " +
 	"for a cron entry, arm a platform schedule instead."
 
 // validateNodeTools checks that every declared tool name can actually resolve
