@@ -441,3 +441,70 @@ workflow w:
 		t.Errorf("C159 reads the command of a node whose recipe is not a registry one: %v", got)
 	}
 }
+
+// TestAgentAndToolNodeRefusedHintsAgreeInOneOutput compiles one workflow
+// whose claw agent node lists cron_create and whose tool node runs it as its
+// registry `command:`, so both C159 hints land in the same validate output.
+// They must state one world: the agent node's hint offers rerouting to a
+// backend that serves the capability and scopes that offer to the nodes it
+// can reach (agent and judge), and the tool node's hint says why rerouting
+// does not reach its recipe without denying that such a backend exists.
+func TestAgentAndToolNodeRefusedHintsAgreeInOneOutput(t *testing.T) {
+	src := `schema out:
+  answer: string
+
+prompt p:
+  hi
+
+agent x:
+  system: p
+  output: out
+  backend: "claw"
+  model: "anthropic/claude-opus-5"
+  tools: [cron_create]
+
+tool arm:
+  command: cron_create
+
+workflow w:
+  entry: x
+  x -> arm
+  arm -> done
+`
+	cr := compileToolsSrc(t, src)
+	var agentHint, toolHint string
+	var n int
+	for _, d := range cr.Diagnostics {
+		if d.Code != refusedCode {
+			continue
+		}
+		n++
+		switch d.NodeID {
+		case "x":
+			agentHint = d.Hint
+		case "arm":
+			toolHint = d.Hint
+		}
+	}
+	if n != 2 || agentHint == "" || toolHint == "" {
+		t.Fatalf("want one C159 with a hint on the agent node and one on the tool node, got %d: %v", n, cr.Diagnostics)
+	}
+	if !strings.Contains(agentHint, "agent or judge node") {
+		t.Errorf("the agent-node C159 hint offers rerouting without scoping it to the nodes rerouting reaches: %q", agentHint)
+	}
+	if !strings.Contains(agentHint, "whatever the backend") {
+		t.Errorf("the agent-node C159 hint does not say a tool node's recipe runs on claw's registry whatever the backend: %q", agentHint)
+	}
+	if denial := regexp.MustCompile(`(?i)\b(no|none|nothing|never)\b[^.;:]*\bserv|\bserv\w*\s+(on|by)\s+no\b`); denial.MatchString(toolHint) {
+		t.Errorf("the tool-node C159 hint says no backend serves the tool, which the agent-node hint beside it contradicts: %q", toolHint)
+	}
+	if !strings.Contains(toolHint, "whatever the backend") {
+		t.Errorf("the tool-node C159 hint does not say why changing the backend cannot serve its recipe: %q", toolHint)
+	}
+	if otherBackend := regexp.MustCompile(`(?i)\b(any|other|no)\s+(other\s+)?backends?\b`); otherBackend.MatchString(toolHint) {
+		t.Errorf("the tool-node C159 hint makes a claim about other backends, which the agent-node hint beside it owns: %q", toolHint)
+	}
+	if !strings.Contains(toolHint, "takes no `backend:`") || !strings.Contains(toolHint, "`default_backend` leaves its recipe on") {
+		t.Errorf("the tool-node C159 hint does not name the lever a tool node has (no `backend:` of its own, and the workflow `default_backend` leaves its recipe on claw's registry): %q", toolHint)
+	}
+}
