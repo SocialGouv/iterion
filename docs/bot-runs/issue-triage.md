@@ -1,6 +1,6 @@
 [← Bot runs](README.md)
 
-# issue-triage — Triagy
+# issue-triage — Right Direction (formerly Triagy)
 
 Single-shot card router: fired by the trigger spine on `triage:auto`
 (consumed one-shot), reads ONE board card, stamps the handler bot

@@ -1,5 +1,5 @@
 ## ─────────────────────────────────────────────────────────────────
-## supply-shield-cve.bot — "Vulny"
+## supply-shield-cve.bot — "Code Red"
 ##
 ## Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE
 ## sibling of supply-shield (Shieldy): same pipeline, but the analysis

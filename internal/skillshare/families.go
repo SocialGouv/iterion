@@ -53,7 +53,7 @@ func Families() []Family {
 			Source:  "rgaa-audit",
 			Mirrors: []string{"sec-audit-deps", "sec-audit-source", "supply-shield", "supply-shield-cve"},
 			Variants: []Variant{
-				{"evolve", "names Evoly's own emit-node capability grant (read, create, assign, label — it does not close issues) and the backlog/horizon:next defaults its tickets carry."},
+				{"evolve", "names Deep Blue's own emit-node capability grant (read, create, assign, label — it does not close issues) and the backlog/horizon:next defaults its tickets carry."},
 				{"whats-next", "carries the Nexie boundary paragraph: the conversational node holds board.read ONLY and expresses every write through the assistant_actions contract, so the mutating tools below it are not an escape hatch."},
 			},
 		},

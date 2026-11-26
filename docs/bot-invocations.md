@@ -12,7 +12,7 @@ machine-read routing contract, orthogonal to the two pre-existing fields:
 
 The studio Integrations picker offers every bot that declares an
 `invocations:` block (or a legacy `forge:` block); orchestrators that declare
-neither (Nexie, Evoly) stay out of the picker.
+neither (Nexie, Deep Blue) stay out of the picker.
 
 ## Schema
 
@@ -137,15 +137,18 @@ declare `min_replier_role: maintainer`.
 | whole-improve-loop (Willy) | `/willy <prompt>` | PR/issue | board |
 | bmady (Bmady) | `/bmady <brief>` | PR/issue | board |
 | secured-renovacy (Renovacy) | `/renovacy` + weekly | PR/issue | board |
-| devbox-setup (Devy) | `/devy` | PR/issue | board |
+| devbox-setup (Devboxing) | `/devboxing` (+ `/devy`) | PR/issue | board |
 | docs-refresh (Doki) | `/doki` + nightly | PR/issue | board |
 | adr-cartograph (Adry) | `/adry` + weekly | PR/issue | board |
-| adr-rechallenge (ReArchi) | `/rearchi` | PR/issue | board |
+| adr-rechallenge (White Elephant) | `/white-elephant` (+ `/rearchi`) | PR/issue | board |
 | sec-audit-source (Seki) | `/seki` + Mon 02:00 | PR/issue | board |
 | sec-audit-deps (Depsy) | `/depsy` + Mon 03:00 | PR/issue | board |
 | rgaa-audit (Acci) | `/acci` (+ `/ally`, `/a11y`, `/ultra11y`) + Mon 05:00 | PR/issue | board |
 
-The technical bot name is always an alias (`/feature-dev` ≡ `/featurly`).
+The technical bot name is usually an alias too (`/feature-dev` ≡ `/featurly`).
+When a bot named under the [naming doctrine](agents/bots/naming.md) declares
+a command, its persona answers to its kebab-case form (`/white-elephant`), and
+a renamed bot keeps its old command as an alias (`/rearchi`).
 
 ## Adding a new trigger
 

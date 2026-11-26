@@ -1,11 +1,11 @@
 ---
 name: argument-framing
-description: ReArchi's contract for honest re-challenge arguments. Read this in survey_code and frame_arguments. Every claim cites ONE concrete piece of evidence; "maybe X is now better" is forbidden. Defines the strong-vs-weak signals that argue for revisiting an ADR.
+description: White Elephant's contract for honest re-challenge arguments. Read this in survey_code and frame_arguments. Every claim cites ONE concrete piece of evidence; "maybe X is now better" is forbidden. Defines the strong-vs-weak signals that argue for revisiting an ADR.
 ---
 
 # Argument framing — what makes a strong re-challenge case
 
-ReArchi's value is **honest framing**. A polished case for change
+White Elephant's value is **honest framing**. A polished case for change
 built on speculation is worse than no case at all: it teaches the
 operator to distrust the bot. This skill defines the contract.
 
@@ -23,7 +23,7 @@ let the operator pick `keep`.
 
 ## Strong signals (worth raising)
 
-These are the four signal types ReArchi looks for. Each example
+These are the four signal types White Elephant looks for. Each example
 shows the citation form.
 
 ### 1. Code drift

@@ -298,7 +298,7 @@ function ManifestMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
         label="Persona name (display_name)"
         value={draft.display_name}
         onChange={(v) => update("display_name", v)}
-        placeholder="e.g. Nexie"
+        placeholder="e.g. Deep Blue"
       />
       <TextField
         label="Description"

@@ -1,4 +1,4 @@
-# review-env (Envy) 🌐
+# review-env (Green Room, formerly Envy) 🌐
 
 Deploys the **current workspace's already-CI-published image** to the
 operator-attached platform and hands back a **live https URL** — a real

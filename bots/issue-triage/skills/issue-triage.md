@@ -1,6 +1,6 @@
 ---
 name: issue-triage
-description: Triagy's single-shot routing procedure — read one board card, stamp the handler bot + labels, comment the rationale, never move or process the card.
+description: Right Direction's single-shot routing procedure — read one board card, stamp the handler bot + labels, comment the rationale, never move or process the card.
 ---
 
 # issue-triage — the routing contract

@@ -16,6 +16,7 @@ touch names:
 | [input-drop-traps.md](input-drop-traps.md) | A dead input field was dropped; two shapes of text still name it. |
 | [universality.md](universality.md) | The repo- and stack-agnostic universality rules (vars, prompts, scanners). |
 | [taxonomy.md](taxonomy.md) | The six-verb navigation spine: `category:` and `tags:`. |
+| [naming.md](naming.md) | Naming or renaming a catalog bot: a colour, or ends like iterion. |
 | [engine-bot-agnostic.md](engine-bot-agnostic.md) | Engine code about to name a bot. |
 | [toolchain-devbox.md](toolchain-devbox.md) | A bot needs a binary the sandbox lacks. |
 

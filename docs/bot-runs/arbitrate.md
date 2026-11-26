@@ -1,4 +1,4 @@
-# Themis — `arbitrate` run bilans
+# Grey Area (formerly Themis) — `arbitrate` run bilans
 
 Doctrine-bound judge for the divergence cases a modernisation programme
 leaves blocked. See [bots/arbitrate/](../../bots/arbitrate/).

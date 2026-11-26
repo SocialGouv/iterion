@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// The deterministic half of supply-shield-cve (Vulny), the CVE sibling of
+// The deterministic half of supply-shield-cve (Code Red), the CVE sibling of
 // supply-shield (Shieldy): same pipeline shape, analysis axis KNOWN
 // VULNERABILITIES. The tests pin what no LLM is needed for: the osv-scanner
 // parser (the CVE-specific block Shieldy does not carry), the anti-façade

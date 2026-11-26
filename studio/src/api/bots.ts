@@ -80,7 +80,7 @@ export interface BotEntry {
   /** Typed routing contract (manifest `invocations:`) — how this bot can be
    *  triggered (forge event, /slash-command, schedule, board) and the
    *  execution mode each path uses. Drives the Integrations picker grouping.
-   *  Empty for orchestrators (Nexie/Evoly) and loose .bot files. */
+   *  Empty for orchestrators (Nexie/Deep Blue) and loose .bot files. */
   invocations?: Invocation[];
   /** Launch-form hints (manifest `launch:` block) — which vars the bot
    *  considers its main inputs vs noise. Purely presentational: the launch

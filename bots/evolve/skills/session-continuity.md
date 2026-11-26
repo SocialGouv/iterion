@@ -10,7 +10,7 @@ disable-model-invocation: true
 <!-- The source of the `session-continuity.md` family
      (internal/skillshare/families.go): this bundle carries a `memory:`
      block on a claw node, so it owns the write contract every member
-     reads. Evoly-specific layout is in evolve-memory-layout.md. -->
+     reads. The layout specific to Deep Blue is in evolve-memory-layout.md. -->
 
 # Session Continuity — iterion workspace memory
 

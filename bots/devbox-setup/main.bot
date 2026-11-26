@@ -1,5 +1,5 @@
 ## ─────────────────────────────────────────────────────────────────
-## devbox-setup — "Devy". Authors a pinned devbox.json for a repo's
+## devbox-setup — "Devboxing". Authors a pinned devbox.json for a repo's
 ## toolchain so iterion bots (and humans) can run its build/test/e2e in
 ## a reproducible environment (ADR-017 Tier-3).
 ##
@@ -182,7 +182,7 @@ if not files:
     print(json.dumps({'committed': False, 'output': 'no devbox.json to commit'}))
     raise SystemExit(0)
 subprocess.run(['git', 'add'] + files, cwd=ws, capture_output=True)
-r = subprocess.run(['git', '-c', 'user.email=devy@iterion.local', '-c', 'user.name=Devy', 'commit', '-m', 'chore(devbox): add devbox.json toolchain (devbox-setup)'], cwd=ws, capture_output=True)
+r = subprocess.run(['git', '-c', 'user.email=devboxing@iterion.local', '-c', 'user.name=Devboxing', 'commit', '-m', 'chore(devbox): add devbox.json toolchain (devbox-setup)'], cwd=ws, capture_output=True)
 print(json.dumps({'committed': r.returncode == 0, 'output': (r.stdout + r.stderr).decode('utf-8', 'ignore')[-2000:]}))
 "`
   input: verify_input

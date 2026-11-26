@@ -36,7 +36,7 @@ func TestResolveSpaceRef(t *testing.T) {
 }
 
 // TestFSStore_BotVisibility_PathLayout pins the exact on-disk layout of a
-// visibility:bot space — the per-bot tree Evoly accumulates its vision in.
+// visibility:bot space — the per-bot tree Deep Blue accumulates its vision in.
 // Suffix match keeps it portable; the round-trip proves the path is usable.
 func TestFSStore_BotVisibility_PathLayout(t *testing.T) {
 	t.Setenv("ITERION_HOME", t.TempDir())

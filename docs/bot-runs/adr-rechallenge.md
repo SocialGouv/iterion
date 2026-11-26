@@ -1,6 +1,6 @@
 [← Bot runs](README.md)
 
-# adr-rechallenge (ReArchi) — bilans
+# adr-rechallenge (White Elephant, formerly ReArchi) — bilans
 
 Human-in-the-loop ADR re-challenger. Loads one ADR + the current code, frames
 fresh arguments (changed assumptions, matured alternatives, dependency/code

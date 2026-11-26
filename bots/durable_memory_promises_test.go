@@ -298,7 +298,7 @@ type briefPromise struct {
 //
 // Attribution matters because the generated catalogue is a page about OTHER
 // bots: inside `skills/iterion-bot-catalog.md` a mention belongs to the bundle
-// whose card encloses it, so Evoly's claw memory claim is checked against
+// whose card encloses it, so Deep Blue's claw memory claim is checked against
 // bots/evolve wherever the card is copied.
 func briefPromises(t *testing.T) []briefPromise {
 	t.Helper()

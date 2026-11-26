@@ -46,7 +46,7 @@ when_to_use: |
   typosquat / homoglyph names, supply-chain re-publish). Diff-scoped by
   default; pass scope_mode=full for a whole-tree audit. Reports back on
   the forge and the board; does not fix. For a CVE-focused gate use the
-  companion bot supply-shield-cve (Vulny).
+  companion bot supply-shield-cve (Code Red).
 author: SocialGouv (devthejo) — bots/supply-shield/main.bot
 category: verify
 tags: [security, supply-chain, read-only]

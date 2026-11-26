@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// TestLive_Bot_DevboxSetup runs the devbox-setup bot (Devy) against a
-// polyglot repo with no devbox.json. Devy detects the stack, generates a
+// TestLive_Bot_DevboxSetup runs the devbox-setup bot (Devboxing) against a
+// polyglot repo with no devbox.json. Devboxing detects the stack, generates a
 // devbox.json (+ devbox.lock via `devbox install`), and commits — inside a
 // worktree (worktree: auto; no sandbox block per ADR-082 — direct engine runs are host-side, so devbox/nix come from the host).
 //
@@ -31,7 +31,7 @@ func TestLive_Bot_DevboxSetup(t *testing.T) {
 	}
 	t.Logf("Workspace (persists): %s", workspaceDir)
 
-	// Polyglot repo (Go + Node), NO devbox.json → Devy must detect + author.
+	// Polyglot repo (Go + Node), NO devbox.json → Devboxing must detect + author.
 	seedGitRepo(t, workspaceDir)
 	writeWorkspaceFiles(t, workspaceDir, map[string]string{
 		"go.mod":       "module iterion-live-fixture\n\ngo 1.25\n",
@@ -62,7 +62,7 @@ func TestLive_Bot_DevboxSetup(t *testing.T) {
 	assessQuality(t, res, qualityInput{
 		kind:          "bot",
 		name:          "devbox-setup",
-		persona:       "Devy",
+		persona:       "Devboxing",
 		primaryFamily: "anthropic",
 		task:          "Detect a Go+Node polyglot stack and author a devbox.json (+lock), committing it.",
 		workProduct:   worktreeArtifactEvidence(t, workspaceDir),
