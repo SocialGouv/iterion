@@ -44,8 +44,9 @@ self-authenticating inbound webhook endpoints that launch a bot per
 external event — GitLab MR open/reopen **and** `/revi` note re-review,
 GitHub PR, Forgejo/Gitea PR, and a generic JSON trigger. Per-org
 `iwh_` tokens (token or HMAC mode), rate limits, monthly quotas,
-idempotent delivery audit, and the per-org launch gate (run quota /
-cost cap / concurrency — `pkg/orgusage` + `pkg/server/launch_gate.go`)
+idempotent delivery audit, and the launch gate (org run quota / cost
+cap, team concurrency / launch rate — `pkg/orgusage` +
+`pkg/server/launch_gate.go`)
 all sit in front of the launch. Key files:
 [pkg/webhooks/](../../../pkg/webhooks) (spine + per-provider parsers),
 [pkg/server/webhooks_common.go](../../../pkg/server/webhooks_common.go) (shared

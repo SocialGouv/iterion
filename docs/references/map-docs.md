@@ -448,7 +448,7 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/privacy_filter.md`](../privacy_filter.md) | Privacy Filter | Iterion ships two complementary built-in tools that detect and redact | — |
 | [`docs/probes-and-graceful-shutdown.md`](../probes-and-graceful-shutdown.md) | Probes and graceful shutdown | How a k8s deployment of iterion answers *is this pod alive*, *should it | — |
 | [`docs/quickstart.md`](../quickstart.md) | 🚀 Quickstart | For developers who already live in AI coding tools. | — |
-| [`docs/quotas-and-limits.md`](../quotas-and-limits.md) | Quotas and limits | set on a paying org, or debugging "why did this run get denied". | — |
+| [`docs/quotas-and-limits.md`](../quotas-and-limits.md) | Quotas and limits | override on one org or team, or debugging "why did this run get denied". | — |
 | [`docs/recipes.md`](../recipes.md) | Recipes | A recipe pins one `.bot` to a named configuration — preset vars, prompt overrides, a budget, and a success metric — so you can… | — |
 | [`docs/references-bootstrap.md`](../references-bootstrap.md) | References bootstrap — deepsec + harness clones | Seki's `external-security-tools` skill uses a local references directory | — |
 | [`docs/references/author-schema.md`](author-schema.md) | The author document — keys and values | An author document (`x.bot.yaml`) is the YAML twin a `.bot` can be written as: the same declarations under the same names, with YAML's own… | — |

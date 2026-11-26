@@ -146,9 +146,9 @@ Five steps to a working forge loop:
 4. Enable a bot for that repository; Iterion provisions the managed hook, webhook secret, credential binding, and optional schedule
 5. Open a PR/MR — watch the run in the studio and the result land back on the forge
 
-Org quotas (runs / cost / concurrency / rate), audit log, personal
-access tokens, DLQ ops and Prometheus metrics make it operable as a
-real multi-tenant service. Start with the [Iterion Cloud overview](docs/cloud-overview.md).
+Org quotas (runs / cost), team limits (concurrency / launch rate), audit
+log, personal access tokens, DLQ ops and Prometheus metrics make it
+operable as a real multi-tenant service. Start with the [Iterion Cloud overview](docs/cloud-overview.md).
 
 ---
 

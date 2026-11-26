@@ -640,8 +640,11 @@ config:
     accessTtl: 15m
     refreshTtl: 720h
     # invite_only (default) requires an invitation token to register.
-    # open allows public sign-up — provisions a personal team per
-    # new user.
+    # open allows public sign-up, with no email verification —
+    # provisions a personal org and a personal team per new user. They
+    # carry no caps of their own: the monthly run quota and cost cap
+    # (org) and the concurrency and launch-rate caps (team) fall back to
+    # the ITERION_ORG_DEFAULT_* platform defaults, unlimited when unset.
     signupMode: invite_only
     oidc:
       google:

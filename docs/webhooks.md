@@ -384,7 +384,7 @@ failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
   `bot_ids` during the window drops the parked launch (with a
   `filtered` delivery naming why), because the sweep re-enters none of
   the admission the inbound request passed; and a parked launch the
-  admission gate refuses (org concurrency, launch rate) or that fails
+  admission gate refuses (team concurrency, team launch rate) or that fails
   outright is **re-armed with backoff**, not dropped — the forge was
   answered `202 deferred` and will never redeliver, so the retry has to
   live here. That chain is bounded (8 attempts, ~45 min); past it, or
@@ -1550,7 +1550,7 @@ flowchart TD
     EN -- "no" --> E410["410 webhook disabled"]
     EN -- "yes" --> RATE{"per-webhook token bucket, default rate 1.0 and burst 10"}
     RATE -- "empty" --> E429R["429 with Retry-After - NO delivery row, only the throttled metric"]
-    RATE -- "a token taken" --> QUO{"monthly call CAS in webhook_quotas - the org key, then a per-webhook key when capped"}
+    RATE -- "a token taken" --> QUO{"monthly call CAS in webhook_quotas - the team key, then a per-webhook key when capped"}
     QUO -- "cap breached" --> E429Q["429 monthly call quota exceeded - NO delivery row either"]
     QUO -- "the counter is unreadable" --> E500["500 quota check failed"]
     QUO -- "admitted" --> TEAM{"GetTeam on cfg.TenantID"}
@@ -1641,7 +1641,7 @@ middleware before the provider handler runs
 | Verify token (token-mode only) | bad token | 401 `invalid webhook token` |
 | Config not disabled | `enabled=false` | 410 `webhook disabled` |
 | Per-webhook token-bucket rate (default `rate=1.0, burst=10`) | bucket empty | 429 with `Retry-After` |
-| Per-org monthly call quota (default **10 000**; `monthly_call_limit` adds a per-webhook cap) | quota exhausted | 429 `monthly call quota exceeded` |
+| Per-team monthly call quota (**10 000**, a constant with no override, counted under the team's `org\|<team id>` key; `monthly_call_limit` adds a tighter per-webhook cap) | quota exhausted | 429 `monthly call quota exceeded` |
 | The same quota read | the counter is unreadable | 500 `quota check failed` |
 | Org status `active`, from one team lookup | suspended / read-only | 403 `org suspended` |
 | The same team lookup | the team no longer exists | 403 `tenant no longer exists` |
