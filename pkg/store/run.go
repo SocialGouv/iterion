@@ -1132,6 +1132,11 @@ type RunCredStamp struct {
 	// terms: a re-resolution that sealed no gateway key holds no gateway
 	// slot.
 	CapacitySubjects []string
+	// CapacityStamped says the resolution read CapacitySubjects off the
+	// bundle it sealed, so that an empty list says the run seals no gateway
+	// key. It replaces Run.CapacityStampedFor: the marker of this stamp's
+	// two lists when true (CapacityStampedFor), cleared when false.
+	CapacityStamped bool
 	// Tiers replaces Run.CredentialTiers wholesale, on the same terms.
 	Tiers []string
 	// SkippedReopensAt replaces Run.SkippedCredReopensAt; nil clears it.
@@ -1146,9 +1151,54 @@ type RunCredStamp struct {
 func (s RunCredStamp) Apply(r *Run) {
 	r.CredFingerprints = s.Fingerprints
 	r.CapacitySubjects = s.CapacitySubjects
+	r.CapacityStampedFor = s.CapacityStampedFor()
 	r.CredentialTiers = s.Tiers
 	r.SkippedCredReopensAt = s.SkippedReopensAt
 	r.LLMIdleSince = nil
+}
+
+// CapacityStampedFor is the Run.CapacityStampedFor value this stamp writes:
+// CapacityStampDigest of its fingerprints and subjects when its resolution
+// read the subjects (CapacityStamped), "" — the field cleared — otherwise.
+// Both twins of SetRunCredStamp write it through here.
+func (s RunCredStamp) CapacityStampedFor() string {
+	if !s.CapacityStamped {
+		return ""
+	}
+	return CapacityStampDigest(s.Fingerprints, s.CapacitySubjects)
+}
+
+// CapacityStampDigest is the marker of a stamp that read its capacity
+// subjects (Run.CapacityStampedFor): a digest of the stamp's fingerprints and
+// subjects, each list sorted and each value length-prefixed, so the order a
+// store keeps does not change it and no value can pass for its neighbours or
+// for the other list's. Never empty, the empty stamp's included: a resolution
+// that sealed nothing read its subjects too.
+func CapacityStampDigest(fingerprints, subjects []string) string {
+	h := sha256.New()
+	for _, list := range [][]string{fingerprints, subjects} {
+		for _, v := range slices.Sorted(slices.Values(list)) {
+			fmt.Fprintf(h, "%d:%s,", len(v), v)
+		}
+		fmt.Fprint(h, ";")
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// CapacitySubjectsRead reports whether r's CapacitySubjects are exactly the
+// gateways its latest resolution sealed a key on, an empty list meaning none:
+// the latest stamp read them off its bundle, and its marker
+// (CapacityStampedFor) still qualifies the fingerprints and subjects on the
+// document. False on a run whose latest stamp was written without the
+// subjects, and on one a writer that does not know the marker re-stamped —
+// its empty CapacitySubjects then says nothing about the gateway it dials,
+// and the gateway status route reads its host off its key row, or counts it
+// unresolved.
+func (r *Run) CapacitySubjectsRead() bool {
+	if r == nil || r.CapacityStampedFor == "" {
+		return false
+	}
+	return r.CapacityStampedFor == CapacityStampDigest(r.CredFingerprints, r.CapacitySubjects)
 }
 
 // RunContentBoundary identifies the tenant gateway credential a run is
@@ -1262,14 +1312,31 @@ type Run struct {
 	// counted by the same predicate (SpendsCredential), so the run-admission
 	// ledger (CredSlotStore) holds, adopts and evicts a subject's holders on
 	// the rules it applies to a key's. The ledger reads it as a set: the
-	// stores keep the order the stamp gives. No resolution stamps a subject
-	// yet (ADR-167 slice T2 does): until then the field is empty on every
-	// run and changes no count.
+	// stores keep the order the stamp gives. Every resolution that seals a
+	// gateway key stamps its subject, read from the sealed bundle's two
+	// channels at launch and at every resume (cloudpublisher
+	// capacitySubjectsOf); no admission reserves one, so the field feeds the
+	// gateway readings (iterion_gateway_alive_runs, the gateway status
+	// route) and changes no admission.
 	//
 	// A field of its own, never folded into CredFingerprints: the run
 	// snapshot, a usage wait's wall credentials and the credential walk
 	// read those as the identities of credentials, and a subject is none.
 	CapacitySubjects []string `json:"capacity_subjects,omitempty" bson:"capacity_subjects,omitempty"`
+	// CapacityStampedFor marks the stamp whose resolution read the capacity
+	// subjects off the bundle it sealed (RunCredStamp.CapacityStamped;
+	// cloudpublisher's always does): the CapacityStampDigest of the
+	// CredFingerprints and CapacitySubjects it wrote, empty when the latest
+	// stamp did not read them. Written only through RunCredStamp, with the
+	// two lists it qualifies; read only through CapacitySubjectsRead.
+	//
+	// A digest of the pair rather than a flag, because a writer that does not
+	// know the field leaves it in place while it rewrites the stamp: a T1 or
+	// pre-T1 replica's SetRunCredStamp, during a rolling deploy, writes new
+	// fingerprints and clears (T1) or keeps (pre-T1) the subjects. The digest
+	// then no longer matches the lists on the document, and the marker reads
+	// unset — a flag would go on saying that a cleared list was read.
+	CapacityStampedFor string `json:"capacity_stamped_for,omitempty" bson:"capacity_stamped_for,omitempty"`
 	// CredentialTiers names which resolution tiers funded this run
 	// (CredentialTier* above), sorted and deduplicated. Stamped with
 	// CredFingerprints, as one unit, at launch and at every resume —

@@ -1664,6 +1664,14 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 	// reserves (cred_slots.go). Read off the stamp, so a key the stamp
 	// narrows out holds no slot either.
 	res.credSlots = wants.sealed(res.fingerprints)
+	// The capacity subjects the sealed keys draw on (ADR-167 §2): the
+	// gateway of every openai_compatible key the bundle seals, both
+	// channels, read off the bundle every fill and the refused-key restore
+	// above have finished with. A sealed gateway key is always spent
+	// (spendsKey), so the subjects are narrowed exactly as the fingerprints
+	// are. Observed only: no gateway slot is reserved (credSlots keeps the
+	// keys alone).
+	res.capacitySubjects = capacitySubjectsOf(bundle)
 
 	// Which TIERS funded the run — the same spendable narrowing, but walked
 	// over the slots the bundle actually SEALED rather than over the
@@ -1956,6 +1964,12 @@ type credResolution struct {
 	// parks on the credential it fell THROUGH to retries when the one it
 	// was refused reopens, not when the fallback does.
 	skippedReopensAt time.Time
+	// capacitySubjects are the shared capacities the sealed credentials draw
+	// on (store.Run.CapacitySubjects): the `gw:<host>` of every gateway key
+	// the bundle seals, both channels (capacitySubjectsOf). Stamped beside
+	// fingerprints as one unit, at launch and at every resume; observed
+	// only — the admission reserves none of them.
+	capacitySubjects []string
 	// credSlots are the capped API keys the stamp names, in stamp order —
 	// the slots the admission step must hold before the run is queued
 	// (cred_slots.go). Narrowed like fingerprints: a key sealed for a route
@@ -1970,9 +1984,12 @@ type credResolution struct {
 	contentBoundary *store.RunContentBoundary
 }
 
-// stamp is the run-document form of the resolution.
+// stamp is the run-document form of the resolution. CapacityStamped is set
+// on every stamp, the empty resolution's included: the subjects are what
+// capacitySubjectsOf read off the bundle sealed, so an empty list says the
+// run seals no gateway key.
 func (c credResolution) stamp() store.RunCredStamp {
-	s := store.RunCredStamp{Fingerprints: c.fingerprints, Tiers: c.tiers}
+	s := store.RunCredStamp{Fingerprints: c.fingerprints, CapacitySubjects: c.capacitySubjects, CapacityStamped: true, Tiers: c.tiers}
 	if !c.skippedReopensAt.IsZero() {
 		at := c.skippedReopensAt.UTC()
 		s.SkippedReopensAt = &at
@@ -5102,14 +5119,31 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// reconcile reads THIS stamp (store.CredSlotHolderStale), and a run
 	// whose document does not name a key it holds a slot of — a rotated
 	// key, a failed write — reads as a run that stopped spending it, so the
-	// next refusal on that key would evict it while it executes. With no
-	// capped key to reserve the write stays best-effort: a stale stamp then
-	// errs toward counting the run against a key it left (over-protection),
-	// never toward a cap held open.
+	// next refusal on that key would evict it while it executes.
+	//
+	// Fail-closed as well as soon as the old stamp or the new one carries a
+	// capacity subject (ADR-167 §2). A lost write leaves the old
+	// fingerprints beside the old subjects, which still agree with each
+	// other: a run whose key moved to another gateway would dial the new
+	// host while its document names the old one, and no reading of the
+	// document — the gateway status route's unnamed count, the activation
+	// guard — can see it. An over-count is no safe direction here either: a
+	// stale `gw:` holder takes a place every team shares. The old stamp is
+	// the one the lost write left on the document, read again after the
+	// claim (lostCapacityStampRefusal), never prior: prior predates the
+	// claim, and a concurrent resume can flip, stamp and revert the run in
+	// between — its revert puts the status back, not the stamp.
+	//
+	// With neither a capped key nor a subject the write stays best-effort: a
+	// stale stamp then errs toward counting the run against a key it left
+	// (over-protection), never toward a cap held open.
 	if serr := p.store.SetRunCredStamp(secretsCtx, spec.RunID, creds.stamp()); serr != nil {
 		if len(creds.credSlots) > 0 {
 			w := creds.credSlots[0]
 			return fmt.Errorf("cloudpublisher: resume of run %s refused: re-stamp its credential fingerprints: %w — api-key(%s) %q carries max_concurrent_runs=%d, and a slot its run document does not name would be evicted while the run executes", spec.RunID, serr, w.provider, w.name, w.max)
+		}
+		if refusal := p.lostCapacityStampRefusal(ctx, spec.RunID, creds.capacitySubjects, serr); refusal != nil {
+			return refusal
 		}
 		p.logger.Warn("cloudpublisher: re-stamp cred fingerprints on run %s: %v", spec.RunID, serr)
 	}

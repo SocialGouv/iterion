@@ -63,6 +63,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `POST` | `/api/admin/llm/api-keys` | platform admin | yes |
 | `DELETE` | `/api/admin/llm/api-keys/{key_id}` | platform admin | yes |
 | `PATCH` | `/api/admin/llm/api-keys/{key_id}` | platform admin | yes |
+| `GET` | `/api/admin/llm/gateway-alive-runs` | platform admin | yes |
 | `GET` | `/api/admin/llm/oauth/connections` | platform admin | yes |
 | `DELETE` | `/api/admin/llm/oauth/{kind}` | platform admin | yes |
 | `PATCH` | `/api/admin/llm/oauth/{kind}` | platform admin | yes |

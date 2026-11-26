@@ -143,7 +143,8 @@ the cap:
   filesystem store). The ledger also accepts rows for a shared capacity
   subject — a gateway's `gw:<host>`, designed in
   [ADR-167](adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md)
-  — but no resolution stamps one on a run
+  — and every run that seals a gateway key is stamped with its subject
+  (below), but nothing reserves one yet
   ([#3254](https://github.com/SocialGouv/iterion/issues/3254)), so today
   every row is a key's fingerprint. The reservation is one conditional
   write — add the run while the row has room — so of N concurrent
@@ -287,6 +288,60 @@ sweeper parks, and rule 1 releases it.
 Everything uncertain counts (over-protection), never the reverse: a count
 error leaves the walk's skip unapplied for that resolution and is logged —
 the admission still decides, and it fails closed.
+
+### Shared gateway subjects — stamped and observed
+
+A gateway key's fingerprint folds in its URL and its secret, so thirteen
+teams' keys on one LiteLLM host are thirteen rows and no cap above bounds the
+host. [ADR-167](adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md)
+gives the host a capacity subject of its own, `gw:<host>`
+(`store.GatewayCapacitySubject`: the host the gateway client dials, folded —
+lower case, punycode, no trailing dot, an IPv4-mapped address as IPv4).
+
+- **Every run that seals a gateway key is stamped.** `run.capacity_subjects`
+  names the `gw:<host>` of every `openai_compatible` key the bundle seals, in
+  either channel (`api_keys` and `pinned_api_keys`), written with
+  `cred_fingerprints` as one unit at launch and re-written at every resume
+  from the re-sealed bundle — never from `content_boundary.gateway_host`,
+  which is frozen at launch. A resume whose key moved to another gateway
+  holds the new host; one that seals no gateway key any more holds none. The
+  stamp also sets `run.capacity_stamped_for`: its subjects were read off the
+  sealed bundle, so an empty list says the run seals no gateway key — where a
+  run stamped without the subjects says nothing about its gateway. The marker
+  is a digest of the fingerprints and subjects the stamp wrote
+  (`Run.CapacitySubjectsRead` compares it with the document): a re-stamp by
+  an older replica during a rolling deploy, which rewrites the lists and
+  leaves a field it does not know in place, turns it stale, and the run reads
+  as stamped without its subjects again. A gateway key whose URL names no
+  host never reaches a run: the seal refuses it (`ErrGatewayKeyWithoutURL`),
+  and the resolution fails before any stamp.
+- **The runner's environment gateway is not stamped.** A run whose dials the
+  default runner expands to its own gateway seals no key, and is outside the
+  reading (ADR-167 leaves a gateway funded by a pool's environment to a later
+  slice).
+- **A lost re-stamp fails the resume closed** as soon as the run's old stamp
+  or its new one carries a subject. A lost write would leave the old
+  fingerprints beside the old subjects, which still agree with each other:
+  a run whose key moved to another gateway would dial the new host while its
+  document names the old one, and no reading of the document can see it. The
+  old stamp is the one the lost write left on the document, read again after
+  the resume claimed the run — a concurrent resume reverted since may have
+  left a subject there that the read before the claim did not see — and a
+  document that cannot be read again refuses too. The
+  cost: a retry sweeper's resume spends an attempt and is re-armed, then
+  abandoned past its attempt budget; a human answer gets the error and must
+  be resubmitted. A resume with no subject on either side and no capped key
+  keeps the best-effort write.
+- **Observed only.** The admission reserves no `gw:` row: `credSlots` holds
+  the capped keys alone, nothing parks on a gateway, and a run's subjects
+  change no admission until the enforce slice ships.
+
+Two readings count the holders, grouped from one listing of the alive runs
+(`store.AliveCapacityLister`, every tenant) through `Run.SpendsCredential`:
+the gauge `iterion_gateway_alive_runs{host}` — alive subbot trees, a tree
+being one place — and the super-admin route
+[`GET /api/admin/llm/gateway-alive-runs`](cloud-llm-credentials.md#shared-gateway-alive-runs),
+which also counts the trees alive on a host whose subjects do not name it.
 
 ## Workload audience — what a key is FOR
 

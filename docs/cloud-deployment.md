@@ -597,6 +597,8 @@ populated at runtime:
 | `iterion_bot_override_shadows_newer{slug}` | server | 1 while a platform bot override shadows a newer baked bundle (polled every five minutes, platform tier) |
 | `iterion_bot_shadow_check_unavailable` | server | 1 when that check could not run — no readable bot root included; the per-slug gauges hold their last values |
 | `iterion_bot_override_unorderable_version{slug}` | server | 1 for an override whose version cannot be ordered against the bundle below it; informational, unalerted |
+| `iterion_gateway_alive_runs{host}` | server | Alive subbot trees holding each shared gateway's `gw:<host>` subject, sampled every minute; every replica samples the same listing, so aggregate with `max` over the replicas that can read it — `max by (host) (iterion_gateway_alive_runs and on(namespace, pod) (iterion_gateway_alive_runs_unavailable == 0))` — and a host with none has no series, which reads 0 only while some replica's `_unavailable` is 0: per host, `… or (vector(0) and on() (min(iterion_gateway_alive_runs_unavailable) == 0))`, never a bare `or vector(0)`, which reads a fleet that cannot see as a quiet one |
+| `iterion_gateway_alive_runs_unavailable` | server | 1 until that sample succeeds and after any failed or timed-out read; the per-host series hold their last values. No series on a runner pod, which serves the registry without sampling |
 
 Wire a Prometheus PodMonitor:
 

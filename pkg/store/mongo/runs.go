@@ -1069,6 +1069,13 @@ func (s *Store) SetRunCredStamp(ctx context.Context, id string, stamp store.RunC
 	} else {
 		unset["capacity_subjects"] = ""
 	}
+	// The marker of the two lists written above (store.Run.CapacityStampedFor),
+	// computed where Apply computes it.
+	if marker := stamp.CapacityStampedFor(); marker != "" {
+		set["capacity_stamped_for"] = marker
+	} else {
+		unset["capacity_stamped_for"] = ""
+	}
 	if stamp.SkippedReopensAt != nil {
 		set["skipped_cred_reopens_at"] = stamp.SkippedReopensAt.UTC()
 	} else {
@@ -1282,6 +1289,21 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 	return int(n), nil
 }
 
+// holdingStatuses is the query form of store.RunStatus.HoldsCredentialSlot:
+// the statuses whose runs hold the credentials and capacity subjects their
+// stamp names. Derived from store.AllRunStatuses, never spelled here, and
+// read by every filter that mirrors the holder predicate
+// (spendsCredentialFilter, ListAliveRunsForCapacity), so they move together.
+func holdingStatuses() []string {
+	holding := make([]string, 0, 2)
+	for _, st := range store.AllRunStatuses {
+		if st.HoldsCredentialSlot() {
+			holding = append(holding, string(st))
+		}
+	}
+	return holding
+}
+
 // spendsCredentialFilter selects the runs that spend the credential with this
 // fingerprint, or the capacity subject of that name, excludeRunID aside: the
 // query form of store.Run.SpendsCredential, read by the alive-run count and,
@@ -1290,18 +1312,12 @@ func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerpri
 // disjoint, so a value matches one arm at most. No tenant filter — a
 // platform key and a shared gateway serve every tenant on one cap.
 func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
-	holding := make([]string, 0, 2)
-	for _, st := range store.AllRunStatuses {
-		if st.HoldsCredentialSlot() {
-			holding = append(holding, string(st))
-		}
-	}
 	filter := notDeleted(bson.M{
 		"$or": bson.A{
 			bson.M{"cred_fingerprints": fingerprint},
 			bson.M{"capacity_subjects": fingerprint},
 		},
-		"status": bson.M{"$in": holding},
+		"status": bson.M{"$in": holdingStatuses()},
 	})
 	if excludeRunID != "" {
 		filter["_id"] = bson.M{"$ne": excludeRunID}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secure/hostfold"
@@ -167,6 +168,23 @@ func GatewayCapacitySubject(host string) string {
 		return ""
 	}
 	return gatewayCapacitySubjectPrefix + h
+}
+
+// GatewayCapacitySubjectPrefix opens every gateway capacity subject
+// (GatewayCapacitySubject): the prefix a per-gateway reading of the ledger's
+// subjects selects on.
+const GatewayCapacitySubjectPrefix = gatewayCapacitySubjectPrefix
+
+// GatewayHostOfSubject is GatewayCapacitySubject's inverse: the host a
+// gateway subject names, and true, or "" and false for anything else — a
+// credential fingerprint, an `account:` identity, a value that merely
+// contains the prefix, or the bare prefix with no host.
+func GatewayHostOfSubject(subject string) (string, bool) {
+	host, ok := strings.CutPrefix(subject, gatewayCapacitySubjectPrefix)
+	if !ok || host == "" {
+		return "", false
+	}
+	return host, true
 }
 
 // AwaitsCredSlotAdmission reports whether the run is queued for a resume

@@ -467,7 +467,10 @@ func (s *Server) runOverrideShadowObserver(ctx context.Context, interval time.Du
 	// pod's start time, so a whole interval would otherwise pass with the
 	// per-slug gauges carrying no series at all — which an alert on `> 0`
 	// reads as "no shadow", the one answer this loop exists to stop guessing.
-	s.observePlatformOverrideShadows(ctx)
+	// Each pass is bounded (samplePass): a row listing that hangs fails its
+	// pass and raises the unavailable gauge rather than freezing the per-slug
+	// values unflagged.
+	samplePass(ctx, interval, s.observePlatformOverrideShadows)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -475,7 +478,7 @@ func (s *Server) runOverrideShadowObserver(ctx context.Context, interval time.Du
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.observePlatformOverrideShadows(ctx)
+			samplePass(ctx, interval, s.observePlatformOverrideShadows)
 		}
 	}
 }

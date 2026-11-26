@@ -1477,6 +1477,60 @@ Semantics worth knowing:
   leisure. An empty platform store keeps today's behaviour byte-identical.
 - Every mutation lands in the platform audit log (`/api/admin/audit`).
 
+### Shared gateway alive runs
+
+Thirteen teams' gateway keys on one LiteLLM host are thirteen credentials and one
+host. Every run that seals a gateway key carries the host's capacity subject
+`gw:<host>` ([byok.md](byok.md#shared-gateway-subjects--stamped-and-observed),
+[ADR-167](adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md));
+the super-admin route reads, per host, who is on it, all teams together:
+
+```sh
+iterion remote api GET /api/admin/llm/gateway-alive-runs
+```
+
+```json
+{"read_at": "…", "unresolved_trees": 0,
+ "hosts": [{"host": "litellm.example", "subject": "gw:litellm.example",
+            "alive_trees": 9, "alive_runs": 10, "unnamed_trees": 0,
+            "bots": [{"bot_id": "review-pr", "alive_trees": 9}]}]}
+```
+
+- **Trees, not runs.** A subbot child runs in its parent's runner, under its
+  parent's message: a tree is one place (ADR-167 §5). `alive_trees` is the value of
+  the gauge `iterion_gateway_alive_runs{host}`; `alive_runs` is what the
+  run-admission ledger counts today. The difference is the subbot children holding
+  the subject on their own stamp — a child resumed after its human gate is
+  re-stamped like any resume — measured here for the enforce slice to decide on.
+- **Attribution follows subbot links only.** A run's tree climbs `parent_run_id`
+  while the run is a subbot child (`parent_node_id` set) and its parent is alive; a
+  fork, a shard or an API child is a tree of its own.
+- **`unnamed_trees`** counts the trees alive on a host whose subjects do not name it:
+  the host a tree is on is read from the key row each stamped fingerprint names —
+  never from `content_boundary.gateway_host`, frozen at launch and replayed onto
+  subbot lanes. A run stamped without the subjects — before they existed, or by an
+  older replica during a rolling deploy — or one whose stamp a write lost, lands
+  here. The enforce slice's activation guard refuses a bound on a
+  host while this is not zero.
+- **`unresolved_trees`** counts the trees that sealed a gateway key whose host the
+  reading cannot know: the key's row names no host, or the tree's stamps were all
+  written without the subjects and no row answers for its key any more (rotated,
+  deleted) while its content boundary records a sealed key. A tree whose latest
+  stamp read the subjects is never unresolved for want of a row: its subjects are
+  the gateways its latest resolution sealed a key on, and none means the run left
+  the gateway, whatever key id its launch froze in the boundary. A stamp reads as
+  having read the subjects while its marker, `capacity_stamped_for`, still matches
+  the fingerprints and subjects on the run: a re-stamp by a T1 or pre-T1 replica
+  during a rolling deploy rewrites those lists around a marker it does not know,
+  and the run is then read as stamped without its subjects — unnamed on the host
+  its key row names, or unresolved once that row is gone.
+- **What it carries.** Counts and bot ids — no run id, no team id. A run store or a
+  key store that cannot answer is a `501` with its `error_code`
+  (`run_store_without_alive_capacity_listing`,
+  `api_key_store_without_gateway_key_lookup`), never an empty success.
+- **Observe-only.** Nothing reserves a place on a gateway yet; the typed CLI verb and
+  the `gateway_capacity` configuration come with the next slices.
+
 ## Re-pointing the OAuth endpoints (OEM CLI, proxy, air-gapped IdP)
 
 The forfait flow talks to a reverse-engineered vendor surface, so every
