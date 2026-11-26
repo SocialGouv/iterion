@@ -119,6 +119,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 ARG YQ_VERSION=v4.54.3
 # renovate: datasource=github-releases depName=kubernetes/kubernetes
 ARG KUBECTL_VERSION=v1.36.7
+# renovate: datasource=github-releases depName=Schniz/fnm
 ARG FNM_VERSION=v1.38.1
 
 RUN ARCH=$(dpkg --print-architecture) \

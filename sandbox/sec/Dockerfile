@@ -65,7 +65,9 @@ RUN --mount=type=cache,target=/root/go \
 #   trivy    — official install script (handles arch + checksum).
 #   gitleaks — release tarball; asset arch suffix is x64 / arm64.
 # ---------------------------------------------------------------------
+# renovate: datasource=github-releases depName=aquasecurity/trivy
 ARG TRIVY_VERSION=0.70.0
+# renovate: datasource=github-releases depName=gitleaks/gitleaks
 ARG GITLEAKS_VERSION=8.21.2
 RUN case "$(uname -m)" in \
         x86_64)  TRIVY_ARCH="Linux-64bit"; GL_ARCH="x64" ;; \
@@ -114,6 +116,7 @@ ARG DEEPSEC_VERSION=2.0.12
 #
 # `deepsec` reads CODEX_REAL_BIN (it is on its own env allowlist), which
 # is how a caller points it at this binary rather than its bundled one.
+# renovate: datasource=npm depName=@openai/codex versioning=npm
 ARG CODEX_VERSION=0.156.1
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -139,6 +142,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # — install it unconditionally here (Layer 4's nodejs is best-effort).
 # ---------------------------------------------------------------------
 ARG JSXRAY_VERSION=^15
+# renovate: datasource=github-releases depName=google/osv-scanner
 ARG OSV_SCANNER_VERSION=2.4.0
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \

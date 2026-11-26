@@ -7,6 +7,7 @@
     ":pinDevDependencies"
   ],
   "pinDigests": true,
+  "osvVulnerabilityAlerts": true,
   "timezone": "Etc/UTC",
   "schedule": [
     "before 6am on monday"
@@ -39,12 +40,14 @@
     },
     {
       "customType": "regex",
-      "description": "Inline `# renovate: datasource=… depName=… versioning=…` pins. Captures the version on the line right after the comment, in ANY file (e.g. the pinned firecrawl-mcp in Dockerfile.runner-devbox's ARG and pkg/plugin/builtin/firecrawl/plugin.yaml's npx arg — both MUST stay in lockstep, so a bump PR touches both; same for @maxgfr/codeindex in the codeindex plugin). To pin another tool anywhere, drop the same comment above its version line AND add the file here — a path missing from this list is a pin that silently goes stale.",
+      "description": "Inline `# renovate: datasource=… depName=… versioning=…` pins. Captures the version on the line right after the comment, in ANY file (e.g. the pinned firecrawl-mcp in Dockerfile.runner-devbox's ARG and pkg/plugin/builtin/firecrawl/plugin.yaml's npx arg — both MUST stay in lockstep, so a bump PR touches both; same for @maxgfr/codeindex in the codeindex plugin). To pin another tool anywhere, drop the same comment above its version line AND add the file here — a path missing from this list is a pin that silently goes stale — internal/ciguard/renovate_pins_test.go fails on a `*_VERSION` ARG/ENV in a Dockerfile that has no annotation on the line above, or whose file this list misses.",
       "managerFilePatterns": [
         "/^Dockerfile$/",
         "/(^|/)Dockerfile\\.runner-devbox$/",
         "/(^|/)sandbox/full/Dockerfile$/",
         "/(^|/)sandbox/slim/Dockerfile$/",
+        "/(^|/)sandbox/sec/Dockerfile$/",
+        "/(^|/)sandbox/browser/Dockerfile$/",
         "/(^|/)ci/arc-runner/Dockerfile$/",
         "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/",
         "/(^|/)pkg/plugin/builtin/codeindex/plugin\\.yaml$/"
@@ -56,7 +59,7 @@
   ],
   "packageRules": [
     {
-      "description": "CLI binaries baked into the images (gh, glab, kubectl, yq), pinned by `# renovate:` comments in Dockerfile, Dockerfile.runner-devbox and sandbox/full/Dockerfile. Their release tags carry a leading `v` that the inline-pin regex does not capture (it reads the digits after `VERSION=` or `VERSION=v`), so the tag is stripped to the bare version; otherwise a bump would write `vv1.2.3`. One group, so a tool pinned in several Dockerfiles moves in one PR.",
+      "description": "CLI binaries baked into the images (gh, glab, kubectl, yq, fnm), pinned by `# renovate:` comments in Dockerfile, Dockerfile.runner-devbox and sandbox/full/Dockerfile. Their release tags carry a leading `v` that the inline-pin regex does not capture (it reads the digits after `VERSION=` or `VERSION=v`), so the tag is stripped to the bare version; otherwise a bump would write `vv1.2.3`. One group, so a tool pinned in several Dockerfiles moves in one PR.",
       "matchManagers": [
         "custom.regex"
       ],
@@ -68,10 +71,27 @@
         "cli/cli",
         "gitlab-org/cli",
         "kubernetes/kubernetes",
-        "mikefarah/yq"
+        "mikefarah/yq",
+        "Schniz/fnm"
       ],
       "extractVersion": "^v(?<version>.+)$",
       "groupName": "image CLI tools"
+    },
+    {
+      "description": "Scanners baked into the sec sandbox image (sandbox/sec/Dockerfile), which the security bots run: trivy, gitleaks and osv-scanner, pinned by `# renovate:` comments. Their release tags carry a leading `v` the inline-pin regex does not capture, so the tag is stripped to the bare version. One group, so a scanner refresh is one image rebuild and one PR to judge.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDatasources": [
+        "github-releases"
+      ],
+      "matchDepNames": [
+        "aquasecurity/trivy",
+        "gitleaks/gitleaks",
+        "google/osv-scanner"
+      ],
+      "extractVersion": "^v(?<version>.+)$",
+      "groupName": "sec image scanners"
     },
     {
       "description": "Keep the GitHub Actions SHA pins current, with the precise semver in the trailing comment.",
