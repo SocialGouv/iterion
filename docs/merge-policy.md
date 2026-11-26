@@ -126,9 +126,9 @@ green.
   Homebrew tap update ([below](#the-one-verified-skip-the-homebrew-tap-update))
   — which the two aggregators carry combined with their `!cancelled()` clause.
 
-  > **Promoting a check to required is a two-file change.** The seven advisory
-  > jobs — `nats-conformance`, `helm-lint`, `govulncheck`,
-  > `desktop-vet-linux`, `desktop-vet-cross`, `docs-links`, `docs-build` — carry
+  > **Promoting a check to required is a two-file change.** The four advisory
+  > jobs — `nats-conformance`, `desktop-vet-linux`, `docs-links` and
+  > `advisory-checks` — carry
   > `if: github.event_name != 'merge_group'` in `.github/workflows/tests.yml`,
   > and the heavy `cloud-e2e` and `mongo-conformance` the heavy literal, which
   > skips the queue too: a job that cannot block a merge should not hold a
@@ -160,6 +160,29 @@ green.
   > alert is a state, not a stream. Any other advisory job whose failure
   > nobody would notice wants the same treatment rather than promotion to
   > required.
+
+  > **`advisory-checks` is five checks in one pod** (#3711): the desktop vet
+  > under `GOOS=windows` and `GOOS=darwin`, the chart lint and render gate,
+  > govulncheck with its SARIF upload, and the documentation site build. Each
+  > pod pays start-up, checkout and toolchain setup, and the organisation's
+  > hosted pool is 20 concurrent jobs, so merging them takes a pull request
+  > run from 19 check runs to 15 and a push run from 28 to 24 (12 and 21 of
+  > them self-hosted); the merge queue, which skips advisory jobs, keeps its
+  > 11. Every step carries `if: ${{ !cancelled() }}`: a red check does not
+  > skip the ones after it, the job is red when any check is, and the red
+  > step names the check — `internal/ciguard`'s
+  > `TestTheAdvisoryChecksJobRunsEveryCheck` holds that, the step list and
+  > the checkout that persists no token next to `security-events: write`.
+  > Promoting one of those checks to required means moving it back to a job
+  > of its own first: the ruleset keys on the job's context, and the others
+  > would come along.
+  > The govulncheck uploads moved from the `govulncheck` job to this one, and
+  > code scanning keys an analysis on the workflow path and the job id: after
+  > the first push run on main, list the govulncheck analyses
+  > (`gh api 'repos/SocialGouv/iterion/code-scanning/analyses?ref=refs/heads/main&tool_name=govulncheck'`).
+  > If a configuration keyed `.github/workflows/tests.yml:govulncheck` remains
+  > with its open alert, delete it (the tool status page, or the DELETE
+  > analyses API).
 - **Every required check from `tests.yml` runs on self-hosted runners** —
   `test`, `vendor-check`, `golangci` and `brand` route to the organisation's
   `arc-runners` scale set on `merge_group`, and the heavy `race` shards and
@@ -175,7 +198,7 @@ green.
 
   | class | variable | jobs |
   | --- | --- | --- |
-  | small | `CI_SMALL_RUNNER` | the `test` and `race` aggregators, `fmt-check`, `vendor-check`, `govulncheck`, `docs-build`, `desktop-vet-cross`, `brand`, `helm-lint`, the merge-queue-gate mirror |
+  | small | `CI_SMALL_RUNNER` | the `test` and `race` aggregators, `fmt-check`, `vendor-check`, `brand`, `advisory-checks`, the merge-queue-gate mirror |
   | large | `CI_LARGE_RUNNER` | the heavy jobs the queue requires: `test-unit`, `golangci`, `studio`; and `nats-conformance`, whose JetStream suite does not fit 500m under its 5-minute package bound |
   | heavy | `CI_HEAVY_RUNNER` | the heavy layer the merge queue does not require, run after the merge (a `ci:full` pull request's `test` and `race` still wait on it): `race-shard`, `test-e2e`, `mongo-conformance`, `cloud-e2e` |
 

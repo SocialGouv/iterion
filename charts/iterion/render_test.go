@@ -21,7 +21,7 @@ import (
 // The chart render tests: `helm template` on the dev, prod and fixture
 // values, then assertions on the manifests — the dead-selector gate of
 // #2012 over every render, and the guards the templates promise. They run
-// under `task chart:check` and the helm-lint CI job, both with
+// under `task chart:check` and the advisory-checks CI job, both with
 // ITERION_CHART_RENDER_REQUIRE=1 so a missing helm is red there; a plain
 // `go test ./...` on a machine without helm skips them and says so.
 
@@ -36,7 +36,7 @@ func helmBinary(t *testing.T) string {
 	if os.Getenv("ITERION_CHART_RENDER_REQUIRE") == "1" {
 		t.Fatalf("helm is required here (ITERION_CHART_RENDER_REQUIRE=1) and not in PATH: %v", err)
 	}
-	t.Skipf("helm not in PATH (%v) — the chart render tests run under `task chart:check` and the helm-lint CI job", err)
+	t.Skipf("helm not in PATH (%v) — the chart render tests run under `task chart:check` and the advisory-checks CI job", err)
 	return ""
 }
 

@@ -253,9 +253,9 @@ concurrency:
 # 'arc-runners'`: the repository variable names the class's scale set, and
 # while it is unset the job lands on `arc-runners`, so an unset variable moves
 # no job. SMALL (`CI_SMALL_RUNNER`): the `test` and `race` aggregators,
-# fmt-check, vendor-check, govulncheck, docs-build, nats-conformance,
-# desktop-vet-cross, brand, helm-lint. LARGE (`CI_LARGE_RUNNER`), the heavy
-# jobs the merge queue requires: test-unit, golangci, studio. HEAVY
+# fmt-check, vendor-check, brand, advisory-checks. LARGE (`CI_LARGE_RUNNER`),
+# the heavy jobs the merge queue requires: test-unit, golangci, studio; and
+# nats-conformance. HEAVY
 # (`CI_HEAVY_RUNNER`), the heavy layer the merge queue does not require, run
 # after the merge (a `ci:full` pull request's `test` and `race` still wait on
 # it): race-shard, test-e2e, mongo-conformance, cloud-e2e. The three clauses above
@@ -476,7 +476,7 @@ jobs:
 
       - name: Prepare installed Helm chart dependencies
         # Hosted VMs include Helm, so chart tests execute there as well as in
-        # helm-lint. Prepare the declared archives before either Go suite.
+        # advisory-checks. Prepare the declared archives before either Go suite.
         run: |
           if command -v helm >/dev/null 2>&1; then
             sh scripts/chart-check-deps.sh charts/iterion
@@ -842,8 +842,8 @@ jobs:
     # -race REQUIRES cgo, so this leg overrides the repo-wide CGO_ENABLED=0;
     # the scale set's image (ci/arc-runner) and ubuntu-latest both ship gcc.
     # `runs-on` stays at the JOB level, outside the matrix, where the
-    # ciguard regex and the fork guard can read it (the desktop-vet-cross
-    # lesson: a matrix over runs-on diverges from its id silently).
+    # ciguard regex and the fork guard can read it (a matrix over runs-on
+    # diverges from its id silently).
     # HEAVY (#3683, #3691): a light run — a merge-queue build or a pull
     # request without `ci:full` — skips this leg; push to main, the nightly
     # and a dispatch run it. `race` forgives that skip on a light run only.
@@ -906,7 +906,7 @@ jobs:
 
       - name: Prepare installed Helm chart dependencies
         # Hosted VMs include Helm, so chart tests execute there as well as in
-        # helm-lint. Prepare the declared archives before either Go suite.
+        # advisory-checks. Prepare the declared archives before either Go suite.
         run: |
           if command -v helm >/dev/null 2>&1; then
             sh scripts/chart-check-deps.sh charts/iterion
@@ -1475,83 +1475,6 @@ jobs:
           # surface as a CI error rather than as a silent build skew.
           git diff --exit-code go.mod go.sum vendor/
 
-  helm-lint:
-    # Advisory: not a required check, so it cannot block a merge — see the
-    # merge-queue note at the top of this file.
-    if: github.event_name != 'merge_group'
-    # Catches values typing drift cheaply (~30s) so a broken values.yaml
-    # surfaces before the cloud-e2e kind cluster bootstrap. The
-    # --strict pass on values-prod.yaml additionally rejects unknown
-    # keys, the most common foot-gun on a Helm chart upgrade.
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-      - name: helm dependency update
-        run: helm dependency update charts/iterion
-      - name: helm lint (values-dev.yaml)
-        run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
-      - name: helm lint --strict (values-prod.yaml)
-        run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
-      # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
-      # installs via image.tag — so without these two the digest branch of
-      # `iterion.image` is exercised by no CI job at all, and a refactor could
-      # drop it (or its shape guard) silently. A malformed digest is the case
-      # that matters: it renders a string helm accepts and only kubelet
-      # rejects, so the rollout stalls instead of failing.
-      - name: image.digest renders and rejects a malformed value
-        run: |
-          set -euo pipefail
-          digest="sha256:$(printf 'a%.0s' $(seq 64))"
-          # `--set image.tag=edge` also pins the documented precedence
-          # (digest wins), the property a refactor of the `if` is likeliest to
-          # invert. Render to a FILE: `grep -q` exits on its first match, which
-          # SIGPIPEs helm mid-write and, under `pipefail`, reddens the step on
-          # an assertion that actually passed.
-          helm template t charts/iterion --set image.tag=edge \
-            --set "image.digest=$digest" > /tmp/render-digest.yaml
-          # The render has two shared-reference containers (server + runner
-          # fallback): count them, so a refactor routing only one through the
-          # digest goes red. The patterns accept the reference quoted or bare,
-          # so a quoting change in a template cannot blind either check.
-          pinned=$(grep -cE "image: \"?ghcr\.io/socialgouv/iterion@$digest\"?$" /tmp/render-digest.yaml || true)
-          if [ "$pinned" -lt 2 ]; then
-            echo "::error::$pinned container(s) resolved to the digest reference, want the server and the runner (2)"
-            exit 1
-          fi
-          # ...and that NOTHING still resolves through a tag.
-          if grep -qE 'image: "?ghcr\.io/socialgouv/iterion:' /tmp/render-digest.yaml; then
-            echo "::error::a container still resolved through image.tag despite image.digest being set"
-            exit 1
-          fi
-          if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
-            echo "::error::a malformed image.digest rendered instead of failing"
-            exit 1
-          fi
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-      # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
-      # the render through yq; without it on PATH they would SKIP, and the
-      # chart gate requires its tools here (REQUIRE=1 below). Pinned by
-      # version and digest (mikefarah/yq), at the version the root devbox
-      # locks (TestChartKindWaitToolchainPinsYq reds on a drift).
-      - name: Install yq (pinned)
-        run: |
-          set -eu
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
-          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
-          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
-          yq --version
-      - name: chart render tests (dead selectors, backup and alert guards)
-        # The Go half of `task chart:check`: renders the chart (dev, prod,
-        # pools) and confronts every anti-affinity / spread / PDB selector with
-        # the labels of its own pods (internal/rendergate — the valkeyha defect
-        # of #2012), then the render guards of the backup CronJob and the alert
-        # packs. REQUIRE=1: on this job a missing helm is a red step, never a
-        # skip (the `test` job has Go but no helm, and skips them by design).
-        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChart' ./charts/iterion/
-
   golangci:
     # Curated golangci-lint pass (.golangci.yml): errcheck, govet,
     # ineffassign, staticcheck, unconvert, unused. misspell is deliberately
@@ -1690,73 +1613,203 @@ jobs:
         # Same tags the Taskfile pins for a Linux desktop build.
         run: go vet -tags desktop,webkit2_41 ./cmd/iterion-desktop/
 
-  desktop-vet-cross:
-    # The other half of the same gap. `go vet` on Linux skips every
-    # `*_darwin.go` and `*_windows.go` in the package, so a Linux-only check
-    # would leave path_fix_darwin.go, updater_apply_windows.go,
-    # single_instance_windows.go and daemon_spawn_windows.go compiling for the
-    # first time during a release — the gap narrowed rather than shut.
-    #
-    # A SEPARATE job rather than two more legs of the one above, and that is
-    # the point: these legs need no apt and no cgo, so they belong on the
-    # self-hosted scale set — and the routing expression must sit on a
-    # job-level `runs-on:` where TestSelfHostedRoutingExpressionsAgree can read
-    # it. Inside a matrix `include:` it would be invisible to that guard, which
-    # would trade two runner slots for a blind spot in a fork guard.
-    if: github.event_name != 'merge_group'
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [windows, darwin]
-    name: desktop-vet-cross (${{ matrix.goos }})
-    env:
-      GOOS: ${{ matrix.goos }}
-      CGO_ENABLED: "0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: go.mod
-          # ADR-105 — see the test job.
-          cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Vet the desktop package
-        # No webkit2_41: that tag selects the Linux bindings. These GOOS legs
-        # type-check with cgo off, measured, so they need no system libraries.
-        run: go vet -tags desktop ./cmd/iterion-desktop/
-
-  govulncheck:
+  advisory-checks:
     # Advisory: not a required check, so it cannot block a merge — see the
     # merge-queue note at the top of this file.
+    #
+    # ONE pod for five cheap advisory checks that used to take five: the
+    # desktop vet under GOOS=windows and GOOS=darwin, the chart lint and render
+    # gate, govulncheck and the documentation site build. The organisation's
+    # hosted pool is 20 concurrent jobs, and a pod pays start-up, checkout and
+    # toolchain setup before it checks anything; merged, those costs are paid
+    # once and a pull request run holds four fewer slots (#3711).
+    #
+    # The merge keeps each check's verdict. Every step carries `!cancelled()`,
+    # so a failing step does not skip the ones after it: each check still runs
+    # and reports, the job goes red when any step fails, and the red step's
+    # name says which check failed. internal/ciguard's
+    # TestTheAdvisoryChecksJobRunsEveryCheck holds that condition and the step
+    # list. Each check's original job comment travels with its first step.
+    #
+    # The `run:` steps that download a tool or dependencies, and the long
+    # checks (chart render tests, govulncheck, the site build), carry a
+    # timeout-minutes of their own, below the job's. A job timeout cancels
+    # the job, and a cancelled job skips every `!cancelled()` step after the
+    # hung one; a step timeout fails that step alone and the checks after it
+    # still run. Every other step relies on the job budget alone: the
+    # checkout, setup and upload `uses:` steps, the desktop vets, the helm
+    # lints and the quick local checks.
+    #
+    # govulncheck runs before the docs build's `pnpm install` as a
+    # precaution: pnpm's isolated layout (node_modules/.pnpm plus symlinks)
+    # is invisible to `./...`, but a hoisted or plain node_modules would not
+    # be.
+    #
+    # `security-events: write` is govulncheck's, for the SARIF upload. The
+    # steps that execute downloaded code are `Run govulncheck (SARIF)`
+    # (govulncheck@latest), the helm and yq steps, and the VitePress build
+    # (vitepress, vite, mermaid); `pnpm install` runs no dependency scripts
+    # (.npmrc: ignore-scripts=true, enable-pre-post-scripts=false). They find
+    # no credential on disk because the checkout does not persist it,
+    # upload-sarif receives the token as its own input, and setup-helm, the
+    # one action from outside GitHub, is passed an empty token. The job's GITHUB_TOKEN, scoped to `security-events:
+    # write` and `contents: read`, is still in the runner's memory: that is
+    # the cost of one pod instead of a separate upload job.
+    #
+    # Small class: the steps run one at a time, so the pod's peak is the
+    # largest single check's, each measured on the small class as a job of
+    # its own (#3694). The 40-minute budget is about twice the sum of the
+    # five former check runs' mean durations, pod start-up included (#3711:
+    # helm-lint 5.4, docs-build 3.8, desktop-vet-cross 3.3 per GOOS,
+    # govulncheck 2.8 minutes).
     if: github.event_name != 'merge_group'
-    # govulncheck is call-graph aware (only reports CVEs whose vulnerable
-    # functions are actually reachable from this codebase). Trivy's
-    # filesystem scan catches the broader set including unused-import
-    # noise — we keep both. Advisory-only for now: a zero-day disclosure
-    # mid-release shouldn't gate a hotfix; results surface in the GitHub
-    # Security tab via SARIF so an operator can still triage.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
-    timeout-minutes: 15
+    timeout-minutes: 40
     permissions:
       security-events: write
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: ${{ !cancelled() }}
         with:
           go-version-file: go.mod
           # ADR-105 — see the test job.
           cache: ${{ runner.environment == 'github-hosted' }}
+
+      # ---- desktop vet, windows and darwin ----
+      # cmd/iterion-desktop sits behind `//go:build desktop`, and `go vet` on
+      # Linux skips every `*_darwin.go` and `*_windows.go` in the package, so a
+      # Linux-only check (desktop-vet-linux) would leave path_fix_darwin.go,
+      # updater_apply_windows.go, single_instance_windows.go and
+      # daemon_spawn_windows.go compiling for the first time during a release.
+      # No webkit2_41: that tag selects the Linux bindings. These GOOS passes
+      # type-check with cgo off, measured, so they need no system libraries
+      # and run on the self-hosted scale set, unlike desktop-vet-linux.
+      - name: Vet the desktop package (windows)
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: windows
+          CGO_ENABLED: "0"
+        run: go vet -tags desktop ./cmd/iterion-desktop/
+      - name: Vet the desktop package (darwin)
+        if: ${{ !cancelled() }}
+        env:
+          GOOS: darwin
+          CGO_ENABLED: "0"
+        run: go vet -tags desktop ./cmd/iterion-desktop/
+
+      # ---- chart: lint, digest render, render gate ----
+      # Catches values typing drift cheaply (~30s) so a broken values.yaml
+      # surfaces before the cloud-e2e kind cluster bootstrap. The --strict pass
+      # on values-prod.yaml additionally rejects unknown keys, the most common
+      # foot-gun on a Helm chart upgrade.
+      # The token input is deprecated and unused at this SHA; an empty value
+      # keeps the job's security-events: write token out of a non-GitHub action.
+      - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        if: ${{ !cancelled() }}
+        with:
+          token: ''
+      - name: helm dependency update
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: helm dependency update charts/iterion
+      - name: helm lint (values-dev.yaml)
+        if: ${{ !cancelled() }}
+        run: helm lint charts/iterion -f charts/iterion/values-dev.yaml
+      - name: helm lint --strict (values-prod.yaml)
+        if: ${{ !cancelled() }}
+        run: helm lint charts/iterion -f charts/iterion/values-prod.yaml --strict
+      # `helm lint` renders nothing image-shaped, and cloud-e2e only ever
+      # installs via image.tag — so without this step the digest branch of
+      # `iterion.image` is exercised by no CI job at all, and a refactor could
+      # drop it (or its shape guard) silently. A malformed digest is the case
+      # that matters: it renders a string helm accepts and only kubelet
+      # rejects, so the rollout stalls instead of failing.
+      - name: image.digest renders and rejects a malformed value
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          digest="sha256:$(printf 'a%.0s' $(seq 64))"
+          # `--set image.tag=edge` also pins the documented precedence
+          # (digest wins), the property a refactor of the `if` is likeliest to
+          # invert. Render to a FILE: `grep -q` exits on its first match, which
+          # SIGPIPEs helm mid-write and, under `pipefail`, reddens the step on
+          # an assertion that actually passed.
+          helm template t charts/iterion --set image.tag=edge \
+            --set "image.digest=$digest" > /tmp/render-digest.yaml
+          # The render has two shared-reference containers (server + runner
+          # fallback): count them, so a refactor routing only one through the
+          # digest goes red. The patterns accept the reference quoted or bare,
+          # so a quoting change in a template cannot blind either check.
+          pinned=$(grep -cE "image: \"?ghcr\.io/socialgouv/iterion@$digest\"?$" /tmp/render-digest.yaml || true)
+          if [ "$pinned" -lt 2 ]; then
+            echo "::error::$pinned container(s) resolved to the digest reference, want the server and the runner (2)"
+            exit 1
+          fi
+          # ...and that NOTHING still resolves through a tag.
+          if grep -qE 'image: "?ghcr\.io/socialgouv/iterion:' /tmp/render-digest.yaml; then
+            echo "::error::a container still resolved through image.tag despite image.digest being set"
+            exit 1
+          fi
+          if helm template t charts/iterion --set image.digest=deadbeef >/dev/null 2>&1; then
+            echo "::error::a malformed image.digest rendered instead of failing"
+            exit 1
+          fi
+      # The kind-wait witnesses run scripts/chart-kind-wait.sh, which reads
+      # the render through yq; without it on PATH they would SKIP, and the
+      # chart gate requires its tools here (REQUIRE=1 below). Pinned by
+      # version and digest (mikefarah/yq), at the version the root devbox
+      # locks (TestChartKindWaitToolchainPinsYq reds on a drift).
+      - name: Install yq (pinned)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 3
+        run: |
+          set -eu
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          echo "fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4  /tmp/yq" | sha256sum -c -
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+          yq --version
+      - name: chart render tests (dead selectors, backup and alert guards)
+        # The Go half of `task chart:check`: renders the chart (dev, prod,
+        # pools) and confronts every anti-affinity / spread / PDB selector with
+        # the labels of its own pods (internal/rendergate — the valkeyha defect
+        # of #2012), then the render guards of the backup CronJob and the alert
+        # packs. REQUIRE=1: on this job a missing helm is a red step, never a
+        # skip (the `test` job has Go but no helm, and skips them by design).
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: ITERION_CHART_RENDER_REQUIRE=1 go test -mod=vendor -count=1 -run 'TestChart' ./charts/iterion/
+
+      # ---- govulncheck ----
+      # govulncheck is call-graph aware (only reports CVEs whose vulnerable
+      # functions are actually reachable from this codebase). Trivy's
+      # filesystem scan catches the broader set including unused-import
+      # noise — we keep both. Advisory-only for now: a zero-day disclosure
+      # mid-release shouldn't gate a hotfix; results surface in the GitHub
+      # Security tab via SARIF so an operator can still triage.
       - name: Install govulncheck
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: Run govulncheck (SARIF)
         # `|| true` keeps the step non-blocking. The findings flow to the
         # Security tab via the upload step below. A govulncheck error mid-run
         # leaves a truncated/empty file that upload-sarif rejects with
         # "Unexpected end of JSON input"; fall back to a valid empty SARIF so
-        # the upload always has well-formed input.
+        # the upload always has well-formed input. A missing binary is the
+        # exception: this step runs even after a failed install, and an empty
+        # SARIF published then would read as "govulncheck found nothing", so
+        # the step fails and writes no file, and the upload has nothing to
+        # publish. internal/ciguard's TestTheGovulncheckRunStepFailsWithoutTheTool
+        # runs this script both ways.
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         run: |
+          command -v govulncheck >/dev/null || { echo "::error::govulncheck is not installed: nothing to scan or publish"; exit 1; }
           govulncheck -format sarif ./... > govulncheck.sarif || true
           if ! python3 -c 'import json; json.load(open("govulncheck.sarif"))' 2>/dev/null; then
             printf '%s' '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[]}' > govulncheck.sarif
@@ -1772,20 +1825,72 @@ jobs:
         # schema refuses just as hard. `results[]?`: a run's `results` key is
         # optional in SARIF 2.1.0 (only `tool` is required), and iterating a
         # missing one would abort jq and red the job with nothing to publish.
+        if: ${{ !cancelled() }}
         run: |
           jq '.runs[].results[]? |= (if (.stacks | type) == "array" then .stacks |= unique else . end)' \
             govulncheck.sarif > govulncheck.dedup.sarif && mv govulncheck.dedup.sarif govulncheck.sarif
       - name: Upload SARIF
-        # The job is advisory (not a required check): findings themselves
-        # never red it — the run step above swallows govulncheck's exit code.
-        # The upload is the opposite concern and stays LOUD: a red here means
-        # vulnerabilities were found and their results are not published, the
-        # one failure nobody would notice otherwise. It still cannot block a
-        # merge — the job is not in the ruleset.
+        # Findings themselves never red this step — the run step above
+        # swallows govulncheck's exit code. The upload is the opposite concern
+        # and stays LOUD: a red here means vulnerabilities were found and their
+        # results are not published, the one failure nobody would notice
+        # otherwise. It still cannot block a merge — the job is not in the
+        # ruleset.
+        if: ${{ !cancelled() }}
         uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
+
+      # ---- documentation site build ----
+      # It builds the documentation site the way the `docs` workflow builds it
+      # before deploying, and that is the only check that sees a link dead ON
+      # THE SITE: `docs-links` resolves a link the way github.com does, and a
+      # link can be valid there and dead on the site, whose root is docs/.
+      # Measured (#1508): 318 such links rode main for three days, green on
+      # every required check, while the site stopped publishing.
+      #
+      # On the pull request AND on main, like every other advisory check. Main
+      # is not covered by `docs.yml`: its push trigger is path-filtered to
+      # docs/**, CHANGELOG.md, pnpm-workspace.yaml and itself, while the build
+      # reads the root package.json, pnpm-lock.yaml, .npmrc and every
+      # workspace manifest. Measured over 400 commits touching those files,
+      # 120 matched none of the filtered paths — a dependency bump can stop the
+      # site rebuilding and leave main green, which is the silence this check
+      # exists to break.
+      #
+      # No path filter here, deliberately: the change that broke the site was
+      # a Go change under pkg/, and the generated pages in docs/references/
+      # are exactly where a Go change lands.
+      #
+      # Node, corepack and the build invocation are docs.yml's, copied rather
+      # than restated: a check that builds the site differently from the
+      # deploy proves nothing about the deploy.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: ${{ !cancelled() }}
+        with:
+          node-version: 24
+      # Before the install, because it needs none: the checker is plain node,
+      # and its verdict is worth having even on a run whose dependencies do
+      # not resolve. Mirror of `task docs:links:test`; internal/ciguard
+      # asserts the two stay identical. The file is named rather than globbed
+      # — a glob that matches nothing exits 0 having run nothing.
+      - name: Link checker self-test
+        if: ${{ !cancelled() }}
+        run: node --test docs/scripts/check-links.test.mjs
+      - name: Install dependencies
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile --prefer-offline
+      # No continue-on-error: an advisory check that cannot go red is a check
+      # that reports nothing. It does not block the merge; it is meant to be
+      # SEEN.
+      - name: Build VitePress site
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: pnpm --filter @iterion/docs build
 
   fmt-check:
     # Its own name in the checks list, so a verdict about the catalogue's
@@ -1879,58 +1984,3 @@ jobs:
       - name: Whole-tree backlog (informational)
         continue-on-error: true
         run: go run -mod=vendor ./scripts/docslinks
-
-  docs-build:
-    # Advisory: not a required check, so it cannot block a merge — see the
-    # merge-queue note at the top of this file. It builds the documentation
-    # site the way the `docs` workflow builds it before deploying, and that is
-    # the only check that sees a link dead ON THE SITE: `docs-links` resolves
-    # a link the way github.com does, and a link can be valid there and dead
-    # on the site, whose root is docs/. Measured (#1508): 318 such links rode
-    # main for three days, green on every required check, while the site
-    # stopped publishing. To promote this to a required check: delete the
-    # pull-request pin and add it to the ruleset.
-    #
-    # On the pull request AND on main, like every other advisory job. Main is
-    # not covered by `docs.yml`: its push trigger is path-filtered to docs/**,
-    # CHANGELOG.md, pnpm-workspace.yaml and itself, while the build reads the
-    # root package.json, pnpm-lock.yaml, .npmrc and every workspace manifest.
-    # Measured over 400 commits touching those files, 120 matched none of the
-    # filtered paths — a dependency bump can stop the site rebuilding and
-    # leave main green, which is the silence this job exists to break.
-    #
-    # No path filter here, deliberately: the change that broke the site was a
-    # Go change under pkg/, and the generated pages in docs/references/ are
-    # exactly where a Go change lands.
-    if: github.event_name != 'merge_group'
-    runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Node, corepack and the build invocation are docs.yml's, copied rather
-      # than restated: a check that builds the site differently from the
-      # deploy proves nothing about the deploy.
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-
-      # Before the install, because it needs none: the checker is plain node,
-      # and its verdict is worth having even on a run whose dependencies do
-      # not resolve. Mirror of `task docs:links:test`; internal/ciguard
-      # asserts the two stay identical. The file is named rather than globbed
-      # — a glob that matches nothing exits 0 having run nothing.
-      - name: Link checker self-test
-        run: node --test docs/scripts/check-links.test.mjs
-
-      - name: Install dependencies
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile --prefer-offline
-
-      # No continue-on-error: an advisory job that cannot go red is a job that
-      # reports nothing. It does not block the merge; it is meant to be SEEN.
-      - name: Build VitePress site
-        run: pnpm --filter @iterion/docs build

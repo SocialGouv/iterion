@@ -29,7 +29,7 @@
 # so no member after one compiles against a tree it rewrote mid-run.
 #
 # `checks` — how many check runs the job produces (its matrix). The ruleset
-# keys on CONTEXTS, not on jobs: 20 jobs, 26 check runs.
+# keys on CONTEXTS, not on jobs: 17 jobs, 24 check runs.
 #
 # `inlined` — the one-command Taskfile tasks that are a `run:` of this job
 # BYTE FOR BYTE. Declared here because a row that argues an identity in prose
@@ -38,7 +38,7 @@
 # it derives from the two files EQUAL, both directions — a new identity must
 # be declared (that is the class that made `fmt-check` read `unwritten` while
 # `task fmt:check` sat in the Taskfile), and a dead one reddens.
-# An entry is NOT a claim of membership: `helm-lint` names one it
+# An entry is NOT a claim of membership: `advisory-checks` names one it
 # deliberately does not run, and its `residual` says why.
 
 # The members that answer exit 2 for "a precondition refused — not a verdict",
@@ -261,22 +261,6 @@ jobs:
       it. Same docker shape as mongo-conformance (nats:2.14-alpine -js), so the
       member is a sibling of one that now exists.
 
-  helm-lint:
-    required: no
-    checks: 1
-    disposition: partial
-    members: ["chart:check"]
-    inlined: ["chart:dep-update"]
-    residual: >-
-      the job's first `run:` step is `helm dependency update charts/iterion`,
-      which is `task chart:dep-update` verbatim — declared in `inlined` so the
-      identity is held, NOT run as a member; the member calls
-      `scripts/chart-check-deps.sh`, which reconciles the archives against
-      Chart.yaml (an undeclared one pruned, a missing declared one fetched) —
-      so the fetch is covered in another form, and what is left is the network
-      pull itself and the job's check that a digest-pinned render pins the
-      image by digest.
-
   cloud-e2e:
     required: no
     checks: 1
@@ -290,35 +274,44 @@ jobs:
       #3691): it runs on push to `main`, the nightly, a dispatch and a pull
       request labelled `ci:full`.
 
-  govulncheck:
-    required: no
-    checks: 1
-    disposition: unwritten
-    residual: >-
-      unwritten ON PURPOSE — do not add `vuln` to members. `task vuln` runs
-      the same call-graph scan by hand (`govulncheck ./...`, no SARIF, no
-      upload), but scripts/ci/gate.sh runs the members of EVERY row whatever
-      its `required`, so a member here would make `task ci:gate` exit 1 on any
-      tree with a reachable CVE, including one disclosed after the tree was
-      written, and offline, where the vulnerability database cannot be
-      fetched. The job is advisory so that a zero-day does not gate a hotfix;
-      the local gate keeps that promise by not running it. Making it a member
-      needs an advisory, non-gating member kind in gate.sh first.
-
   desktop-vet-linux:
     required: no
     checks: 1
     disposition: unwritten
     residual: a `go vet` of the desktop tree with the wails tags; expressible, unwritten.
 
-  desktop-vet-cross:
+  advisory-checks:
     required: no
-    checks: 2
-    disposition: unwritten
+    checks: 1
+    disposition: partial
+    members: ["chart:check", "docs:links:test"]
+    inlined: ["chart:dep-update", "docs:links:test"]
     residual: >-
-      the same, under GOOS=windows and GOOS=darwin. Its check-run NAME carries
-      the matrix value (`desktop-vet-cross (darwin)`), which is why this map
-      counts contexts and not only jobs.
+      five checks in one job (#3711), each with its own residual. The chart
+      steps: `helm dependency update charts/iterion` is `task
+      chart:dep-update` verbatim — declared in `inlined` so the identity is
+      held, NOT run as a member; the member `chart:check` calls
+      `scripts/chart-check-deps.sh`, which reconciles the archives against
+      Chart.yaml (an undeclared one pruned, a missing declared one fetched) —
+      so the fetch is covered in another form, and what is left is the
+      network pull itself and the job's check that a digest-pinned render
+      pins the image by digest. The desktop vet under GOOS=windows and
+      GOOS=darwin: a `go vet -tags desktop` of the desktop tree, expressible,
+      unwritten. The docs build: its `Link checker self-test` step is
+      `docs:links:test` byte for byte (the same mirror
+      TestTheInlinedTasksMatchTheirTaskfileEntry holds for fmt-check), so the
+      link checker's own suite has a member; the VitePress build does not —
+      there is no `docs:build`, and `docs:links` is not it, a link that
+      resolves is not a site that builds. govulncheck is unwritten ON PURPOSE
+      — do not add `vuln` to members. `task vuln` runs the same call-graph
+      scan by hand (`govulncheck ./...`, no SARIF, no upload), but
+      scripts/ci/gate.sh runs the members of EVERY row whatever its
+      `required`, so a member for it would make `task ci:gate` exit 1 on any
+      tree with a reachable CVE, including one disclosed after the tree was
+      written, and offline, where the vulnerability database cannot be
+      fetched. The check is advisory so that a zero-day does not gate a
+      hotfix; the local gate keeps that promise by not running it. Making it
+      a member needs an advisory, non-gating member kind in gate.sh first.
 
   docs-links:
     required: no
@@ -326,17 +319,3 @@ jobs:
     disposition: partial
     members: ["docs:links"]
     residual: the job compares head against base and is deliberately advisory (#1233); the member judges head alone.
-
-  docs-build:
-    required: no
-    checks: 1
-    disposition: partial
-    members: ["docs:links:test"]
-    inlined: ["docs:links:test"]
-    residual: >-
-      the job's first `run:` step is `docs:links:test` byte for byte (the same
-      mirror TestTheInlinedTasksMatchTheirTaskfileEntry holds for fmt-check), so the
-      link checker's own suite has a member. The VitePress build does not:
-      there is no `docs:build`, and `docs:links` is not it — a link that
-      resolves is not a site that builds. Expressible (the studio's node
-      toolchain is right here) and unwritten.

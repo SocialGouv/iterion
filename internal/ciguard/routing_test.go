@@ -77,16 +77,13 @@ var runnerClasses = map[string]map[string]string{
 		"mongo-conformance": heavyRunner,
 		"cloud-e2e":         heavyRunner,
 
-		"test":              smallRunner,
-		"race":              smallRunner,
-		"nats-conformance":  largeRunner,
-		"vendor-check":      smallRunner,
-		"helm-lint":         smallRunner,
-		"brand":             smallRunner,
-		"desktop-vet-cross": smallRunner,
-		"govulncheck":       smallRunner,
-		"fmt-check":         smallRunner,
-		"docs-build":        smallRunner,
+		"test":             smallRunner,
+		"race":             smallRunner,
+		"nats-conformance": largeRunner,
+		"vendor-check":     smallRunner,
+		"brand":            smallRunner,
+		"advisory-checks":  smallRunner,
+		"fmt-check":        smallRunner,
 	},
 	"../../.github/workflows/merge-queue-gate.yml": {
 		"mirror-revi-verdict": smallRunner,
@@ -317,9 +314,9 @@ func TestSelfHostedRoutingKeepsItsClauses(t *testing.T) {
 //     first, the settings half follows.
 //   - CANNOT: the CHECK-RUN NAME, which is what the ruleset actually keys on.
 //     This map is keyed by job ID. A required job that gains a `name:` or a
-//     matrix diverges from its id silently — `desktop-vet-cross` shows the
-//     shape (its checks report as "desktop-vet-cross (windows)" and
-//     "(darwin)", neither equal to the id). No required job has one today.
+//     matrix diverges from its id silently — the sharded legs show the
+//     shape (`test-unit`'s checks report as "test-unit (0)", "test-unit (1)"
+//     and so on, none equal to the id). No required job has one today.
 //   - CANNOT: a job whose STEPS are all skipped by a step-level `if:`. It
 //     still reports SUCCESS.
 //
@@ -883,8 +880,8 @@ type taskfileTasks struct {
 // The witness: change either side alone and this names the pair.
 func TestTheInlinedTasksMatchTheirTaskfileEntry(t *testing.T) {
 	mirrors := map[string]struct{ job, step, task string }{
-		"fmt-check":  {"fmt-check", "Shipped bots and examples are canonical", "fmt:check"},
-		"docs-build": {"docs-build", "Link checker self-test", "docs:links:test"},
+		"fmt-check":       {"fmt-check", "Shipped bots and examples are canonical", "fmt:check"},
+		"advisory-checks": {"advisory-checks", "Link checker self-test", "docs:links:test"},
 	}
 	wsrc, err := os.ReadFile(workflowPaths[0])
 	if err != nil {

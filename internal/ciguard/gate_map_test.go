@@ -102,7 +102,7 @@ func TestTheCIGateMapIsTotalAndHonest(t *testing.T) {
 	for name, job := range wf {
 		// The fan-out IS the longest matrix axis: a job with no matrix is one
 		// check run, and a job whose axis has four values is four contexts
-		// whose NAMES carry the value (`desktop-vet-cross (darwin)`).
+		// whose NAMES carry the value (`test-e2e (3)`).
 		want := 1
 		for _, axis := range job.Strategy.Matrix {
 			if len(axis) > want {

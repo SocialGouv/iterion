@@ -24,7 +24,7 @@ import (
 // progressDeadlineSeconds the install's own render gives the server
 // Deployment — `helm template` on the install's arguments, read with yq —
 // plus a 120 s margin. The helper runs need helm and yq like the render
-// tests need helm: `task chart:check` and the helm-lint CI job require
+// tests need helm: `task chart:check` and the advisory-checks CI job require
 // them (ITERION_CHART_RENDER_REQUIRE=1), a plain `go test ./...` without
 // them skips and says so. The wiring witnesses read Taskfile.yml and
 // tests.yml and run everywhere.
@@ -38,7 +38,7 @@ func yqBinary(t *testing.T) {
 		if os.Getenv("ITERION_CHART_RENDER_REQUIRE") == "1" {
 			t.Fatalf("yq is required here (ITERION_CHART_RENDER_REQUIRE=1) and not in PATH: %v", err)
 		}
-		t.Skipf("yq not in PATH (%v) — the kind-wait helper runs under `task chart:check` and the helm-lint CI job", err)
+		t.Skipf("yq not in PATH (%v) — the kind-wait helper runs under `task chart:check` and the advisory-checks CI job", err)
 	}
 }
 
@@ -1184,7 +1184,7 @@ func TestChartKindWaitToolchainPinsYq(t *testing.T) {
 		}
 	}
 	if len(downloads) == 0 {
-		t.Fatalf("no workflow under .github/workflows downloads a mikefarah/yq release — the helm-lint job runs the kind-wait witnesses with ITERION_CHART_RENDER_REQUIRE=1 and installs one; a scan that reads nothing compares nothing")
+		t.Fatalf("no workflow under .github/workflows downloads a mikefarah/yq release — the advisory-checks job runs the kind-wait witnesses with ITERION_CHART_RENDER_REQUIRE=1 and installs one; a scan that reads nothing compares nothing")
 	}
 	if len(drift) > 0 {
 		t.Fatalf("devbox.lock resolves yq-go %s for the local gate and CI downloads another yq at %s — the helper's verdict rides on yq's reading of the render, so both gates run one version: move each download (version and digest) or the devbox pin", locked, strings.Join(drift, ", "))

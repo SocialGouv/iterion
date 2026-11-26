@@ -109,7 +109,7 @@ hardening commits on this branch:
 
 - [ ] `task lint && task test && task test:e2e` clean locally.
 - [ ] CI: all of `test`, `mongo-conformance`, `cloud-e2e`,
-      `vendor-check`, `helm-lint`, `govulncheck` green.
+      `vendor-check`, `advisory-checks` (helm lint, govulncheck) green.
 - [ ] `task test:live:review` (the cheapest live target) clean on
       whatever provider you can prove credentials for.
 - [ ] Chart version drift gate green (`task chart:check-version`).
