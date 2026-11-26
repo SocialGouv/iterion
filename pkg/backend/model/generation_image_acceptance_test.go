@@ -290,3 +290,26 @@ func TestRouteImageInput_NativeFallsBackToTheSnapshot(t *testing.T) {
 		}
 	}
 }
+
+// A native route's verdict read from the embedded snapshot says so through
+// the snapshot's staleness warning; a verdict the live table answers does
+// not.
+func TestRouteImageInput_ASnapshotAnswerWarns(t *testing.T) {
+	pliageGateway(t, "")
+	calls := 0
+	prev := warnSnapshotAnswered
+	warnSnapshotAnswered = func() { calls++ }
+	t.Cleanup(func() { warnSnapshotAnswered = prev })
+	text := false
+
+	restore := modelspecs.SetDefault(modelspecs.NewSeeded(map[string]modelspecs.Spec{"zai-coding-plan/glm-5.3": {ImageInput: &text}}))
+	if got := nativeImageInput("anthropic/glm-5.3"); got == nil || *got || calls != 0 {
+		t.Fatalf("live answer: image_input %v, %d warning(s), want false and none", got, calls)
+	}
+	restore()
+
+	t.Cleanup(modelspecs.SetDefault(modelspecs.NewSeeded(nil)))
+	if got := nativeImageInput("anthropic/glm-5.3"); got == nil || *got || calls != 1 {
+		t.Fatalf("snapshot answer: image_input %v, %d warning(s), want false and one", got, calls)
+	}
+}

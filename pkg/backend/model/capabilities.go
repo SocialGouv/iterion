@@ -49,9 +49,10 @@ func capabilitiesForModel(provider, modelID string) ModelCapabilities {
 	if ok {
 		caps = mergeSpec(spec, curated)
 	}
-	// The image flag is the one the image policy resolves for the route
-	// (nativeImageInput), not the merge's: the merge falls back to the bare
-	// consensus index, which the policy never reads.
+	// The image flag is read the way the image policy reads a native route
+	// (nativeImageInput), from this process's tables, not the merge's: the
+	// merge falls back to the bare consensus index, which the policy never
+	// reads.
 	caps.ImageInput = nativeImageInput(nativeSpec(provider, modelID))
 	return caps
 }

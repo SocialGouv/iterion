@@ -40,10 +40,17 @@ never fetched and never stale.
 
 The table comes from either
   --file F          a feed-entry document (- reads stdin): the operator-table
-                    JSON per id plus "reasoning_efforts", e.g.
+                    JSON per id plus "reasoning_efforts" and "image_input"
+                    (false: the route refuses images before any request), e.g.
                     {"glm-5.3":{"context_window":256000,"max_output_tokens":16384,
-                      "input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15},
+                      "input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15,
+                      "image_input":false},
                      "scaleway/deepseek-v4.1-flash":{"reasoning_efforts":["low","high","xhigh","max"]}}
+                    image_input reaches a run only from the entry that
+                    answers the id: priced, and first among its level's feeds
+                    (--first) or at a more specific level than the feed that
+                    prices it — restate that feed's window and output cap, the
+                    entry answers whole.
   --models-file M   a runner pool's OPENAI_COMPATIBLE_MODELS table, as written,
   --efforts-file E  and/or its OPENAI_COMPATIBLE_REASONING_EFFORTS table: each
                     id's efforts land beside its prices (the two tables'

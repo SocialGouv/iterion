@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 )
@@ -79,8 +80,9 @@ func TestLiteLLMSourceFoldsSupportsVisionAcrossDeployments(t *testing.T) {
 	}
 }
 
-// The operator table and a feed's entries accept image_input, so an operator
-// can declare it for a gateway that publishes nothing; unstated stays nil.
+// A feed's entries (declared, exec) accept image_input, so an operator can
+// declare it for a gateway that publishes nothing; unstated stays nil. The
+// operator table refuses it (TestTheOperatorTableRefusesImageInput).
 func TestFeedEntriesAcceptImageInput(t *testing.T) {
 	raw := `{"scaleway/glm-5.3":{"image_input":false},"scaleway/gemma":{"image_input":true},"other":{"context_window":8}}`
 	table, err := ParseFeedEntries(raw, "test")
@@ -99,5 +101,45 @@ func TestFeedEntriesAcceptImageInput(t *testing.T) {
 	// A refresh flipping image_input is a change.
 	if SpecEqual(modelspecs.Spec{ImageInput: new(bool)}, modelspecs.Spec{}) {
 		t.Error("SpecEqual reads a stated image_input and an unstated one as equal")
+	}
+}
+
+// A declared entry's image_input reaches the run only when that entry is
+// the one that answers: within a scope the FIRST enabled feed pricing the id
+// answers it whole, so a declaration listed after a priced fetched feed
+// changes nothing (unstated), listed first (`declare --first`) it answers
+// false — with only the fields it restates — and at a more specific scope
+// it answers over the less specific feed. An unpriced declaration steps
+// aside for a priced entry.
+func TestFoldImageInputAnswersFromTheAnsweringEntryOnly(t *testing.T) {
+	const id = "scaleway/glm-5.3"
+	now := time.Now()
+	gw := fetchedFeed("gw")
+	gwState := map[string]*StateRecord{"gw": freshState("gw", now, map[string]modelspecs.Spec{
+		id: {InputCostPerM: 2.01, OutputCostPerM: 6.15, ContextWindow: 256000},
+	})}
+	priced := declaredFeed("pliage", `{"scaleway/glm-5.3":{"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15,"image_input":false}}`)
+	unpriced := declaredFeed("pliage", `{"scaleway/glm-5.3":{"image_input":false}}`)
+	scope := func(feeds ...FeedConfig) ScopeState {
+		return ScopeState{Config: &ConfigRecord{UpdatedAt: now, Feeds: feeds}, States: gwState}
+	}
+	for _, tc := range []struct {
+		name   string
+		scopes []ScopeState
+		want   string
+		window int
+	}{
+		{"declared after a priced feed", []ScopeState{scope(gw, priced)}, "unstated", 256000},
+		{"declared first", []ScopeState{scope(priced, gw)}, "false", 0},
+		{"declared at a more specific scope", []ScopeState{scope(gw), {Config: &ConfigRecord{UpdatedAt: now, Feeds: []FeedConfig{priced}}}}, "false", 0},
+		{"unpriced declaration first", []ScopeState{scope(unpriced, gw)}, "unstated", 256000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			table := Fold(FoldConfig{Now: now}, tc.scopes...)
+			e, ok := table.Entries[id]
+			if !ok || imageWord(e.Spec.ImageInput) != tc.want || e.Spec.ContextWindow != tc.window {
+				t.Fatalf("entry %+v (present %v): image_input %s window %d, want %s and %d", e, ok, imageWord(e.Spec.ImageInput), e.Spec.ContextWindow, tc.want, tc.window)
+			}
+		})
 	}
 }

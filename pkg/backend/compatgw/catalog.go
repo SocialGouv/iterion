@@ -283,9 +283,14 @@ func warnStaleSnapshot() {
 		if !ok || age <= snapshotStaleAfter {
 			return
 		}
-		iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: the embedded models.dev snapshot answered and is %d days old — regenerate with `task models:snapshot`", int(age/(24*time.Hour)))
+		iterlog.NewFromEnv(os.Stderr).Warn("model specs: the embedded models.dev snapshot answered and is %d days old — regenerate with `task models:snapshot`", int(age/(24*time.Hour)))
 	})
 }
+
+// WarnStaleSnapshot is warnStaleSnapshot for a reader outside the gateway
+// catalog that answered from the embedded snapshot — a native route's image
+// flag — so the one staleness line covers every snapshot answer.
+func WarnStaleSnapshot() { warnStaleSnapshot() }
 
 // ResolveCatalog resolves one gateway model id. live is the process
 // models.dev registry (modelspecs.Default in production); when it has no

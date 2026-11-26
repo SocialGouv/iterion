@@ -80,8 +80,8 @@ func routeImageInput(ctx context.Context, spec string) *bool {
 }
 
 // nativeImageInput is routeImageInput for a spec that is not a gateway
-// route; the capability views (capabilitiesForModel) read it too, so what
-// they show is what the policy decides.
+// route. The capability views (capabilitiesForModel) read it too, from the
+// process's own tables: a run in a sandbox answers from the sandbox's.
 func nativeImageInput(spec string) *bool {
 	route := modelroute.Parse(spec)
 	if anthropicVisionProviders[route.Provider] && strings.Contains(strings.ToLower(route.Wire), "claude") {
@@ -96,11 +96,18 @@ func nativeImageInput(spec string) *bool {
 	}
 	for _, p := range providers {
 		if s, ok := modelspecs.SnapshotLookupExact(p, route.Wire); ok {
+			warnSnapshotAnswered()
 			return s.ImageInput
 		}
 	}
 	return nil
 }
+
+// warnSnapshotAnswered says the embedded snapshot answered (the gateway
+// catalog's own once-per-process staleness line). A native route gets no
+// forwarded record from the host: in a sandbox its verdict is the sandbox's
+// own table, live when loaded, else this snapshot.
+var warnSnapshotAnswered = compatgw.WarnStaleSnapshot
 
 // modelsDevProviders lists, in order, the models.dev provider ids whose rows
 // describe the model a native spec reaches. A GLM id on the anthropic wire

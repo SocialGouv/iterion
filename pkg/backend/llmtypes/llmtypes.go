@@ -50,10 +50,13 @@ type ModelCapabilities struct {
 	ToolCall    *bool
 	Temperature *bool
 
-	// ImageInput says whether the model takes images as input, as the image
-	// policy resolves it for the route (the catalog's provider-qualified
-	// row, never a cross-provider bare consensus): nil is unknown, under
-	// which images are sent; false is a route that refuses them.
+	// ImageInput says whether the model takes images as input, read from
+	// this process's tables the way the image policy reads them (the
+	// catalog's provider-qualified row, never a cross-provider bare
+	// consensus): nil is unknown, under which images are sent; false is a
+	// route that refuses them. Source names the table that answered. A run
+	// whose price feed answers the id decides from that feed, which a view
+	// resolved outside the run never sees.
 	ImageInput *bool
 
 	// Source is the table that had an ENTRY for the model

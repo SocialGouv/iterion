@@ -231,8 +231,9 @@ func (p ImagePolicy) EffectiveMaxImageBytes() (max int, knobs string) {
 type ImagesRefusedError struct {
 	Tool  string
 	Route string
-	// Description is the tool's own text about the image (read_image's file
-	// name and dimensions), kept so the model still reads what it asked for.
+	// Description is the tool's own text about the image (read_image's
+	// caller-given description, else the file's base name or the URL), kept
+	// so the model still reads what it asked for.
 	Description string
 }
 

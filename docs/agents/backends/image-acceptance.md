@@ -21,13 +21,29 @@ it refuses `reasoning_efforts` (ADR-166): a runner parses that table, and a
 runner older than the field would refuse it whole. The table then fails
 with `OPENAI_COMPATIBLE_MODELS does not parse: … unknown field
 "image_input"` (`TestTheOperatorTableRefusesImageInput`,
-`TestOperatorModels_RefusesImageInput`). To refuse images on an id, state
-`image_input` on a priced entry of a declared or exec feed. The run's feed
-answers before the operator table, so that entry wins over an operator row
-for the same id (`TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag`).
-Follow the rollout limit below. A native route
-reads the models.dev row of the provider that serves it, live then
-snapshot. A GLM id on the anthropic wire (`anthropic/glm-*` or a bare
+`TestOperatorModels_RefusesImageInput`).
+
+To refuse images on an id, state `image_input` on the feed entry that
+answers it. That entry must be priced: an unpriced declaration steps aside
+for a priced entry. It must also come first among its scope's enabled
+feeds, or sit at a more specific scope (org, team) than the feed that
+prices the id. Within a scope, the first enabled feed pricing an id
+answers it whole. `iterion remote price-feeds declare` appends a new feed
+at the end unless given `--first`, so a declaration listed after a LiteLLM
+feed that prices the id changes nothing. The answering entry answers whole,
+so restate the window and output cap the fetched entry carried
+(`TestFoldImageInputAnswersFromTheAnsweringEntryOnly`). The run's feed
+answers before the operator table, so that entry also wins over an
+operator row for the same id
+(`TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag`). Follow the
+rollout limit below.
+
+A native route reads the models.dev row of the provider that serves it,
+live then snapshot. It gets no forwarded record from the host. In a
+sandbox, its verdict comes from the sandbox's own catalog: the live table
+when it is loaded, else the embedded snapshot, whose answer earns the
+snapshot staleness warning (`TestRouteImageInput_ASnapshotAnswerWarns`).
+`ITERION_IMAGE_ACCEPTANCE=send` overrides it. A GLM id on the anthropic wire (`anthropic/glm-*` or a bare
 `glm-*`) reads z.ai's rows (`zai-coding-plan`, then `zai`). `moonshot`
 reads `moonshotai`, `vertex` reads `google-vertex` and `bedrock` reads
 `amazon-bedrock`. `foundry` ids are deployment names, so they state
@@ -39,9 +55,14 @@ refuses. Deployments of one LiteLLM `model_name` fold to false if any says
 false, and to true only if all say true. PLIAGE's `/model/info` states
 `supports_vision` for no model. The scaleway row answers only for an id no
 feed entry and no operator row answers: there, `scaleway/glm-5.3` is
-text-only, and the vision models above take images. `iterion models` prints
-the flag in its `IMAGES` column, and the capability API returns it as
-`image_input`.
+text-only, and the vision models above take images.
+
+`iterion models` prints the flag in its `IMAGES` column, and the capability
+API returns it as `image_input`. Both answer from the process's own tables,
+and their `source` names the table that answered. They never see a run's
+feed table (`ITERION_GATEWAY_PRICE_FEED` is a per-run overlay). A run whose
+feed answers the id decides from that feed, so for such an id the view can
+read `false` from the catalog snapshot while the run sends images.
 
 Mixed versions during a rollout: a server older than `image_input` parses
 feed entries strictly. An older replica refuses the write of a declared
