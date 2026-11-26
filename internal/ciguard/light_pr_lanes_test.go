@@ -258,3 +258,74 @@ func TestCiFullGuidanceNamesEveryOptInJob(t *testing.T) {
 		t.Fatalf("found %d jobs gated on ci:full, want race-shard, test-e2e, cloud-e2e and mongo-conformance", optIn)
 	}
 }
+
+const pushToMainPath = "../../docs/agents/workflow/push-to-main.md"
+
+// TestEveryAdminLandingOwesTheCIGateOnAnEmptyQueue holds each page that
+// opens an admin landing to the operator's two rules of 2026-11-25 (#3686).
+// A light pull request's green never ran race-shard or test-e2e, so every
+// admin landing runs `task ci:gate`, whose members carry that work, rather
+// than `task check`. And a push to main outside the queue rebuilds every
+// group in flight, so every admin landing but an incident fix waits for an
+// empty queue. The incident fast lane owes the gate and opens its pull
+// request with `ci:full`, so its heavy legs run on the first push.
+func TestEveryAdminLandingOwesTheCIGateOnAnEmptyQueue(t *testing.T) {
+	const (
+		gate      = "`task ci:gate`"
+		emptyRule = "empty queue"
+	)
+	lanes := []struct {
+		path, heading string
+		wants         []string
+	}{
+		{mergePolicyPath, "### The extended train lane", []string{gate, "no entry in flight", "fixed forward", "`chore: release`", "`\"next\"` floor", "reading-golden lines"}},
+		{mergePolicyPath, "### Queue hygiene", []string{emptyRule, "dispatch"}},
+		{mergePolicyPath, "### A parked gate", []string{gate, "entry in flight"}},
+		{mergePolicyPath, "### The fast lane for an incident fix", []string{gate, "opened with the `ci:full` label"}},
+		{reviewAndMergePath, "## The operator direct-landing lane", []string{gate, emptyRule}},
+		{reviewAndMergePath, "## A parked gate is a rerouting signal", []string{gate, emptyRule}},
+		{pushToMainPath, "## Review, integrate, push, witness", []string{gate, emptyRule}},
+	}
+	for _, lane := range lanes {
+		section := mdSection(t, lane.path, lane.heading)
+		for _, want := range lane.wants {
+			if !strings.Contains(section, want) {
+				t.Errorf("%s %q does not say %q: an admin landing runs `task ci:gate` (a light pull request never ran the heavy legs) and, an incident fix aside, waits for an empty queue", lane.path, lane.heading, want)
+			}
+		}
+	}
+	// Three rules live in a paragraph rather than a section: push-to-main.md's
+	// parked-gate opening, before its first `##`, review-and-merge.md's "One
+	// lane per burst", and merge-policy.md's summary of the direct-landing
+	// contract. Each is read up to its blank line, so the older `task ci:gate`
+	// and "empty queue" mentions around them (the direct-landing paragraph,
+	// the lane's own item 1, queue hygiene) cannot stand in for them. The
+	// summary must not keep "warn sessions with queued PRs": queued PRs make
+	// the push wait.
+	paragraphs := []struct {
+		path, opening string
+		wants, bans   []string
+	}{
+		{pushToMainPath, "A **parked `revi/review`**", []string{gate, "`ci:full`", emptyRule}, nil},
+		{reviewAndMergePath, "**One lane per burst**", []string{gate, emptyRule}, nil},
+		{mergePolicyPath, "Operator-led chantiers may bypass the queue", []string{"wait for an empty queue"}, []string{"queued PRs"}},
+	}
+	for _, p := range paragraphs {
+		_, rest, found := strings.Cut(string(mustRead(t, p.path)), "\n"+p.opening)
+		if !found {
+			t.Fatalf("%s has no paragraph opening with %q", p.path, p.opening)
+		}
+		paragraph, _, _ := strings.Cut(p.opening+rest, "\n\n")
+		paragraph = strings.Join(strings.Fields(paragraph), " ")
+		for _, want := range p.wants {
+			if !strings.Contains(paragraph, want) {
+				t.Errorf("%s's paragraph %q does not say %q", p.path, p.opening, want)
+			}
+		}
+		for _, ban := range p.bans {
+			if strings.Contains(paragraph, ban) {
+				t.Errorf("%s's paragraph %q still says %q: queued PRs make an admin landing wait, they are not a warning duty", p.path, p.opening, ban)
+			}
+		}
+	}
+}

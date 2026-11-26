@@ -1,12 +1,11 @@
 # Before merge — the required loop, and how a change reaches `main`
 
 Every change lands through a pull request whose `revi/review` gate is green.
-The documented exceptions are the admin bypass below — which allows a direct
-push to `main`, not just a queue skip — the **operator direct-landing lane**
-(§ below, decided 2026-10-22), the **admin merge a parked gate opens**
-(§ [A parked gate is a rerouting signal](#a-parked-gate-is-a-rerouting-signal-not-a-wait),
-decided 2026-11-10), and the release bot, whose
-`chore: release` commits land on `main` with no PR and no gate.
+The documented exceptions: the admin bypass below (a direct push to `main`,
+not just a queue skip), the **operator direct-landing lane** and the **admin
+merge a [parked gate](#a-parked-gate-is-a-rerouting-signal-not-a-wait)
+opens** (§ below), and the release bot, whose `chore: release` commits land
+on `main` with no PR and no gate.
 The loop is:
 
 **local adversarial round → fix → re-attack the fix → push → `/revi` → green**
@@ -81,15 +80,18 @@ serialising the PRs that exist. The lane's blocking proof replaces the PR's:
    your change. The witness is the first run that **completes** on a `main` tip
    containing your commit (`git merge-base --is-ancestor <sha> <tip>`).
 
-Courtesies that are duties: warn the sessions with PRs in flight before the
-first push of a wave (a direct push invalidates their merge groups) and those
-with unpushed branches (each `main` advance costs them a rebase).
+A duty: before a wave's first push, warn the sessions with unpushed branches
+(each `main` advance costs a rebase); queued PRs make the push wait (below).
 
 **One lane per burst** (decided 2026-11-24): a burst of PRs picks ONE lane up
-front — the queue alone, or this lane end to end (dequeue all, train the
-exact set on current `main`, land; its proof replaces their `revi/review`).
-Never admin-merge while its other entries sit queued
-([why](../../merge-policy.md#one-lane-per-burst-decided-2026-11-24)).
+front — the queue alone, or the
+[extended train lane](../../merge-policy.md#the-extended-train-lane-decided-2026-11-25)
+(dequeue all, train the exact set on current `main`, land without waiting
+for their CI; a later Revi finding is fixed forward). **Any
+admin landing** waits for an empty queue, incident fixes aside
+([queue hygiene](../../merge-policy.md#queue-hygiene-nothing-moves-main-while-entries-are-in-flight-decided-2026-11-25)),
+and runs `task ci:gate`, not `task check` alone: a light PR never ran
+`race-shard` or `test-e2e`.
 
 ## The merge queue
 
@@ -104,10 +106,9 @@ push / dequeue + `--admin`). Required checks: `test`,
 work runs in the gated legs; see docs/merge-policy.md).
 `nats-conformance` remains advisory until an admin adds it to ruleset
 18857412; `fmt-check` reports on the PR and in the queue but is not required
-yet (staged — `internal/ciguard`'s `requiredChecks`). A pull request titled
-`chore(brew): update tap to …` (in the queue: its squash message) skips the
-heavy ones, and `brand` refuses it unless it moves only the tap's `version`
-and `sha256` values
+yet (staged — `internal/ciguard`'s `requiredChecks`). A
+`chore(brew): update tap to …` PR skips the heavy jobs; `brand` refuses it
+unless it moves only the tap's `version` and `sha256`
 ([the one verified skip](../../merge-policy.md#the-one-verified-skip-the-homebrew-tap-update)).
 Details + revert command:
 [../merge-policy.md](../../merge-policy.md). How long merges take, what they cost
@@ -167,9 +168,10 @@ request is fine — the credential is not. Waiting out the window is the last re
    `revi/review`; below it the residual is assumed explicitly, and
    `Adversarial-Rounds:` is where a reader sees which of the two happened.
    `revi/review` stays a required context either way, so the merge is still the
-   admin one and still owes the other six checks green, under `ci:full` on a
-   light pull request: its conditions and the queue guarantee it gives up are
-   in [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
+   admin one, owing the four other required checks green under `ci:full`,
+   `task ci:gate` and an empty queue: its conditions and what it gives up are
+   in
+   [the parked gate](../../merge-policy.md#a-parked-gate-decided-2026-11-10).
    Steps 1 and 2 stay the first moves; this is for when they are unavailable
    or refused.
 

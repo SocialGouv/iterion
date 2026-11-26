@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -169,8 +170,88 @@ func TestUnitOneTimeStepsRunOnAShardThatExists(t *testing.T) {
 	}
 }
 
+// unitLegOverheadMinutes is what a test-unit leg spends BEFORE its `Unit
+// tests` step on the scale set, with margin: over the 335 successful ARC legs
+// of 2026-11-25 the slowest reached the step after 10.85 minutes (run
+// 45572758932, last shard, which also runs the freshness gate, gofmt, vet and
+// the census). The steps after it (the live e2e compile check and the post
+// steps, up to ~5.8 minutes) do not count: a hung step never reaches them.
+// The bound is on the step's start, not each package's: `go test -timeout`
+// counts from each test binary's own start, so a package whose binary starts
+// later than the ceiling minus the timeout minus this setup can still be cut
+// bare (run 45572758932, pkg/runview, ~4.4 minutes into the step).
+const unitLegOverheadMinutes = 15
+
+// unitQueueWaitMinutes is the pod wait a merge-group test-unit leg and then
+// the `test` aggregator sit through before running, rounded up: on
+// 2026-11-25, with the heavy layer out of the queue (ADR-173), the leg waited
+// at most 13.9 minutes and the aggregator 3.8. With the heavy layer back the
+// waits grow (2026-11-25 heavy-mode groups: leg p90 17.9 max 28.0, aggregator
+// p90 4.0 max 11.3), so ending that mode forces this number, and the ceiling,
+// to be measured again: TestUnitLegCeilingLeavesThePackageTimeoutRoom fails
+// once race-shard runs in the merge queue.
+const unitQueueWaitMinutes = 18
+
+// The leg's job ceiling must leave the `go test -timeout` its own room: a
+// package that runs to that per-package bound panics with a goroutine dump
+// naming the hung test, while a job cut by `timeout-minutes` reports a bare
+// cancellation and turns `test` red with nothing to read. With setup on a
+// loaded pool, a 30-minute ceiling cut legs whose every package was still
+// within its 25 minutes (runs 45652256463 and 45663630605). The ceiling also
+// stays under the heavy legs', since test-unit is the light layer's fast
+// signal, and it leaves the merge queue's check timeout room for the pod
+// waits: a hung leg reports through the `test` aggregator after its own pod
+// wait, the ceiling and the aggregator's pod wait, and passing the queue's
+// check_response_timeout_minutes ends the group as checks_timed_out, which
+// dequeues every entry behind it. The rule covers test-unit only;
+// test-native-exec, whose plain and race runs sit back to back under a
+// 30-minute ceiling, does not meet it. The floor holds for a package that
+// starts with the step; one whose binary starts later in the step has less
+// room, so the rule keeps the step's start inside the bound, not every
+// package's.
+func TestUnitLegCeilingLeavesThePackageTimeoutRoom(t *testing.T) {
+	job := unitJob(t)
+	var step string
+	for _, candidate := range job.Steps {
+		if strings.Contains(candidate.Run, "./scripts/ci/testshards") {
+			step = candidate.Run
+		}
+	}
+	timeout, err := time.ParseDuration(goTestTimeout(t, "test-unit", step))
+	if err != nil {
+		t.Fatalf("test-unit's go test -timeout is not a duration: %v", err)
+	}
+	floor := int(timeout.Minutes()) + unitLegOverheadMinutes
+	if job.TimeoutMinutes < floor {
+		t.Errorf("test-unit's job ceiling is %d minutes, under its go test -timeout (%s) plus the %d minutes a leg spends outside that step on the scale set: the job is cancelled before a hung package can panic and name itself", job.TimeoutMinutes, timeout, unitLegOverheadMinutes)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			TimeoutMinutes int    `yaml:"timeout-minutes"`
+			If             string `yaml:"if"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
+		t.Fatal(err)
+	}
+	race, ok := wf.Jobs["race-shard"]
+	if !ok || race.TimeoutMinutes == 0 {
+		t.Fatal("tests.yml has no race-shard job with a timeout-minutes")
+	}
+	if !strings.Contains(race.If, "github.event_name != 'merge_group'") {
+		t.Errorf("race-shard runs in the merge queue again (ADR-173's light mode ended): the heavy legs' pod waits apply, so measure unitQueueWaitMinutes (%d) and test-unit's ceiling again against the queue timeout", unitQueueWaitMinutes)
+	}
+	if job.TimeoutMinutes >= race.TimeoutMinutes {
+		t.Errorf("test-unit's job ceiling (%d minutes) reaches race-shard's (%d): the light layer's fast signal must stay under the heavy legs' bound", job.TimeoutMinutes, race.TimeoutMinutes)
+	}
+	if queue := queueCheckTimeoutMinutes(t); job.TimeoutMinutes+unitQueueWaitMinutes >= queue {
+		t.Errorf("test-unit's job ceiling (%d minutes) plus the %d minutes of leg and aggregator pod waits reaches the merge queue's %d-minute check timeout: a hung leg ends its group as checks_timed_out and dequeues every entry behind it; decide the ceiling again against the waits measured now", job.TimeoutMinutes, unitQueueWaitMinutes, queue)
+	}
+}
+
 type unitJobShape struct {
-	Strategy struct {
+	TimeoutMinutes int `yaml:"timeout-minutes"`
+	Strategy       struct {
 		FailFast *bool            `yaml:"fail-fast"`
 		Matrix   map[string][]int `yaml:"matrix"`
 	} `yaml:"strategy"`

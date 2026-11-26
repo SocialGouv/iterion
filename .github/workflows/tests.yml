@@ -296,7 +296,32 @@ jobs:
     # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
     # excluded from the partition and proved by test-native-exec instead.
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_LARGE_RUNNER || 'arc-runners' }}
-    timeout-minutes: 30
+    # The ceiling leaves `go test -timeout 1500s` its room: on the scale set a
+    # leg reaches the Unit tests step after up to ~11 min (2026-11-25, 335
+    # successful ARC legs; the last shard's one-time steps are most of it),
+    # and the successful legs' wall reached 29.9 min (shard 1, run
+    # 45568468302), while a 30-min ceiling cancelled legs whose packages were
+    # all still inside their own timeout. A package's 25 min count from its own
+    # test binary's start, not the step's: a hung package panics inside the
+    # ceiling only when its binary starts within the ceiling minus 25 min minus
+    # setup of the step's start, about 4 min on the slowest-setup leg and more
+    # on the others; one
+    # that starts later can still be cut bare (run 45572758932, pkg/runview
+    # started ~4.4 min into the step).
+    # The tail is pool load, not the weights: the shards' slowest legs sat
+    # between 27.1 and 29.9 min while their medians spread from 16 to 22 min,
+    # so rebalancing the shards would not have saved those legs.
+    # The ceiling is bounded by the queue's margin: its
+    # check_response_timeout_minutes (60) runs from the group's creation and
+    # also covers the leg's pod wait and the `test` aggregator's (at most
+    # 13.9 + 3.8 min on 2026-11-25, heavy layer out of the queue), so a leg
+    # hung past its packages' timeout reports after the ceiling plus those
+    # waits, just short of a checks_timed_out that dequeues every entry behind
+    # it. With the heavy layer back the waits grow past that margin.
+    # internal/ciguard (TestUnitLegCeilingLeavesThePackageTimeoutRoom) holds
+    # the ceiling above the package timeout plus setup, under race-shard's,
+    # and under the queue timeout minus the measured waits.
+    timeout-minutes: 40
     env:
       CGO_ENABLED: "0"
     strategy:
@@ -471,7 +496,7 @@ jobs:
         # 10m0s on the next). The same bots sources later passed in 1007s
         # on the PR and reached the 1200s aggregate limit in its merge group
         # while a test had run for only 9s (#2745). Allow 25m per package,
-        # still bounded by the job's 30m including setup and live compilation.
+        # still bounded by the job's 40m including setup and live compilation.
         # Individual test deadlines and all assertions remain in force.
         #
         # The partition goes through an ASSIGNMENT, never inline `$( )`:

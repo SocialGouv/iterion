@@ -913,7 +913,7 @@ func declaredMembers(t *testing.T, gateMap string) []string {
 // a `mapfile -t INVOCATIONS < <(python3 …)`, where the `|| { exit 2; }` reads
 // MAPFILE's status, never python3's. The refusal the script computed and
 // printed was thrown away, the loop ran zero invocations, and `exit "$failed"`
-// answered 0 — the REQUIRED `mongo-conformance` context reporting green over
+// answered 0 — the held `mongo-conformance` context reporting green over
 // nothing tested, with `ci:gate` concluding "every required or staged context
 // is covered" on top of it.
 //
