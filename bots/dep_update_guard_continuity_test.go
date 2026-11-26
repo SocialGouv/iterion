@@ -494,7 +494,7 @@ type gateReads struct {
 
 // ciRequiredGreen is a CI check the base requires, passing: the build a
 // carried verdict leans on.
-var ciRequiredGreen = map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true}
+var ciRequiredGreen = liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true})
 
 // graphQLReview is a REST-shaped review as GraphQL serves it: the author's
 // login without `[bot]`, its databaseId, the review's url, and its edit
@@ -959,7 +959,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
 			rollup: []map[string]any{
 				{"__typename": "StatusContext", "context": "vetty/deps", "state": "PENDING", "isRequired": true},
-				{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false},
+				liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false}),
 			},
 			check: wantNoCarry("attests no build"),
 		},
@@ -976,7 +976,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			name:     "CI the base requires, still running, is a build the carry leans on",
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
-			rollup:   []map[string]any{{"__typename": "CheckRun", "name": "ci/test", "status": "QUEUED", "conclusion": nil, "isRequired": true}},
+			rollup:   []map[string]any{liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "QUEUED", "conclusion": nil, "isRequired": true})},
 			check: func(t *testing.T, res map[string]any, _ []string) {
 				if res["carry"] != true {
 					t.Errorf("required CI still running did not count as the build: %v", res)

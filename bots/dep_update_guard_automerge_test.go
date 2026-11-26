@@ -529,7 +529,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	t.Run("a repinned verdict arms the head it was carried onto", func(t *testing.T) {
 		// A carried verdict is armed only where a check the base requires,
 		// other than the gate, builds the head: here CI, still running.
-		withRollup(t, "", map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true})
+		withRollup(t, "", liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true}))
 		res, calls, _ := runWith(t, map[string]string{
 			"{{input.verdict}}":       `"carried"`,
 			"{{input.gate_sha}}":      `"d34db33f"`,
@@ -1096,7 +1096,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// there, green and unarmed, until a human acted.
 	const unstableRefusal = "Pull request Pull request is in unstable status"
 	unstablePR := withState(map[string]any{"mergeStateStatus": "UNSTABLE"})
-	optionalRed := map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE", "isRequired": false}
+	optionalRed := liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE", "isRequired": false})
 	requiredGreen := map[string]any{"__typename": "StatusContext", "context": "test", "state": "SUCCESS", "isRequired": true}
 	mergedOn := func(calls []call) []any {
 		var oids []any
@@ -1139,7 +1139,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		nodes []map[string]any
 	}{
 		{"a null rollup", "", nil},
-		{"a context whose requiredness is not stated", "", []map[string]any{{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE"}}},
+		{"a context whose requiredness is not stated", "", []map[string]any{liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED", "conclusion": "FAILURE"})}},
 		// Mutation: drop the rollup's commit-oid check -> it judges the
 		// checks of a head this run never audited.
 		{"a rollup about another commit", "0ther5ha", []map[string]any{optionalRed}},
@@ -1332,7 +1332,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		t.Run("verdict "+verdict+" is green: arms pinned", func(t *testing.T) {
 			// CI the base requires is still running: what a carried verdict
 			// leans on, and what the forge holds the arming to.
-			withRollup(t, "", map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true})
+			withRollup(t, "", liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": true}))
 			res, calls, _ := run(t, map[string]string{"{{input.verdict}}": `"` + verdict + `"`})
 			if res["armed"] != true {
 				t.Fatalf("a %s verdict with a green gate must arm: %v", verdict, res)
@@ -1366,7 +1366,7 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 		{"CLEAN with no CI at all", withState(map[string]any{"mergeStateStatus": "CLEAN"}), cleanRefusal, []map[string]any{gateGreen}},
 		{"UNSTABLE, CI red and not required", unstablePR, unstableRefusal, []map[string]any{gateGreen, optionalRed}},
 		{"UNSTABLE, CI still running and not required", unstablePR, unstableRefusal, []map[string]any{gateGreen,
-			{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false}}},
+			liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false})}},
 		{"a rollup that cannot be read", withState(map[string]any{"mergeStateStatus": "CLEAN"}), cleanRefusal, nil},
 	} {
 		t.Run("a carried verdict on a base that requires only the gate, "+tc.name+": neither armed nor merged", func(t *testing.T) {

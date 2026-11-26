@@ -1434,17 +1434,38 @@ tool continuity:
     # split by whether the base requires them for this pull request, and the
     # names of the required ones that pass. None when the rollup is about
     # another commit than `pin`, runs past one page, or carries a context
-    # whose kind or requiredness it does not state: what cannot be read whole
-    # proves nothing. The variable sigil is written @ and swapped at run time.
+    # whose kind, requiredness or order it does not state: what cannot be read
+    # whole proves nothing. The variable sigil is written @ and swapped at run
+    # time.
+    #
+    # A commit can carry several runs of one check: a rerun, or a suite
+    # superseded by a later trigger and cancelled. GitHub holds a required
+    # check to the newest run of its name, so each (app, name) is judged by
+    # its newest run alone. The app is part of the key: a newer run of the
+    # same name from another app never hides this app's run, which may be
+    # the one the base requires. Newest is the greatest key (suite createdAt,
+    # suite databaseId, run started, run databaseId): a total order, as a
+    # run's databaseId is unique, and one no node order decides. A run with
+    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
+    # run carry none): it is the newest of its suite and never passes, so it
+    # reads as pending instead of hiding behind an older green. Any other
+    # missing or malformed ordering field makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
+        def when(x):
+            try:
+                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
+            except (TypeError, ValueError):
+                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { createdAt databaseId app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -1460,10 +1481,27 @@ tool continuity:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        required, optional, passing = [], [], []
+        judged, newest = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
+            if text(c.get("__typename")) != "CheckRun":
+                judged.append(c)
+                continue
+            suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
+            app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
+            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
+            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
+            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
+            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+                return None
+            key = (created, ids[1], unstarted, started or created, ids[2])
+            slot = (ids[0], text(c.get("name")))
+            if slot not in newest or newest[slot][0] < key:
+                newest[slot] = (key, c)
+        judged += [c for _, c in newest.values()]
+        required, optional, passing = [], [], []
+        for c in judged:
             kind = text(c.get("__typename"))
             if kind == "StatusContext":
                 name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"
@@ -2964,17 +3002,38 @@ tool post_feedback:
     # split by whether the base requires them for this pull request, and the
     # names of the required ones that pass. None when the rollup is about
     # another commit than `pin`, runs past one page, or carries a context
-    # whose kind or requiredness it does not state: what cannot be read whole
-    # proves nothing. The variable sigil is written @ and swapped at run time.
+    # whose kind, requiredness or order it does not state: what cannot be read
+    # whole proves nothing. The variable sigil is written @ and swapped at run
+    # time.
+    #
+    # A commit can carry several runs of one check: a rerun, or a suite
+    # superseded by a later trigger and cancelled. GitHub holds a required
+    # check to the newest run of its name, so each (app, name) is judged by
+    # its newest run alone. The app is part of the key: a newer run of the
+    # same name from another app never hides this app's run, which may be
+    # the one the base requires. Newest is the greatest key (suite createdAt,
+    # suite databaseId, run started, run databaseId): a total order, as a
+    # run's databaseId is unique, and one no node order decides. A run with
+    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
+    # run carry none): it is the newest of its suite and never passes, so it
+    # reads as pending instead of hiding behind an older green. Any other
+    # missing or malformed ordering field makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
+        def when(x):
+            try:
+                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
+            except (TypeError, ValueError):
+                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { createdAt databaseId app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -2990,10 +3049,27 @@ tool post_feedback:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        required, optional, passing = [], [], []
+        judged, newest = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
+            if text(c.get("__typename")) != "CheckRun":
+                judged.append(c)
+                continue
+            suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
+            app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
+            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
+            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
+            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
+            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+                return None
+            key = (created, ids[1], unstarted, started or created, ids[2])
+            slot = (ids[0], text(c.get("name")))
+            if slot not in newest or newest[slot][0] < key:
+                newest[slot] = (key, c)
+        judged += [c for _, c in newest.values()]
+        required, optional, passing = [], [], []
+        for c in judged:
             kind = text(c.get("__typename"))
             if kind == "StatusContext":
                 name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"
@@ -3749,17 +3825,38 @@ tool arm_automerge:
     # split by whether the base requires them for this pull request, and the
     # names of the required ones that pass. None when the rollup is about
     # another commit than `pin`, runs past one page, or carries a context
-    # whose kind or requiredness it does not state: what cannot be read whole
-    # proves nothing. The variable sigil is written @ and swapped at run time.
+    # whose kind, requiredness or order it does not state: what cannot be read
+    # whole proves nothing. The variable sigil is written @ and swapped at run
+    # time.
+    #
+    # A commit can carry several runs of one check: a rerun, or a suite
+    # superseded by a later trigger and cancelled. GitHub holds a required
+    # check to the newest run of its name, so each (app, name) is judged by
+    # its newest run alone. The app is part of the key: a newer run of the
+    # same name from another app never hides this app's run, which may be
+    # the one the base requires. Newest is the greatest key (suite createdAt,
+    # suite databaseId, run started, run databaseId): a total order, as a
+    # run's databaseId is unique, and one no node order decides. A run with
+    # no startedAt that is not COMPLETED has not started (GitHub lets a queued
+    # run carry none): it is the newest of its suite and never passes, so it
+    # reads as pending instead of hiding behind an older green. Any other
+    # missing or malformed ordering field makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        import datetime
         def text(x):
             return x.strip() if isinstance(x, str) else ""
+        def when(x):
+            try:
+                return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
+            except (TypeError, ValueError):
+                return None
         q = ("query(@owner: String!, @name: String!, @number: Int!) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
              "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
-             "... on CheckRun { name status conclusion isRequired(pullRequestNumber: @number) } "
+             "... on CheckRun { name status conclusion startedAt databaseId isRequired(pullRequestNumber: @number) "
+             "checkSuite { createdAt databaseId app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
         data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
         nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
@@ -3775,10 +3872,27 @@ tool arm_automerge:
         contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
         if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
             return None
-        required, optional, passing = [], [], []
+        judged, newest = [], {}
         for c in contexts["nodes"]:
             if not isinstance(c, dict):
                 return None
+            if text(c.get("__typename")) != "CheckRun":
+                judged.append(c)
+                continue
+            suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
+            app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
+            ids = (app.get("databaseId"), suite.get("databaseId"), c.get("databaseId"))
+            created, started = when(suite.get("createdAt")), when(c.get("startedAt"))
+            unstarted = c.get("startedAt") is None and text(c.get("status")).upper() != "COMPLETED"
+            if [i for i in ids if type(i) is not int] or created is None or (started is None and not unstarted):
+                return None
+            key = (created, ids[1], unstarted, started or created, ids[2])
+            slot = (ids[0], text(c.get("name")))
+            if slot not in newest or newest[slot][0] < key:
+                newest[slot] = (key, c)
+        judged += [c for _, c in newest.values()]
+        required, optional, passing = [], [], []
+        for c in judged:
             kind = text(c.get("__typename"))
             if kind == "StatusContext":
                 name, ok = text(c.get("context")), text(c.get("state")).upper() == "SUCCESS"

@@ -162,8 +162,8 @@ func (forge *armingPinForge) handler(t *testing.T) http.HandlerFunc {
 				// The required gate context passes; only a check the base
 				// does not require is red.
 				sc = map[string]any{"contexts": map[string]any{"pageInfo": map[string]any{"hasNextPage": false},
-					"nodes": []any{map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED",
-						"conclusion": "FAILURE", "isRequired": false},
+					"nodes": []any{liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "cloud-e2e", "status": "COMPLETED",
+						"conclusion": "FAILURE", "isRequired": false}),
 						map[string]any{"__typename": "StatusContext", "context": "vetty/deps", "state": "SUCCESS",
 							"isRequired": true}}}}
 			}
