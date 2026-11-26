@@ -237,27 +237,27 @@ func eventToRecord(ev apikit.TelemetryEvent) otellog.Record {
 	if err != nil {
 		body = []byte(fmt.Sprintf(`{"type":%q,"marshal_error":%q}`, ev.Type, err.Error()))
 	}
-	rec.SetBody(otellog.StringValue(string(body)))
+	rec.SetBody(attribute.StringValue(string(body)))
 
-	rec.AddAttributes(otellog.String("event.type", string(ev.Type)))
+	rec.AddAttributes(attribute.String("event.type", string(ev.Type)))
 	if ev.SessionID != "" {
-		rec.AddAttributes(otellog.String("session.id", ev.SessionID))
+		rec.AddAttributes(attribute.String("session.id", ev.SessionID))
 	}
 	if ev.Method != "" {
-		rec.AddAttributes(otellog.String("http.method", ev.Method))
+		rec.AddAttributes(attribute.String("http.method", ev.Method))
 	}
 	if ev.Path != "" {
-		rec.AddAttributes(otellog.String("http.path", ev.Path))
+		rec.AddAttributes(attribute.String("http.path", ev.Path))
 	}
 	if ev.Status != 0 {
-		rec.AddAttributes(otellog.Int("http.status_code", int(ev.Status)))
+		rec.AddAttributes(attribute.Int("http.status_code", int(ev.Status)))
 	}
 	if ev.RequestID != "" {
-		rec.AddAttributes(otellog.String("http.request_id", ev.RequestID))
+		rec.AddAttributes(attribute.String("http.request_id", ev.RequestID))
 	}
 	if ev.Error != "" {
-		rec.AddAttributes(otellog.String("error.message", ev.Error))
-		rec.AddAttributes(otellog.Bool("error.retryable", ev.Retryable))
+		rec.AddAttributes(attribute.String("error.message", ev.Error))
+		rec.AddAttributes(attribute.Bool("error.retryable", ev.Retryable))
 	}
 	return rec
 }
