@@ -59,7 +59,7 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 	}
 
 	p.Header("Model capabilities")
-	headers := []string{"MODEL", "SOURCE", "CONTEXT", "MAX OUT", "REASON", "TOOLS", "TEMP", "PRICE IN/OUT", "USABLE"}
+	headers := []string{"MODEL", "SOURCE", "CONTEXT", "MAX OUT", "REASON", "TOOLS", "TEMP", "IMAGES", "PRICE IN/OUT", "USABLE"}
 	rows := make([][]string, 0, len(cat.Models))
 	for _, m := range cat.Models {
 		rows = append(rows, []string{
@@ -70,6 +70,7 @@ func RunModels(ctx context.Context, opts ModelsOptions, p *Printer) error {
 			flagWord(m.Reasoning),
 			flagWord(m.ToolCall),
 			flagWord(m.Temperature),
+			flagWord(m.ImageInput),
 			formatPrice(m),
 			formatUsable(m),
 		})

@@ -190,7 +190,8 @@ func (s modelsDevSource) Fetch(ctx context.Context, params map[string]string) (m
 // window only on a listing that states neither max_input_tokens nor
 // max_output_tokens. Otherwise the window stays 0 (unknown). Deployments
 // of one load-balanced group share a model_name; their limits fold by
-// foldLimit, independent of listing order. Prices keep the last listed.
+// foldLimit and their supports_vision (the image_input flag) by
+// foldImageInput, independent of listing order. Prices keep the last listed.
 type liteLLMSource struct{}
 
 func (liteLLMSource) ValidateParams(params map[string]string) error {
@@ -216,6 +217,7 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 				InputCostPerToken float64 `json:"input_cost_per_token"`
 				OutputCostPerTok  float64 `json:"output_cost_per_token"`
 				CacheReadPerToken float64 `json:"cache_read_input_token_cost"`
+				SupportsVision    *bool   `json:"supports_vision"`
 			} `json:"model_info"`
 		} `json:"data"`
 	}
@@ -232,6 +234,7 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 			InputCostPerM:     m.ModelInfo.InputCostPerToken * 1e6,
 			OutputCostPerM:    m.ModelInfo.OutputCostPerTok * 1e6,
 			CacheReadCostPerM: m.ModelInfo.CacheReadPerToken * 1e6,
+			ImageInput:        m.ModelInfo.SupportsVision,
 		}
 		if m.ModelInfo.MaxInputTokens != nil {
 			spec.ContextWindow = int(*m.ModelInfo.MaxInputTokens)
@@ -247,6 +250,7 @@ func (liteLLMSource) Fetch(ctx context.Context, params map[string]string) (map[s
 		if prev, ok := table[id]; ok {
 			spec.ContextWindow = foldLimit(prev.ContextWindow, spec.ContextWindow)
 			spec.MaxOutputTokens = foldLimit(prev.MaxOutputTokens, spec.MaxOutputTokens)
+			spec.ImageInput = foldImageInput(prev.ImageInput, spec.ImageInput)
 		}
 		table[id] = spec
 	}
@@ -267,6 +271,26 @@ func foldLimit(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// foldImageInput merges the supports_vision two deployments of one
+// load-balanced model_name state, the minimum of false < unstated < true:
+// one deployment refusing images makes the group refuse them (the balancer
+// may route any request to it), and the group takes images only when every
+// deployment says so. A stated true beside an unstated one stays unstated —
+// the unstated deployment may be the one that refuses, and unstated sends
+// images as before, so no working route is turned into a refusal on a
+// guess. The order is total, so the fold does not depend on listing order.
+func foldImageInput(a, b *bool) *bool {
+	switch {
+	case a != nil && !*a:
+		return a
+	case b != nil && !*b:
+		return b
+	case a == nil || b == nil:
+		return nil
+	}
+	return a
 }
 
 // execSource runs an operator-supplied command and reads a feed's entry

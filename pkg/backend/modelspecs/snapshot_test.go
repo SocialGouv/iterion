@@ -1,6 +1,7 @@
 package modelspecs
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func TestLoadFrom_RefusesWhatTheBinaryCannotRead(t *testing.T) {
 		t.Fatalf("WriteSnapshot: %v", err)
 	}
 	header, body, _ := strings.Cut(string(good), "\n")
-	schemaOne := strings.Replace(header, `"schema":2`, `"schema":1`, 1)
+	schemaOne := strings.Replace(header, fmt.Sprintf(`"schema":%d`, SnapshotSchema), `"schema":1`, 1)
 	if schemaOne == header {
 		t.Fatalf("the header does not carry the schema this case rewrites: %s", header)
 	}
@@ -195,7 +196,7 @@ func TestLoadFrom_RefusesWhatTheBinaryCannotRead(t *testing.T) {
 		want string // a fragment of the refusal, naming what to do about it
 	}{
 		{"a schema this binary does not read", schemaOne + "\n" + body,
-			"snapshot schema 1, want 2 — regenerate with `task models:snapshot`"},
+			fmt.Sprintf("snapshot schema 1, want %d — regenerate with `task models:snapshot`", SnapshotSchema)},
 		{"a header it cannot parse", "{not json\n" + body,
 			"snapshot header:"},
 		{"a line it cannot parse", header + "\n" + body + "{not json\n",

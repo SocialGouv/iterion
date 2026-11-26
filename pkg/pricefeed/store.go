@@ -41,6 +41,7 @@ func cloneStateRecord(rec *StateRecord) *StateRecord {
 		spec.Reasoning = cloneBool(spec.Reasoning)
 		spec.ToolCall = cloneBool(spec.ToolCall)
 		spec.Temperature = cloneBool(spec.Temperature)
+		spec.ImageInput = cloneBool(spec.ImageInput)
 		spec.ReasoningEfforts = slices.Clone(spec.ReasoningEfforts)
 		cp.Entries[id] = spec
 	}

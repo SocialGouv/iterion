@@ -140,6 +140,7 @@ smaller image.
 Prompt images are never dropped — breaking a rule alone, the request is
 refused. Consecutive user messages join on the chat wire. A codemode
 program gets the description and the image-omitted marker, no bytes.
-`Acceptance` is where a route that takes no image refuses image tools
-(#3707). `claude_code` serves Anthropic models through its own CLI, which
-bounds its own images: none of this applies there.
+
+Whether a route takes images at all (`image_input`), what it does to an
+image tool and a prompt image, `ITERION_IMAGE_ACCEPTANCE`, and the rollout
+limits of stating it: [image-acceptance.md](image-acceptance.md).

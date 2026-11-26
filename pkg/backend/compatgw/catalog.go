@@ -39,6 +39,9 @@ import (
 // refusal), prices as a pair or nothing, and the capability flags
 // (`reasoning`, `tool_call`, `temperature`) each optional: a flag the
 // operator leaves out stays UNKNOWN downstream, never false (#2103).
+// `image_input` and `reasoning_efforts` are refused here: a runner parses
+// this table, and an older runner's strict parser would refuse it whole —
+// a feed's entries carry them (pricefeed.ParseFeedEntries).
 const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 
 // ResolvedEnvName carries the HOST's own catalog resolution into the
@@ -280,9 +283,14 @@ func warnStaleSnapshot() {
 		if !ok || age <= snapshotStaleAfter {
 			return
 		}
-		iterlog.NewFromEnv(os.Stderr).Warn("openai_compatible: the embedded models.dev snapshot answered and is %d days old — regenerate with `task models:snapshot`", int(age/(24*time.Hour)))
+		iterlog.NewFromEnv(os.Stderr).Warn("model specs: the embedded models.dev snapshot answered and is %d days old — regenerate with `task models:snapshot`", int(age/(24*time.Hour)))
 	})
 }
+
+// WarnStaleSnapshot is warnStaleSnapshot for a reader outside the gateway
+// catalog that answered from the embedded snapshot — a native route's image
+// flag — so the one staleness line covers every snapshot answer.
+func WarnStaleSnapshot() { warnStaleSnapshot() }
 
 // ResolveCatalog resolves one gateway model id. live is the process
 // models.dev registry (modelspecs.Default in production); when it has no
@@ -319,6 +327,7 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 				Reasoning:         rec.Reasoning,
 				ToolCall:          rec.ToolCall,
 				Temperature:       rec.Temperature,
+				ImageInput:        rec.ImageInput,
 			},
 			Source:      rec.Source,
 			RefreshedAt: rec.RefreshedAtTime(),
@@ -462,6 +471,7 @@ type ResolvedEnvRecord struct {
 	Reasoning           *bool      `json:"reasoning,omitempty"`
 	ToolCall            *bool      `json:"tool_call,omitempty"`
 	Temperature         *bool      `json:"temperature,omitempty"`
+	ImageInput          *bool      `json:"image_input,omitempty"`
 }
 
 // RefreshedAtTime answers the record's feed age as a value (zero when
@@ -488,6 +498,7 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 		Reasoning:           r.Spec.Reasoning,
 		ToolCall:            r.Spec.ToolCall,
 		Temperature:         r.Spec.Temperature,
+		ImageInput:          r.Spec.ImageInput,
 	}
 	if _, isFeed := FeedSource(r.Source); isFeed && !r.RefreshedAt.IsZero() {
 		stamp := r.RefreshedAt

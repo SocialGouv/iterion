@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -235,5 +236,40 @@ func TestRunModels_AnUnknownGatewayIdIsListedWithoutAWord(t *testing.T) {
 	})
 	if n := strings.Count(launched, `id "`+id+`" is in no table`); n != 1 {
 		t.Errorf("after listing it, the launch logged the unknown id %d times, want exactly 1:\n%s", n, launched)
+	}
+}
+
+// The IMAGES column prints the route's image verdict: a text-only gateway
+// row reads "no" in the table and image_input false in the JSON.
+func TestRunModels_PrintsTheImageVerdict(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_MODELS", "")
+	t.Setenv("OPENAI_COMPATIBLE_CATALOG_PROVIDER", "scaleway")
+	t.Setenv("ITERION_OPENAI_COMPATIBLE_RESOLVED", "")
+	const spec = "openai_compatible/scaleway/glm-5.3"
+	var buf bytes.Buffer
+	if err := RunModels(context.Background(), ModelsOptions{Spec: spec}, &Printer{W: &buf, Format: OutputJSON}); err != nil {
+		t.Fatalf("RunModels: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"image_input": false`) {
+		t.Errorf("the JSON does not state image_input false:\n%s", buf.String())
+	}
+	buf.Reset()
+	if err := RunModels(context.Background(), ModelsOptions{Spec: spec}, &Printer{W: &buf, Format: OutputHuman}); err != nil {
+		t.Fatalf("RunModels (human): %v", err)
+	}
+	var header, row []string
+	for line := range strings.Lines(buf.String()) {
+		f := strings.Fields(line)
+		switch {
+		case len(f) > 0 && f[0] == "MODEL":
+			header = f
+		case len(f) > 0 && f[0] == spec && row == nil:
+			row = f
+		}
+	}
+	// "MAX OUT" is two header fields and one row cell.
+	col := slices.Index(header, "IMAGES") - 1
+	if col < 1 || len(row) <= col || row[col] != "no" {
+		t.Fatalf("IMAGES cell of %v (header %v) is not \"no\":\n%s", row, header, buf.String())
 	}
 }

@@ -191,7 +191,8 @@ func specsEqual(a, b modelspecs.Spec) bool {
 	return numbersEqual(a, b) &&
 		flagEqual(a.Reasoning, b.Reasoning) &&
 		flagEqual(a.ToolCall, b.ToolCall) &&
-		flagEqual(a.Temperature, b.Temperature)
+		flagEqual(a.Temperature, b.Temperature) &&
+		flagEqual(a.ImageInput, b.ImageInput)
 }
 
 // flagEqual compares two optional flags by value: unstated equals unstated,
@@ -203,11 +204,11 @@ func flagEqual(a, b *bool) bool {
 	return *a == *b
 }
 
-// flagWords renders the three flags for the changelog in the order the
-// snapshot and the operator table name them: reasoning, tool_call,
-// temperature — `?` for a flag the source did not state.
+// flagWords renders the flags for the changelog in the order the snapshot
+// and the operator table name them: reasoning, tool_call, temperature,
+// image_input — `?` for a flag the source did not state.
 func flagWords(s modelspecs.Spec) string {
-	return flagWord(s.Reasoning) + "/" + flagWord(s.ToolCall) + "/" + flagWord(s.Temperature)
+	return flagWord(s.Reasoning) + "/" + flagWord(s.ToolCall) + "/" + flagWord(s.Temperature) + "/" + flagWord(s.ImageInput)
 }
 
 func flagWord(f *bool) string {

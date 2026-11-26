@@ -45,9 +45,12 @@ type ResolvedCapabilities struct {
 	// Reasoning, ToolCall and Temperature are nil when the source answered
 	// none — a gateway id whose catalog record carries no flags — and a
 	// reader says "unknown", never "no" (ModelCapabilities).
-	Reasoning     *bool `json:"reasoning,omitempty"`
-	ToolCall      *bool `json:"tool_call,omitempty"`
-	Temperature   *bool `json:"temperature,omitempty"`
+	Reasoning   *bool `json:"reasoning,omitempty"`
+	ToolCall    *bool `json:"tool_call,omitempty"`
+	Temperature *bool `json:"temperature,omitempty"`
+	// ImageInput is nil when nothing states it (images are sent), false
+	// when the route refuses images (ModelCapabilities).
+	ImageInput    *bool `json:"image_input,omitempty"`
 	ContextWindow int   `json:"context_window"`
 	// MaxOutputTokens is the aggregator's published completion cap. Zero
 	// means the aggregator had no figure — never "uncapped".
@@ -73,6 +76,7 @@ func ResolveCapabilities(provider, modelID string) ResolvedCapabilities {
 		Reasoning:       caps.Reasoning,
 		ToolCall:        caps.ToolCall,
 		Temperature:     caps.Temperature,
+		ImageInput:      caps.ImageInput,
 		ContextWindow:   caps.ContextWindow,
 		MaxOutputTokens: caps.MaxOutputTokens,
 		InputCostPerM:   caps.InputCostPerM,

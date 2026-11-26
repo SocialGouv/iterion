@@ -79,15 +79,21 @@ const (
 // bson tag: the Mongo key is the driver's default `reasoningefforts`, an
 // additive field older binaries skip on decode.
 type Spec struct {
-	ContextWindow     int      `json:"context_window,omitempty"`
-	MaxOutputTokens   int      `json:"max_output_tokens,omitempty"`
-	InputCostPerM     float64  `json:"input_cost_per_m,omitempty"`
-	OutputCostPerM    float64  `json:"output_cost_per_m,omitempty"`
-	CacheReadCostPerM float64  `json:"cache_read_cost_per_m,omitempty"`
-	Reasoning         *bool    `json:"reasoning,omitempty"`
-	ToolCall          *bool    `json:"tool_call,omitempty"`
-	Temperature       *bool    `json:"temperature,omitempty"`
-	ReasoningEfforts  []string `json:"reasoning_efforts,omitempty"`
+	ContextWindow     int     `json:"context_window,omitempty"`
+	MaxOutputTokens   int     `json:"max_output_tokens,omitempty"`
+	InputCostPerM     float64 `json:"input_cost_per_m,omitempty"`
+	OutputCostPerM    float64 `json:"output_cost_per_m,omitempty"`
+	CacheReadCostPerM float64 `json:"cache_read_cost_per_m,omitempty"`
+	Reasoning         *bool   `json:"reasoning,omitempty"`
+	ToolCall          *bool   `json:"tool_call,omitempty"`
+	Temperature       *bool   `json:"temperature,omitempty"`
+	// ImageInput says whether the model takes images as input: models.dev's
+	// modalities.input, a LiteLLM gateway's supports_vision, or an operator
+	// or feed entry's image_input. nil is unstated — images are sent — and a
+	// stated false is what makes a route refuse an image before any request
+	// goes out (tool.ImagesRefused).
+	ImageInput       *bool    `json:"image_input,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts,omitempty"`
 }
 
 // cacheFile is the on-disk cache layout. FetchedAt drives TTL freshness so the
@@ -118,6 +124,22 @@ type mdModel struct {
 	Reasoning   *bool `json:"reasoning"`
 	ToolCall    *bool `json:"tool_call"`
 	Temperature *bool `json:"temperature"`
+	Modalities  *struct {
+		Input []string `json:"input"`
+	} `json:"modalities"`
+}
+
+// imageInput reads models.dev's modalities.input as the ImageInput flag:
+// true when it lists "image", false when it lists modalities without it,
+// nil when the row states no input modality at all.
+func (m mdModel) imageInput() *bool {
+	if m.Modalities == nil || len(m.Modalities.Input) == 0 {
+		return nil
+	}
+	image := slices.ContainsFunc(m.Modalities.Input, func(in string) bool {
+		return strings.EqualFold(strings.TrimSpace(in), "image")
+	})
+	return &image
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +688,7 @@ func consensusSpec(specs []Spec) Spec {
 		out.Reasoning = agreedFlag(out.Reasoning, s.Reasoning)
 		out.ToolCall = agreedFlag(out.ToolCall, s.ToolCall)
 		out.Temperature = agreedFlag(out.Temperature, s.Temperature)
+		out.ImageInput = agreedFlag(out.ImageInput, s.ImageInput)
 		if !slices.Equal(s.ReasoningEfforts, out.ReasoningEfforts) {
 			out.ReasoningEfforts = nil
 		}
@@ -738,6 +761,7 @@ func ParseModelsDev(body []byte) (map[string]Spec, error) {
 				Reasoning:       m.Reasoning,
 				ToolCall:        m.ToolCall,
 				Temperature:     m.Temperature,
+				ImageInput:      m.imageInput(),
 			}
 		}
 	}

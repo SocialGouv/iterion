@@ -276,6 +276,7 @@ type modelCapabilitiesResponse struct {
 	Reasoning       *bool   `json:"reasoning,omitempty"`
 	ToolCall        *bool   `json:"tool_call,omitempty"`
 	Temperature     *bool   `json:"temperature,omitempty"`
+	ImageInput      *bool   `json:"image_input,omitempty"`
 }
 
 // handleModelCapabilities answers
@@ -328,6 +329,7 @@ func (s *Server) handleModelCapabilities(w http.ResponseWriter, r *http.Request)
 			Reasoning:       rc.Reasoning,
 			ToolCall:        rc.ToolCall,
 			Temperature:     rc.Temperature,
+			ImageInput:      rc.ImageInput,
 		})
 		return
 	}

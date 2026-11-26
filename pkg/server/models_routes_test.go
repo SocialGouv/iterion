@@ -879,6 +879,9 @@ func TestModelCapabilities_QualifiedSpec(t *testing.T) {
 	if got.ToolCall == nil || !*got.ToolCall {
 		t.Error("qualified spec must carry the capability flags")
 	}
+	if got.ImageInput == nil || !*got.ImageInput {
+		t.Error("a Claude model on an Anthropic route must read image_input true")
+	}
 }
 
 // A model the aggregator does not carry still answers — from the curated

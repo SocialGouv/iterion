@@ -108,6 +108,7 @@ var crossedByItsOwnBranch = map[string]string{
 	"ITERION_REQUEST_IMAGE_MAX_COUNT":        "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
 	"ITERION_REQUEST_MANY_IMAGES_THRESHOLD":  "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
 	"ITERION_REQUEST_MANY_IMAGES_MAX_SIDE":   "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
+	"ITERION_IMAGE_ACCEPTANCE":               "same crossing as ITERION_CLAW_STREAM_COLD_TIMEOUT (clawImageBoundEnvVars): the host's planted-as-unset answer, explicit empty included",
 	"ITERION_CLAW_WORKSPACE_AGENT_MAX_BYTES": "crosses always — the operator's value, or an explicit empty: an absent name lets the runner's workspace .env auto-load pick the ceiling its own agent files are read under, and a value the host read as planted never crosses (workspaceAgentMaxBytes denies it authority on both sides)",
 	// ADR-163: the run's price-feed table, folded by the server and
 	// planted on the run's environment (credroute overlay). The crossing
@@ -499,6 +500,7 @@ var crossingSpellings = map[string]string{
 	"(*ManyImagesTooLargeError).Error":    "names the many-image rule's escape hatches in the refusal the operator reads — no read: imageBoundKnobs reads them",
 	"imageBoundKnobs":                     "keys each image bound's planted-as-unset read (envtrust.Inherited, beside it) by its name, for tool.RouteImagePolicy to look up — the reads are the ones the crossing carries",
 	"(*RequestImagesTooLargeError).Error": "names the request image budget's escape hatch in the refusal the operator reads — no read: tool.RouteImagePolicy reads it, through withRouteImagePolicy",
+	"(*RequestImagesRefusedError).Error":  "names the image acceptance override in the refusal the operator reads — no read: imageBoundKnobs reads it, through withRouteImagePolicy",
 	"boundRequestImages":                  "names the request image budget's escape hatch in the omission marker the model reads — no read: tool.RouteImagePolicy reads it, through withRouteImagePolicy",
 	"envFactoryCredential":                "names, beside its reads, the env variable the env factory's walk took its credential from, as the key a sandbox runner reads the crossing's record under (Registry.envSpend) — CODEX_HOME included, which it names and never reads: the login's own reader is secrets.LoadCodexCredentialsFromDisk",
 }
@@ -525,6 +527,7 @@ var consultsWhatCrosses = map[string]string{
 	"ITERION_REQUEST_IMAGE_MAX_COUNT":       "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
 	"ITERION_REQUEST_MANY_IMAGES_THRESHOLD": "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
 	"ITERION_REQUEST_MANY_IMAGES_MAX_SIDE":  "an image bound crosses as the host's planted-as-unset answer, so the twin bounds images as the host does",
+	"ITERION_IMAGE_ACCEPTANCE":              "the image acceptance override crosses as the host's planted-as-unset answer, so the twin accepts or refuses images as the host does",
 }
 var envStateConsults = map[string]string{
 	"pkg/dsl/ir.lookupOverlay":      "the bot-var settings overlay (ir.SetEnvOverlay), installed by the cloud server and runner, never by the claw runner",

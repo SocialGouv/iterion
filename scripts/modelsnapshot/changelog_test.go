@@ -50,10 +50,10 @@ func TestSpecsEqual_ComparesFlagsByValueNotByAddress(t *testing.T) {
 // The `~` line of the changelog names the flags, in the order the snapshot
 // and the operator table name them, so a flip is readable without diffing
 // 1.6 MB of JSON.
-func TestFlagWords_NamesTheThreeVerdictsInOrder(t *testing.T) {
-	got := flagWords(modelspecs.Spec{Reasoning: boolp(true), ToolCall: boolp(false)})
-	if got != "yes/no/?" {
-		t.Errorf("flagWords = %q, want %q (reasoning/tool_call/temperature)", got, "yes/no/?")
+func TestFlagWords_NamesTheVerdictsInOrder(t *testing.T) {
+	got := flagWords(modelspecs.Spec{Reasoning: boolp(true), ToolCall: boolp(false), ImageInput: boolp(false)})
+	if got != "yes/no/?/no" {
+		t.Errorf("flagWords = %q, want %q (reasoning/tool_call/temperature/image_input)", got, "yes/no/?/no")
 	}
 }
 
@@ -73,7 +73,7 @@ func TestPrintChangelog_NamesAFlagFlipAndNothingElse(t *testing.T) {
 	if !strings.Contains(out, "changelog: +0 -0 ~1 (total 2)") {
 		t.Errorf("the counts read %q, want one changed entry of two", firstLine(out))
 	}
-	if !strings.Contains(out, "~ prov/flip:") || !strings.Contains(out, "flags ?/yes/?→?/no/?") {
+	if !strings.Contains(out, "~ prov/flip:") || !strings.Contains(out, "flags ?/yes/?/?→?/no/?/?") {
 		t.Errorf("the flip is not named in the changelog:\n%s", out)
 	}
 	if strings.Contains(out, "~ prov/same") {

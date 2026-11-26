@@ -1597,6 +1597,9 @@
           "credential_source": {
             "type": "string"
           },
+          "image_input": {
+            "type": "boolean"
+          },
           "input_cost_per_m": {
             "type": "number"
           },
@@ -4380,6 +4383,9 @@
           "context_window": {
             "type": "integer"
           },
+          "image_input": {
+            "type": "boolean"
+          },
           "input_cost_per_m": {
             "type": "number"
           },
@@ -6848,6 +6854,9 @@
         "properties": {
           "context_window": {
             "type": "integer"
+          },
+          "image_input": {
+            "type": "boolean"
           },
           "input_cost_per_m": {
             "type": "number"
