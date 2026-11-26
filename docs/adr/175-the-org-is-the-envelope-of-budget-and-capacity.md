@@ -1,4 +1,4 @@
-# ADR-174 — The org is the envelope of budget and capacity; a team carries an optional ceiling; a plan supplies the defaults
+# ADR-175 — The org is the envelope of budget and capacity; a team carries an optional ceiling; a plan supplies the defaults
 
 - **Status**: Accepted — the operator decided it on 2026-11-26. The arbitrations are:
   - team limits are ceilings, they may oversubscribe the org, and guarantees are floors;
