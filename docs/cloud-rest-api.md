@@ -793,7 +793,14 @@ with it active: every team-addressed route answers `403` for another team,
 every org-addressed route answers `403` for another organization than that
 team's (a pin on a team with no parent org reaches none), and a run or a
 board issue of another team answers the `404` an invisible run answers —
-the owner's own membership there changes nothing. `POST /api/me/tokens`
+the owner's own membership there changes nothing. Inside its own org, an
+org route that reaches a team — through its path, its body or the record it
+acts on — reaches the pinned team only: the invitation mint and the
+`PATCH …/teams/{team_id}/caps` answer `403` for a sibling team, the
+invitation and provision-approval lists keep the pinned team's rows, and an
+invitation `DELETE` or a provision approve/reject on a sibling's record
+answers `404`. A route that changes the org itself (its members, settings,
+sign-in, credentials) stays the org's. `POST /api/me/tokens`
 fills the minter's active team in when the caller names none, so **every**
 token of an ordinary account carries a pin and reaches exactly one team: a
 client that needs several teams mints one token per team, which is also how
