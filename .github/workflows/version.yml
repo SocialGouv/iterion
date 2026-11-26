@@ -9,10 +9,12 @@ name: 🏷️ Version
 # The automatic path is `workflow_run` on 🧪 Tests completing on main. The job
 # starts only for a Tests run that succeeded, on this repository's main,
 # triggered by a push, the schedule or a dispatch (never a pull request or a
-# merge group). Its first step then reads that run's jobs: the run is heavy
-# when every `race-shard` leg concluded success — a light run skips them, and
-# a skipped leg proves nothing. The heavy layer's own trigger (debounced push,
-# schedule or dispatch) does not matter here: the jobs say whether it ran.
+# merge group). It then asks scripts/ci/heavy-gate.sh --judge-run whether that
+# attempt was a green heavy run — the one definition the heavy layer's own
+# debounce reads too: the attempt concluded success and every `race-shard (N)`
+# job concluded success (a light run skips them, and a skipped leg proves
+# nothing). The heavy layer's own trigger (debounced push, schedule or
+# dispatch) does not matter here: the jobs say whether it ran.
 # Three more rules answer before anything is installed or pushed:
 #   - at most one release a day: the newest v* tag younger than
 #     MIN_TAG_AGE_HOURS skips with a notice (the next heavy run past the mark
@@ -87,22 +89,32 @@ jobs:
       # must not push the next day's to the day after.
       MIN_TAG_AGE_HOURS: "20"
     steps:
+      - name: Get GitHub App Token
+        id: token
+        uses: SocialGouv/token-bureau@1ff14fd08c4972ea9c65a2b958c7ce41d4f28036 # main
+        with:
+          token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
+          audience: socialgouv
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # main's tip as this run finds it, whatever the trigger: the event's
+          # own commit can be behind the release a queued run ahead of it cut.
+          # Every run checks out: the heavy-run proof below is a script of
+          # this tree.
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
       - name: Release only after a green heavy run
         # The job's condition admitted a Tests run of main that succeeded; this
-        # step says whether it was HEAVY. A light run skips the race-shard legs
-        # (tests.yml says when), so the run is heavy when every race-shard leg
-        # concluded success — read from the jobs of the very attempt that
-        # completed, not the run's latest attempt, which a rerun may change.
-        # No race-shard job at all fails the step: the proof reads a job name,
-        # and a rename must not turn into a release rule that never answers.
-        #
-        # "A green heavy run" is ONE predicate, shared with its twin
-        # scripts/ci/heavy-gate.sh (#3737, which debounces the heavy layer on
-        # the last green heavy run): the Tests run concluded success (this
-        # job's `if`) AND every job whose name starts with `race-shard`
-        # concluded success (this step). Change one, change the other in the
-        # same commit: two definitions that drift let a run count as heavy for
-        # one and light for the other.
+        # step asks whether that very attempt was a GREEN HEAVY RUN. The
+        # predicate has ONE definition, scripts/ci/heavy-gate.sh, which also
+        # decides whether a push runs the heavy layer (#3737): its judge mode
+        # reads the attempt that completed — not the run's latest attempt,
+        # which a rerun may change — and answers green or not-green with its
+        # reason, or exits 2 on an attempt it cannot read, which fails this
+        # step rather than releasing on a guess.
         id: heavy
         if: github.event_name == 'workflow_run'
         env:
@@ -113,37 +125,21 @@ jobs:
           PROVEN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          legs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name | startswith("race-shard")) | [.name, (.conclusion // "pending")] | @tsv')"
-          if [ -z "$legs" ]; then
-            echo "::error::Tests run ${RUN_URL} (attempt ${RUN_ATTEMPT}) has no race-shard job — renamed in tests.yml? The heavy-run proof reads that job's legs."
-            exit 1
-          fi
-          printf 'race-shard legs of Tests run %s (attempt %s) on %s:\n%s\n' "$RUN_URL" "$RUN_ATTEMPT" "$PROVEN_SHA" "$legs"
-          if printf '%s\n' "$legs" | awk -F'\t' '$2 != "success" { light = 1 } END { exit !light }'; then
-            echo "::notice::No release: Tests run ${RUN_URL} on ${PROVEN_SHA} is a light run (its race-shard legs did not all succeed) — only a green heavy run of main releases."
-            echo "proven=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "a green heavy run proved ${PROVEN_SHA}"
-          echo "proven=true" >> "$GITHUB_OUTPUT"
-
-      - name: Get GitHub App Token
-        id: token
-        if: github.event_name == 'workflow_dispatch' || steps.heavy.outputs.proven == 'true'
-        uses: SocialGouv/token-bureau@1ff14fd08c4972ea9c65a2b958c7ce41d4f28036 # main
-        with:
-          token-bureau-url: https://token-bureau.fabrique.social.gouv.fr
-          audience: socialgouv
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'workflow_dispatch' || steps.heavy.outputs.proven == 'true'
-        with:
-          # main's tip as this run finds it, whatever the trigger: the event's
-          # own commit can be behind the release a queued run ahead of it cut.
-          ref: main
-          fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
+          verdict="$(bash scripts/ci/heavy-gate.sh --judge-run "$RUN_ID" "$RUN_ATTEMPT")"
+          case "$verdict" in
+            green)
+              echo "a green heavy run (${RUN_URL}) proved ${PROVEN_SHA}"
+              echo "proven=true" >> "$GITHUB_OUTPUT"
+              ;;
+            not-green)
+              echo "::notice::No release: Tests run ${RUN_URL} on ${PROVEN_SHA} is not a green heavy run — only a green heavy run of main releases."
+              echo "proven=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::heavy-gate.sh --judge-run answered '${verdict}', expected green or not-green"
+              exit 1
+              ;;
+          esac
 
       - name: At most one automatic release a day
         # The newest v* tag, by creation date, younger than MIN_TAG_AGE_HOURS

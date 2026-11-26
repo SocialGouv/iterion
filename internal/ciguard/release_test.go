@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -253,14 +252,13 @@ func TestReleaseFollowsAGreenHeavyRunOfMain(t *testing.T) {
 			t.Errorf("step %q receives %s as %q, want %q — the fact must come from the event through env", c.step, c.env, got, c.want)
 		}
 	}
-	// "A green heavy run" is one predicate with two sites: this workflow and
-	// scripts/ci/heavy-gate.sh (#3737). The comment naming the twin is what
-	// sends whoever edits one to the other.
-	if !strings.Contains(string(mustRead(t, releaseWorkflowPath)), "scripts/ci/heavy-gate.sh") {
-		t.Errorf("version.yml no longer names scripts/ci/heavy-gate.sh as the twin of its heavy-run predicate — the two definitions can then drift in silence")
-	}
-	if !strings.Contains(steps[at[heavyStepID]].Run, `select(.name | startswith("race-shard"))`) {
-		t.Errorf("the heavy-run proof no longer selects every job whose name starts with race-shard — the predicate shared with scripts/ci/heavy-gate.sh")
+	// "A green heavy run" has ONE definition, heavy-gate.sh's, which also
+	// debounces the heavy layer (#3737): the proof calls its judge mode on the
+	// attempt that completed and holds no predicate of its own.
+	if heavyRun := steps[at[heavyStepID]].Run; !strings.Contains(heavyRun, heavyJudgeCall) {
+		t.Errorf("the heavy-run proof does not call `%s` — a second definition of a green heavy run would drift from the debounce's", heavyJudgeCall)
+	} else if strings.Contains(heavyRun, "race-shard") || strings.Contains(heavyRun, "gh api") {
+		t.Errorf("the heavy-run proof reads jobs or names race-shard itself — the predicate lives in %s alone", heavyGateScript)
 	}
 	for _, id := range []string{heavyStepID, dailyStepID, tipStepID} {
 		if strings.Contains(steps[at[id]].Run, "${{") {
@@ -331,76 +329,36 @@ func runReleaseStep(t *testing.T, id, dir string, env map[string]string, path ..
 	return r
 }
 
-// standInJobsGH answers `gh api --paginate <path> --jq <filter>` by running the
-// filter, with the real jq, over the jobs listing in $JOBS_JSON, and records
-// the path it was asked for in $GH_PATHS.
-const standInJobsGH = `#!/usr/bin/env bash
-[ "$1" = "api" ] || { echo "unexpected gh call: $*" >&2; exit 2; }
-shift
-path=""; filter=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --paginate) shift ;;
-    --jq) filter="$2"; shift 2 ;;
-    *) path="$1"; shift ;;
-  esac
-done
-printf '%s\n' "$path" >> "$GH_PATHS"
-jq -r "$filter" "$JOBS_JSON"
-`
-
-// TestTheHeavyProofReadsEveryRaceShardLeg runs the heavy-run proof's own text
-// over crafted job listings: a run is heavy when every race-shard leg
-// succeeded, light when any was skipped, pending or red, and a listing with no
-// race-shard job at all fails the step rather than answering on a guess.
-func TestTheHeavyProofReadsEveryRaceShardLeg(t *testing.T) {
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Fatalf("jq is not on PATH (%v) — devbox provides it, and gh's --jq is what the proof filters with", err)
+// TestTheHeavyProofAsksTheHeavyGate runs the heavy-run proof's own text, from
+// the repository root as CI does, against the stand-in gh heavy_debounce_test.go
+// serves heavy-gate.sh's judge mode with: a green heavy run proves the sha, any
+// other run releases nothing with a notice, and an attempt the gate cannot read
+// fails the step. What counts as green is heavy-gate.sh's, tested there.
+func TestTheHeavyProofAsksTheHeavyGate(t *testing.T) {
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		t.Fatal(err)
 	}
-	job := func(name, conclusion string) string {
-		c := "null"
-		if conclusion != "" {
-			c = strconv.Quote(conclusion)
-		}
-		return `{"name":` + strconv.Quote(name) + `,"conclusion":` + c + `}`
-	}
-	heavy := []string{job("test-unit (0)", "success"), job("race-shard (0)", "success"), job("race-shard (1)", "success"), job("race-shard (2)", "success"), job("race", "success")}
+	green := greenRun(time.Hour)
+	red := greenRun(time.Hour)
+	red.conclusion = "failure"
 	for _, tc := range []struct {
 		name       string
-		jobs       []string
+		run        heavyRun
+		garble     string
 		wantCode   int
 		wantProven string
 		wantLog    string
 	}{
-		{name: "every leg green is a heavy run", jobs: heavy, wantProven: "true"},
-		{name: "a skipped race-shard is a light run",
-			jobs:       []string{job("test-unit (0)", "success"), job("race-shard", "skipped"), job("race", "success")},
-			wantProven: "false", wantLog: "is a light run"},
-		{name: "one skipped leg among green ones is not heavy",
-			jobs:       []string{job("race-shard (0)", "success"), job("race-shard (1)", "skipped"), job("race-shard (2)", "success")},
-			wantProven: "false", wantLog: "is a light run"},
-		{name: "a leg with no conclusion yet is not heavy",
-			jobs:       []string{job("race-shard (0)", "success"), job("race-shard (1)", ""), job("race-shard (2)", "success")},
-			wantProven: "false", wantLog: "is a light run"},
-		{name: "the race aggregator alone proves nothing",
-			jobs:     []string{job("race", "success"), job("test-unit (0)", "success")},
-			wantCode: 1, wantLog: "has no race-shard job"},
+		{name: "a green heavy run proves the sha", run: green, wantProven: "true", wantLog: "proved 0123456789abcdef"},
+		{name: "a red heavy run releases nothing", run: red, wantProven: "false", wantLog: "is not a green heavy run"},
+		{name: "an unreadable attempt fails the step", run: green, garble: "jobs", wantCode: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixtures := t.TempDir()
-			jobsJSON := filepath.Join(fixtures, "jobs.json")
-			if err := os.WriteFile(jobsJSON, []byte(`{"total_count":`+strconv.Itoa(len(tc.jobs))+`,"jobs":[`+strings.Join(tc.jobs, ",")+`]}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(standInJobsGH), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			paths := filepath.Join(fixtures, "paths")
-			r := runReleaseStep(t, heavyStepID, t.TempDir(), map[string]string{
-				"JOBS_JSON": jobsJSON, "GH_PATHS": paths,
-				"RUN_ID": "4242", "RUN_ATTEMPT": "3",
-				"RUN_URL":    "https://github.com/SocialGouv/iterion/actions/runs/4242",
+			docs, bin := writeJudgeDocs(t, tc.run, tc.garble)
+			r := runReleaseStep(t, heavyStepID, root, map[string]string{
+				"DOCS": docs, "RUN_ID": "7", "RUN_ATTEMPT": "2",
+				"RUN_URL":    "https://github.com/SocialGouv/iterion/actions/runs/7",
 				"PROVEN_SHA": "0123456789abcdef0123456789abcdef01234567",
 			}, bin)
 			if r.code != tc.wantCode {
@@ -412,12 +370,8 @@ func TestTheHeavyProofReadsEveryRaceShardLeg(t *testing.T) {
 			if tc.wantLog != "" && !strings.Contains(r.log, tc.wantLog) {
 				t.Errorf("log does not say %q:\n%s", tc.wantLog, r.log)
 			}
-			asked, err := os.ReadFile(paths)
-			if err != nil {
-				t.Fatalf("the step never asked gh for the run's jobs: %v", err)
-			}
-			if want := "repos/SocialGouv/iterion/actions/runs/4242/attempts/3/jobs?per_page=100\n"; string(asked) != want {
-				t.Errorf("the step asked gh for %q, want %q — the jobs of the attempt that completed, not the run's latest", asked, want)
+			if asked := judgePaths(t, docs); !strings.Contains(asked, "/actions/runs/7/attempts/2/jobs") {
+				t.Errorf("the proof asked gh for %q — the jobs of the attempt that completed (7, attempt 2), not the run's latest", asked)
 			}
 		})
 	}

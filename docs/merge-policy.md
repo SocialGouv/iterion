@@ -631,13 +631,15 @@ job starts for a Tests run of this repository's `main` that **succeeded** and
 came from a push, the schedule or a dispatch — never a pull request's or a
 merge group's run. Then, in order, each step gating the next:
 
-1. **The run was heavy.** The step lists the jobs of the very attempt that
-   completed and requires every `race-shard` leg to have concluded `success`.
-   A light run skips them (see [light runs, heavy main](#light-runs-heavy-main)),
-   and a skipped leg proves nothing: the run skips with a notice. Whatever
-   triggered the heavy layer — a push, the schedule or a dispatch — the jobs
-   say whether it ran. A listing with no `race-shard` job fails the step: the
-   proof reads that name.
+1. **The run was a green heavy run.** The step asks
+   `scripts/ci/heavy-gate.sh --judge-run <run> <attempt>` about the very
+   attempt that completed: green when it concluded `success` with every
+   `race-shard (N)` job a success. A light run skips them (see
+   [light runs, heavy main](#light-runs-heavy-main)), and a skipped leg proves
+   nothing: the run skips with a notice naming the reason. Whatever triggered
+   the heavy layer — a push, the schedule or a dispatch — the jobs say whether
+   it ran. An attempt the script cannot read fails the step: no release on a
+   guess.
 2. **At most one release a day.** The newest `v*` tag younger than 20 hours
    (`MIN_TAG_AGE_HOURS`) skips the run with a notice; the next green heavy run
    past the mark releases. 20 rather than 24, so a heavy run that comes a few
@@ -649,9 +651,11 @@ merge group's run. Then, in order, each step gating the next:
 4. **Something to release** since the last tag, then the
    [major hold](#the-major-hold), then release-it.
 
-"A green heavy run" is one predicate, shared with the heavy layer's debounce
-(`scripts/ci/heavy-gate.sh`, #3737): the Tests run concluded `success` and
-every job whose name starts with `race-shard` concluded `success`.
+"A green heavy run" has one definition, one jq function in
+`scripts/ci/heavy-gate.sh` read by both the heavy layer's debounce (#3737)
+and the release's judge mode: this repository's push, schedule or dispatch
+run, concluded `success`, every `race-shard (N)` job a success (the debounce
+also requires them inside its window).
 
 A **red heavy run releases nothing**, and the release waits for the next
 green heavy run of `main` — after the fix lands and the heavy layer runs
