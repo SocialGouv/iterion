@@ -517,8 +517,9 @@ jobs:
           # See release.yml: a `GITHUB_TOKEN`-created/edited release does
           # not fan out `release: published` to other workflows; the
           # token-bureau App token keeps that event available. The cask
-          # catches up with this ZIP on brew-update.yml's next nightly run
-          # when this release's CLI binaries exist too; a desktop-only
+          # catches up with this ZIP on the brew-update.yml run this
+          # workflow's green completion starts, when this release's CLI
+          # binaries exist too and it is the newest tapped tag; a desktop-only
           # release reaches it only through a dispatch with its tag, while
           # the formula is still below it.
           token: ${{ steps.token.outputs.token }}

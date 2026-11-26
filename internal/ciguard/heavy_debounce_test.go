@@ -366,6 +366,20 @@ func TestHeavyGateDecidesFromTheRunHistory(t *testing.T) {
 			t.Errorf("decision %q after %d gh calls, want heavy=true after none, naming the rerun, without a warning\n%s", decision, calls, out)
 		}
 	})
+	// Green shards that completed before the cutoff decide heavy like a red
+	// run, and the notice says why: an operator sent to find a red shard that
+	// does not exist reads the history wrong.
+	t.Run("green shards that completed before the window are named stale, not red", func(t *testing.T) {
+		stale := with(green, func(r *heavyRun) {
+			for i := range r.jobs {
+				r.jobs[i].age = 7 * time.Hour
+			}
+		})
+		decision, out, _ := runHeavyGate(t, "6", one(stale))
+		if decision != "heavy=true\n" || !strings.Contains(out, "(shards stale, concluded success)") {
+			t.Errorf("decision %q, want heavy=true with the shards named stale\n%s", decision, out)
+		}
+	})
 	t.Run("a window of 0 runs heavy on every push without reading the history", func(t *testing.T) {
 		decision, out, calls := runHeavyGate(t, "0", heavyHistory{broken: "/"})
 		if decision != "heavy=true\n" || calls != 0 || strings.Contains(out, "::warning::") {
@@ -511,11 +525,11 @@ func TestHeavyGateJudgesOneRun(t *testing.T) {
 	}{
 		{name: "a green heavy run", run: green, want: "green", reason: "every race-shard (N) job a success"},
 		{name: "a green heavy nightly", run: with(green, func(r *heavyRun) { r.event = "schedule" }), want: "green"},
-		{name: "a red shard", run: with(green, func(r *heavyRun) { r.jobs = shards("success", "failure", "success") }), want: "not-green", reason: "race shards red"},
-		{name: "a cancelled shard", run: with(green, func(r *heavyRun) { r.jobs = shards("success", "cancelled", "success") }), want: "not-green", reason: "race shards red"},
+		{name: "a red shard", run: with(green, func(r *heavyRun) { r.jobs = shards("success", "failure", "success") }), want: "not-green", reason: "race shards red\n"},
+		{name: "a cancelled shard", run: with(green, func(r *heavyRun) { r.jobs = shards("success", "cancelled", "success") }), want: "not-green", reason: "race shards red\n"},
 		{name: "green shards in a run that concluded failure", run: with(green, func(r *heavyRun) { r.conclusion = "failure" }), want: "not-green", reason: "concluded failure"},
 		{name: "a run whose only race job is the aggregator", run: with(green, func(r *heavyRun) { r.jobs = shards() }), want: "not-green", reason: "race shards light"},
-		{name: "a light run, every shard skipped", run: with(green, func(r *heavyRun) { r.jobs = shards("skipped", "skipped", "skipped") }), want: "not-green", reason: "race shards light"},
+		{name: "a light run, every shard skipped", run: with(green, func(r *heavyRun) { r.jobs = shards("skipped", "skipped", "skipped") }), want: "not-green", reason: "race shards light: none ran\n"},
 		{name: "a fork's run", run: with(green, func(r *heavyRun) { r.repo = "someone/iterion" }), want: "not-green", reason: "not a push, schedule or dispatch run"},
 		{name: "a pull request run", run: with(green, func(r *heavyRun) { r.event = "pull_request" }), want: "not-green", reason: "not a push, schedule or dispatch run"},
 		{name: "an attempt that is not JSON", run: green, garble: "attempt", code: 2, reason: "cannot read"},

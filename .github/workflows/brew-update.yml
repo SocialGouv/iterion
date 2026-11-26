@@ -3,7 +3,8 @@ name: 🍺 Brew Tap Update
 # The tap update follows the completion of 📦 Release (release.yml), the
 # workflow that builds a tag's CLI binaries and attaches them to its GitHub
 # release: when it concludes success, the four binaries the formula needs
-# exist, and the tag is tapped right away. A release is cut at most once a day
+# exist, and the tag is tapped right away. It also follows 🖥️ Desktop Release
+# (desktop-release.yml), which attaches the desktop ZIP the cask needs. A release is cut at most once a day
 # (#3741), so a tap PR lands at most once a day too. Measured on #2241
 # (2026-10): one tap PR per release, with a release after every merge, meant
 # one main commit per merge, and the release train's cadence kept evicting the
@@ -15,7 +16,8 @@ name: 🍺 Brew Tap Update
 # tap entries — the formula points at the latest). A tag whose release lacks
 # them is passed over rather than stalling the tap. The skip only fires
 # when BOTH the formula and the cask already carry the tag: a cask left
-# behind catches up with that release's desktop ZIP once it exists, and
+# behind catches up with that release's desktop ZIP when Desktop Release
+# attaches it, and
 # update-brew-tap.sh's all-or-nothing guard keeps a partial download from
 # advancing anything. Nothing ever walks the tap back, and a pre-release is
 # never tapped. A desktop-only release (its CLI build red) reaches the cask
@@ -29,10 +31,12 @@ name: 🍺 Brew Tap Update
 
 on:
   workflow_run:
-    # release.yml's `name:`, byte for byte (the emoji carries a variation
-    # selector): a workflow_run naming a workflow that does not exist never
-    # fires, and says nothing. internal/ciguard compares the two.
-    workflows: ["📦 Release"]
+    # release.yml's and desktop-release.yml's `name:`, byte for byte (the
+    # emojis carry a variation selector): a workflow_run naming a workflow
+    # that does not exist never fires, and says nothing. internal/ciguard
+    # compares them. Desktop Release attaches a tag's desktop ZIP after its
+    # CLI binaries: following it is how the cask catches up with that ZIP.
+    workflows: ["📦 Release", "🖥️ Desktop Release"]
     types: [completed]
   workflow_dispatch:
     inputs:

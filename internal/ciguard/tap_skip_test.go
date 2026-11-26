@@ -211,10 +211,15 @@ func TestTheTapPullRequestCarriesTheSkipTitle(t *testing.T) {
 // binaries the tap formula needs to that tag's GitHub release.
 const binariesWorkflowPath = "../../.github/workflows/release.yml"
 
+// desktopWorkflowPath is desktop-release.yml: it attaches a tag's desktop ZIP,
+// the cask's artefact, to that tag's GitHub release.
+const desktopWorkflowPath = "../../.github/workflows/desktop-release.yml"
+
 // TestTheTapUpdateFollowsTheReleaseBinaries holds brew-update.yml's trigger:
 // the completion of 📦 Release (release.yml), the run that attaches a tag's CLI
-// binaries, and only when it concluded success — the moment the tag can be
-// tapped. A `workflow_run` naming a workflow that does not exist never fires
+// binaries, and of 🖥️ Desktop Release (desktop-release.yml), the run that
+// attaches its desktop ZIP, and only when it concluded success — the moment
+// the tag, or its cask, can be tapped. A `workflow_run` naming a workflow that does not exist never fires
 // and reports nothing, and the name carries an emoji with a variation
 // selector, so one retyped byte is enough. A dispatch with a `tag` input stays
 // the way to tap one release now. Which tag a run then taps — one whose
@@ -254,8 +259,14 @@ func TestTheTapUpdateFollowsTheReleaseBinaries(t *testing.T) {
 		t.Fatalf("parse %s: %v", brewUpdateWorkflow, err)
 	}
 
-	if got := brew.On.WorkflowRun.Workflows; len(got) != 1 || got[0] != binaries.Name {
-		t.Errorf("brew-update.yml follows workflow_run %q, want exactly [%q] — release.yml's name, byte for byte", got, binaries.Name)
+	var desktop struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal(mustRead(t, desktopWorkflowPath), &desktop); err != nil {
+		t.Fatalf("parse %s: %v", desktopWorkflowPath, err)
+	}
+	if got := brew.On.WorkflowRun.Workflows; len(got) != 2 || got[0] != binaries.Name || got[1] != desktop.Name {
+		t.Errorf("brew-update.yml follows workflow_run %q, want exactly [%q %q] — release.yml's and desktop-release.yml's names, byte for byte: the cask catches up with a desktop ZIP only on a run Desktop Release starts", got, binaries.Name, desktop.Name)
 	}
 	if got := brew.On.WorkflowRun.Types; len(got) != 1 || got[0] != "completed" {
 		t.Errorf("brew-update.yml's workflow_run types are %q, want [completed]", got)

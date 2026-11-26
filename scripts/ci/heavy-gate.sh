@@ -63,7 +63,9 @@ set -euo pipefail
 #     `race-shard (N)` job skipped (or there is none: the `race` aggregator and
 #     any job whose name merely starts alike are not shards), `green` when
 #     every one concluded success with completed_at >= $cutoff ("" for any
-#     time), `red` otherwise.
+#     time), `stale` when every one concluded success but one completed
+#     before $cutoff (judge mode, with no cutoff, never sees it), `red`
+#     otherwise.
 # A green heavy run is a heavy_candidate whose attempt concluded success and
 # whose shard_verdict is green: green_heavy below.
 # shellcheck disable=SC2016 # $repo and $cutoff are jq variables, not shell ones.
@@ -74,7 +76,8 @@ def heavy_candidate($repo):
 def shard_verdict($cutoff):
   [.jobs[] | select(.name | test("^race-shard \\([0-9]+\\)$"))] as $shards
   | if ($shards | all(.conclusion == "skipped")) then "light"
-    elif ($shards | all(.conclusion == "success" and ((.completed_at // "") >= $cutoff))) then "green"
+    elif ($shards | all(.conclusion == "success")) then
+      (if ($shards | all((.completed_at // "") >= $cutoff)) then "green" else "stale" end)
     else "red" end;
 '
 
@@ -112,7 +115,10 @@ if [ "${1:-}" = "--judge-run" ]; then
   if green_heavy "$conclusion" "$verdict"; then
     judged green "concluded success with every race-shard (N) job a success"
   fi
-  judged not-green "concluded ${conclusion}, race shards ${verdict} (light: none ran)"
+  if [ "$verdict" = light ]; then
+    judged not-green "concluded ${conclusion}, race shards light: none ran"
+  fi
+  judged not-green "concluded ${conclusion}, race shards ${verdict}"
 fi
 
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is not set: the decision has nowhere to go}"
@@ -174,8 +180,8 @@ while read -r id conclusion; do
     echo "::warning::cannot list the jobs of run ${id} (${jobs_json}) — running the heavy layer rather than skipping it on an unread history."
     decide true "the run history is unreadable"
   fi
-  # verdict: light (every shard skipped, or none), green, or red — inside the
-  # window: a shard must have completed after the cutoff.
+  # verdict: light (every shard skipped, or none), green, stale (green
+  # shards that completed before the cutoff) or red.
   if ! verdict="$(jq -r --arg cutoff "$cutoff" "${heavy_predicate}"'shard_verdict($cutoff)' <<<"$jobs_json" 2>&1)"; then
     echo "::warning::cannot read the jobs of run ${id} (${verdict}) — running the heavy layer rather than skipping it on an unread history."
     decide true "the run history is unreadable"

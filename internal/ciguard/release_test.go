@@ -207,6 +207,28 @@ func TestReleaseFollowsAGreenHeavyRunOfMain(t *testing.T) {
 	}
 
 	steps, at := releaseSteps(t)
+	// The heavy proof is a script of this tree: the checkout, and the token
+	// it checks out with, run before it on every run, ungated — a proof step
+	// above them, or a checkout gated on the proof, exits 127 on every
+	// automatic release.
+	checkout := -1
+	for i, st := range steps {
+		if strings.HasPrefix(st.Uses, "actions/checkout@") {
+			checkout = i
+			break
+		}
+	}
+	tokenAt, hasToken := at["token"]
+	switch {
+	case checkout < 0:
+		t.Errorf("the version job has no actions/checkout step: the heavy proof runs %s from the tree", heavyGateScript)
+	case !hasToken || tokenAt > checkout:
+		t.Errorf("the version job checks out at step %d before the App token step (%v at %d) it checks out with", checkout, hasToken, tokenAt)
+	case checkout > at[heavyStepID]:
+		t.Errorf("the version job checks out at step %d, after the heavy proof at step %d: the proof runs %s from the tree it has not checked out yet", checkout, at[heavyStepID], heavyGateScript)
+	case steps[checkout].If != "" || (hasToken && steps[tokenAt].If != ""):
+		t.Errorf("the checkout (`if: %s`) or the token (`if: %s`) is gated: the heavy proof runs %s from the tree on every run", steps[checkout].If, steps[tokenAt].If, heavyGateScript)
+	}
 	order := []string{heavyStepID, dailyStepID, tipStepID, changesStepID, majorStepID, releaseItName}
 	for i := 1; i < len(order); i++ {
 		if at[order[i-1]] >= at[order[i]] {
