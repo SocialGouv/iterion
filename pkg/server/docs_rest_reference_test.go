@@ -177,6 +177,7 @@ func documentedRESTRoutes(t *testing.T) []restRefRoute {
 // page that names a route the server does not register sends a reader
 // (or an SDK author) at a 404, which is the defect item 24 of #2401 was.
 func TestEveryRouteTheRESTReferenceDocumentsIsServed(t *testing.T) {
+	t.Parallel()
 	documented := documentedRESTRoutes(t)
 	if len(documented) < restReferencePairFloor {
 		t.Fatalf("read %d (method, path) pairs from %s, want at least %d: the parse went blind, which would make this gate judge nothing", len(documented), restReferenceDoc, restReferencePairFloor)

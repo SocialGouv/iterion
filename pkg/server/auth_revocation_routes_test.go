@@ -62,6 +62,7 @@ func accessExpiry(t *testing.T, f *authRouteFixture, token string) time.Time {
 // access through them would: every token minted expires when the first one
 // does, never later.
 func TestSwitch_ExtendsNothing(t *testing.T) {
+	t.Parallel()
 	f := newAuthRouteFixture(t)
 	srv := httptest.NewServer(f.s.Handler())
 	t.Cleanup(srv.Close)
@@ -88,6 +89,7 @@ func TestSwitch_ExtendsNothing(t *testing.T) {
 // with that token answers 401 and sets nothing, so the token ends at its own
 // expiry.
 func TestSwitch_ARevokedSessionsAccessTokenMintsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, how := range []string{"sign-out", "sign out everywhere", "admin disable", "admin password reset", "password change on another device"} {
 		t.Run(how, func(t *testing.T) {

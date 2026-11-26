@@ -28,6 +28,7 @@ import (
 // reads a file by its path as a .bot, and an author document opened there
 // is read as a .bot source, never decoded as YAML.
 func TestNoServerCodeReadsAnAuthorDocument(t *testing.T) {
+	t.Parallel()
 	const (
 		authorPkg     = "github.com/SocialGouv/iterion/pkg/dsl/author."
 		readFirst     = authorPkg + "readFirst"

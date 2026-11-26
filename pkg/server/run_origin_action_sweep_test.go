@@ -507,6 +507,7 @@ func TestEveryRunMutationHasACarrier(t *testing.T) {
 // does not guard (M7c, parsed from a copy of runs_ws.go), a guarded type no
 // case handles and a stale entry are each reported.
 func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
+	t.Parallel()
 	base := productionMutationSweep(t, newGateFixture(t, true).srv)
 	fx := newGateFixture(t, true)
 	fx.srv.mux.HandleFunc("POST /api/runs/{id}/rva-mutation-probe", func(http.ResponseWriter, *http.Request) {})
@@ -563,6 +564,7 @@ func TestRunMutationSweepFindsPlantedShapes(t *testing.T) {
 // guarded case's handler, or a wrapper calling one — is reported. (A planted
 // case of its own is M7c above.)
 func TestRunMutationSweepRefusesDispatchShapes(t *testing.T) {
+	t.Parallel()
 	src := string(readRunsWS(t))
 	const (
 		bypass     = "\t\tif env.Type == \"cancel_run\" {\n\t\t\tc.handleCancel(env)\n\t\t\treturn\n\t\t}\n"

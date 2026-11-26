@@ -399,6 +399,7 @@ func TestRunsWSLogs_BoundStreamRefusesSuccessorBytes(t *testing.T) {
 // so the terminal flip must close the bound stream with log_terminated (the
 // 5s poll + settle, well inside the 12s budget).
 func TestRunsWSLogs_TerminalFlipEndsTheBoundStream(t *testing.T) {
+	t.Parallel()
 	srv, hs := newNativeStreamServer(t)
 	ctx := t.Context()
 	native, err := store.New(srv.cfg.StoreDir)

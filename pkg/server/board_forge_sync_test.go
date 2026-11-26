@@ -244,6 +244,7 @@ func testIssues(n int) []forge.IssueRef {
 // read to its end. A single list call mirrors the first page and drops the
 // rest for good — the mark then moves past issues nothing will offer again.
 func TestSyncForgeIssuesToBoard_ReadsEveryPage(t *testing.T) {
+	t.Parallel()
 	board := newTestBoard(t)
 	ic := &pagedIssueClient{issues: testIssues(250)}
 	// Cards on the board when each page is asked for. A read that STREAMS has
@@ -299,6 +300,7 @@ func TestSyncForgeIssuesToBoard_ReadsEveryPage(t *testing.T) {
 // but the failure is reported, because it is the caller's only cue to hold its
 // high-water mark.
 func TestSyncForgeIssuesToBoard_PartialReadIsAnError(t *testing.T) {
+	t.Parallel()
 	board := newTestBoard(t)
 	ic := &pagedIssueClient{issues: testIssues(250), failPage: 2}
 
@@ -537,6 +539,7 @@ func TestSyncOneIntegration_FailedListHoldsTheMark(t *testing.T) {
 // not. The cards of page 1 land, and the mark stays: the rest of the window is
 // still owed, and only the mark can ask for it again.
 func TestSyncOneIntegration_PartialReadHoldsTheMark(t *testing.T) {
+	t.Parallel()
 	gh := newFakeGitHubIssues(t, 250, 2, 0)
 	mark := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	board := newTestBoard(t)

@@ -180,6 +180,7 @@ func TestConnectionCreate_ResolvesTheTeamsOwnConnector(t *testing.T) {
 // deliveries launch, where the baked package (which declares only
 // issue_comment) filters them.
 func TestConnectorWebhook_TheTeamsOverrideDeclaresTheEvent(t *testing.T) {
+	t.Parallel()
 	s, cfg, pt := connectorBoundServer(t, []connection.Capability{connection.CapTrigger})
 	got := connectorLaunches(s)
 

@@ -320,6 +320,7 @@ func parkApproval(t *testing.T, f *derivationFixture, id, connID, repo, integrat
 // stored token. Each of those is checked on the token HASH, which a mint
 // would change.
 func TestTeamTokenMints_TheRepoBotProvisioningIsGatedWhereItMints(t *testing.T) {
+	t.Parallel()
 	t.Run("the first enable of a repo: a revoked session's access token mints none", func(t *testing.T) {
 		f, gl, glURL := forgeMintFixture(t)
 		connID := connectForge(t, f, f.user.AccessToken, glURL)

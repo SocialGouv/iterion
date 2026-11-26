@@ -29,6 +29,7 @@ func (c *stubCommenter) CommentIssue(_ context.Context, repo string, number int,
 // must therefore say so on the pull request: what happened, when it
 // resumes, and (for a spend ceiling) that waiting alone may not be enough.
 func TestGatePausedNoticePostsOnThePR(t *testing.T) {
+	t.Parallel()
 	const (
 		team  = "t1"
 		repo  = "acme/widgets"

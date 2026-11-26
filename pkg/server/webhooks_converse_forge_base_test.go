@@ -28,6 +28,7 @@ import (
 // An unpinned webhook stamps nothing — the bot derives the base from the PR
 // URL.
 func TestConverseLanesCarryThePinnedForgeBase(t *testing.T) {
+	t.Parallel()
 	apiStored := func(t *testing.T, raw string) string {
 		t.Helper()
 		v, err := validateForgeBaseURL(raw)

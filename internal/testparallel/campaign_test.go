@@ -3,6 +3,7 @@ package testparallel_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/testparallel"
@@ -260,5 +261,111 @@ func TestReachNamesTheSameBorrowedHelperOnEveryRun(t *testing.T) {
 		if got := fixture(t).Reach(map[string]bool{"Setenv": true})["TestBoth"]; got != want {
 			t.Fatalf("run %d: Reach(Setenv)[TestBoth] = %q, want %q on every run — the verdict is following a map's iteration order, and the tables that assert it would fail at random", i, got, want)
 		}
+	}
+}
+
+// The writes a parallelism guard must see, and the look-alikes it must not:
+// hook is declared in this file, registry in another one of the package (so
+// it stays unresolved), and every local shape — a shadowing variable, a
+// parameter, a closure's own variable, a field of a local fixture — is local.
+const (
+	writesSrc = `package p
+
+var hook func()
+
+func pin(t *testing.T) {
+	prev := hook
+	hook = func() {}
+	t.Cleanup(func() { hook = prev })
+}
+
+func TestIndexesAPackageMap(t *testing.T) { registry["k"] = 1 }
+
+func TestCountsOnAPackageCounter(t *testing.T) { calls++ }
+
+func TestSwapsAnImportedDefault(t *testing.T) { http.DefaultClient = nil }
+
+func TestRangesIntoAPackageVar(t *testing.T) {
+	for _, hook = range hooks {
+	}
+}
+
+func TestAssertsOnAPackageVar(t *testing.T) { reg.(*box).m["k"] = 1 }
+
+func TestBorrowsThePin(t *testing.T) {
+	t.Parallel()
+	pin(t)
+}
+
+func TestStaysLocal(t *testing.T, f *fixture) {
+	t.Parallel()
+	hook := func() {}
+	hook = nil
+	f.srv.cfg.Mode = "cloud"
+	var n int
+	n++
+	_ = n
+	var local any = &box{}
+	local.(*box).m["k"] = 1
+	var i int
+	var h func()
+	for i, h = range hooks {
+	}
+	_, _ = i, h
+	t.Run("sub", func(t *testing.T) {
+		var registry = map[string]int{}
+		registry["k"] = 2
+	})
+}
+
+func (f *fixture) reset() { f.calls = 0 }
+`
+	writesOtherSrc = `package p
+
+var registry = map[string]int{}
+
+var calls int
+
+var reg any = &box{}
+
+type box struct{ m map[string]int }
+`
+)
+
+func TestGlobalWritesNamesWhatOutlivesTheFunctionAndNothingLocal(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for name, src := range map[string]string{"writes_test.go": writesSrc, "other_test.go": writesOtherSrc} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := testparallel.ReadCampaign(dir, nil)
+	if err != nil {
+		t.Fatalf("ReadCampaign: %v", err)
+	}
+	for fn, want := range map[string]string{
+		"pin":                         "hook",
+		"TestIndexesAPackageMap":      "registry",
+		"TestCountsOnAPackageCounter": "calls",
+		"TestSwapsAnImportedDefault":  "http",
+		"TestRangesIntoAPackageVar":   "hook",
+		"TestAssertsOnAPackageVar":    "reg",
+		"TestBorrowsThePin":           "",
+		"TestStaysLocal":              "",
+		"reset":                       "",
+	} {
+		if got := strings.Join(c.GlobalWrites(fn), ", "); got != want {
+			t.Errorf("GlobalWrites(%s) = %q, want %q", fn, got, want)
+		}
+	}
+	writers := c.GlobalWriters()
+	if len(writers) != 6 || !writers["pin"] || writers["TestStaysLocal"] {
+		t.Errorf("GlobalWriters() = %v, want pin and the five direct test writers", writers)
+	}
+	// The seed shape a guard uses: a test that borrows a swap from a helper
+	// is reached through it.
+	if got := c.Reach(writers)["TestBorrowsThePin"]; got != "pin" {
+		t.Errorf("Reach(GlobalWriters())[TestBorrowsThePin] = %q, want %q", got, "pin")
 	}
 }

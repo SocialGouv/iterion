@@ -72,6 +72,7 @@ func patchTenantConnection(t *testing.T, s *Server, ctx context.Context, teamID,
 }
 
 func TestAConcurrentCosmeticPatchCannotUndoASecurityChange(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// security is the PATCH an operator makes under pressure.

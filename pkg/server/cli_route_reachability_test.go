@@ -168,6 +168,7 @@ func servedRouteTable(t *testing.T) []RouteInfo {
 // (The studio's SPA shell routes are mounted from a list of UI paths and
 // carry no /api prefix; the REST surface this gate judges is the /api tree.)
 func TestTheSourceDerivedTableCoversTheRunningOne(t *testing.T) {
+	t.Parallel()
 	srv, _ := newTestServer(t)
 	derived := map[RouteInfo]bool{}
 	for _, r := range serverSourceRoutes(t) {
@@ -265,6 +266,7 @@ func normalizeCLIPath(path string) string {
 }
 
 func TestEveryAPIPathTheCLISpellsIsServed(t *testing.T) {
+	t.Parallel()
 	table := servedRouteTable(t)
 	resolved := 0
 	for _, root := range cliSourceRoots {
@@ -358,6 +360,7 @@ func cliMethodPaths(t *testing.T) []cliCall {
 // resolvable and the launch dead — measured on this tree, and the path-level
 // check above passed through it.
 func TestEveryMethodAndPathTheCLISendsIsRouted(t *testing.T) {
+	t.Parallel()
 	table := servedRouteTable(t)
 	pairs := cliMethodPaths(t)
 	if len(pairs) < 60 {
@@ -396,6 +399,7 @@ func TestEveryMethodAndPathTheCLISendsIsRouted(t *testing.T) {
 // longer spells is a stale waiver, and one that has GAINED a route of its own
 // is a waiver that now hides a real path from the gate.
 func TestTheDeclaredBasesAreStillBases(t *testing.T) {
+	t.Parallel()
 	spelled := map[string]bool{}
 	for _, root := range cliSourceRoots {
 		for _, raw := range cliAPIPaths(t, root.dir, root.floor) {

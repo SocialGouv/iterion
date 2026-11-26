@@ -69,6 +69,7 @@ var teamlessResolveAllowed = map[string]string{
 }
 
 func TestBotResolutionSweep_NoLiteralTeamlessResolution(t *testing.T) {
+	t.Parallel()
 	// Both halves of the class: the launch resolution AND the metadata reads
 	// that describe the same launch (a lane that launches a team's fork and
 	// then reads the origin's manifest disagrees with itself in silence).
@@ -131,6 +132,7 @@ var roleSweepAllowed = map[string]string{
 }
 
 func TestBotRoleSweep_ConstsOnlyInDefaults(t *testing.T) {
+	t.Parallel()
 	consts := regexp.MustCompile(`defaultWebhookBotReviewPR|defaultWebhookBotReviConverse|branchImproveBotID|featureDevBotID`)
 	constDecl := regexp.MustCompile(`(?m)^const (defaultWebhookBot|branchImproveBotID|featureDevBotID)`)
 	sweepServerFiles(t, func(name, body string) {

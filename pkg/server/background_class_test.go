@@ -66,6 +66,7 @@ var spawnCensus = map[string]detachedSpawn{
 }
 
 func TestEveryGoroutineThisPackageStartsIsJoinedOrSaysWhyNot(t *testing.T) {
+	t.Parallel()
 	found, err := goroutineSpawnCensus(".")
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +251,7 @@ func TestTheSpawnPredicateFindsEverySpelling(t *testing.T) {
 // of the process. goSafe reports the refusal to no caller and tryGoSafe reports
 // only that it happened, so this is checked at the call sites.
 func TestNoDetachedWriteReleasesWhatItDidNotAcquire(t *testing.T) {
+	t.Parallel()
 	strays, err := straysInDetachedWrites(".")
 	if err != nil {
 		t.Fatal(err)

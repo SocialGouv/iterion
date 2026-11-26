@@ -745,6 +745,7 @@ func forgePreflightPerturbations(t *testing.T, values forgePreflightValues, name
 // of the records this handler reads — so a term keyed on a field nobody
 // enumerated reddens there in whatever spelling it is written.
 func TestForgeDeliveryPreflightRefusesOnlyFromTheProvidersAnswer(t *testing.T) {
+	t.Parallel()
 	const stored = "ghs_runtime_secret"
 
 	t.Run("the handler carries one refusal site, guarded on the provider's own map", func(t *testing.T) {

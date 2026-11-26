@@ -49,6 +49,7 @@ func (r *raceLoserDeliveries) Insert(ctx context.Context, d webhooks.Delivery) e
 // A duplicate that names no run is a relaunch still launching, or one that
 // died on the way: each is escalated when — and only when — it is a death.
 func TestGateRelaunchClaims(t *testing.T) {
+	t.Parallel()
 	const (
 		team   = "t1"
 		repo   = "acme/widgets"

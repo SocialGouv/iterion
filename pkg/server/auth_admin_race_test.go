@@ -481,6 +481,7 @@ func TestAdminPasswordResetRevokesTheLiveSessions(t *testing.T) {
 // ends every session born before it, so none comes back once the account is
 // active again.
 func TestAdminForcedRotationEndsTheSessionsAtTheirNextRefresh(t *testing.T) {
+	t.Parallel()
 	const password = "rotate-me-please-123"
 	hash, err := auth.HashPassword(password)
 	if err != nil {

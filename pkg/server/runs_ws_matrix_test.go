@@ -50,6 +50,7 @@ func TestRunWSMatrixFixtureIsTheProductionWiring(t *testing.T) {
 // snapshot frame, and no event subscription reaches the source. Legitimate
 // writes under the same birth keep serving the run.
 func TestRunWSMatrixReplacedBeforeTheSnapshot(t *testing.T) {
+	t.Parallel()
 	for _, f := range matrixFormats {
 		t.Run(fmt.Sprintf("f%d/first-subscribe", f), func(t *testing.T) {
 			fx := newMatrixServer(t, matrixOptions{})
@@ -673,6 +674,7 @@ func expectMatrixSourceClosed(t *testing.T, c *websocket.Conn, code string) {
 // unbound) redden it only on some interleavings, and W1-W4 witness them
 // deterministically.
 func TestRunWSMatrixTwoSocketsAcrossAReplacementWithAlerts(t *testing.T) {
+	t.Parallel()
 	fx := newMatrixServer(t, matrixOptions{alerts: true})
 	if fx.srv.runs.AlertManager() == nil {
 		t.Fatal("fixture: no alert manager")

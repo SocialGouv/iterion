@@ -316,6 +316,7 @@ func TestPlatformAdmin_APersonalAccessTokenResetsAnotherAccountsPasswordNotItsOw
 // everywhere" and an admin disable remove every such link, and the link an
 // SSO sign-in wrote itself — what an SSO-only account signs in with — stays.
 func TestSSOLinks_SignOutEverywhereAndADisableRemoveWhatASessionLinked(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	ctx := context.Background()
 	if err := f.s.authStore().UpsertOIDCLink(ctx, identity.OIDCLink{Provider: "google", ProviderUserID: "signup-sub", UserID: f.user.User.ID, CreatedAt: time.Now().UTC()}); err != nil {
@@ -555,6 +556,7 @@ func TestWSTicket_APersonalAccessTokensTicketDiesWithTheToken(t *testing.T) {
 // session is minted: a password change or a disable landing between the IdP
 // callback and the exchange leaves the ticket nothing to mint.
 func TestDesktopExchange_ATicketWhoseSessionWasRevokedSinceDeliversNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		revoke func(t *testing.T, f *derivationFixture)

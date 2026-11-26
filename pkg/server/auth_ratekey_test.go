@@ -476,6 +476,7 @@ var limiterKeyNamespacesNotAClient = []string{`"wh:"`, `"cs:"`, `"orglaunch:"`}
 var limiterKeyFullAddressSeeds = []string{"clientIP(", "forwardedClientIP(", "canonicalIP(", "addrHost(", "RemoteAddr"}
 
 func TestNoLimiterKeyIsBuiltFromTheFullAddress(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
