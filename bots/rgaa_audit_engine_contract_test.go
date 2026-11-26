@@ -34,16 +34,22 @@ import (
 // These tests run the pinned engine on testdata/rgaa-audit-site (two HTML
 // pages and one TSX component with planted defects) and assert the shapes the
 // bot reads: exit codes, JSON keys, counters, file layout. Every assertion
-// below was measured on ultra11y 7.2.0; a pin bump that changes one of them
+// below was measured on ultra11y 9.6.6; a pin bump that changes one of them
 // is a migration, and this file is where it shows first.
 //
 // Facts worth their weight (all measured, all relied on by the bot):
-//   - `verify --apply` folds PARTIALLY by default: exit 0 as soon as one
-//     verdict lands, refusals listed in `issues`/`rejectedCriteria`; exit 1
-//     only when nothing lands or under `--strict`. A criterion absent from the
-//     file is no refusal: it is named apart in `notInWorklist` (a coverage
-//     gap, SocialGouv/ultra11y#136), stays "à évaluer", and only `--strict`
-//     lists it in `issues`.
+//   - `verify --apply` folds PARTIALLY by default: every accepted verdict
+//     lands, refusals listed in `issues`/`rejectedCriteria`. Exit 0 only when
+//     the gate refused nothing; any refusal exits 1 — an incomplete fold, the
+//     accepted verdicts still written (`auditPath`), `ok: false`
+//     (SocialGouv/ultra11y#223) — as does a fold where nothing landed (no
+//     audit written) or `--strict` with a refusal. 2 is usage. A criterion
+//     absent from the file is no refusal: it is named apart in
+//     `notInWorklist` (a coverage gap, SocialGouv/ultra11y#136), stays
+//     "à évaluer", keeps exit 0, and only `--strict` lists it in `issues`.
+//   - `verify --manual` writes the verdict contract every brief shares ONCE,
+//     as ADJUDICATE.contract.md beside ADJUDICATE.md; the bot hands its path
+//     to the adjudicators.
 //   - `audit --standard rgaa` writes a `pack-audit` document whose ROOT
 //     `conformancePct` is the AUTOMATIC pass rate (engine-decided C over
 //     engine-decided C + NC, agent verdicts excluded); `report --json` and
@@ -792,6 +798,11 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 				t.Fatalf("no brief for criterion %s in %s", it.CriteriaID, worklist.ItemsDir)
 			}
 		}
+		// The verdict contract the briefs refer to, written once beside the
+		// worklist — the path the worklist node hands the adjudicators.
+		if _, err := os.Stat(filepath.Join(filepath.Dir(worklist.MdPath), "ADJUDICATE.contract.md")); err != nil {
+			t.Fatalf("no shared verdict contract beside %s: %v", worklist.MdPath, err)
+		}
 		var skeleton struct {
 			Kind     string         `json:"kind"`
 			Contract map[string]any `json:"contract"`
@@ -861,14 +872,58 @@ func TestRgaaAuditEngineContract(t *testing.T) {
 	t.Run("fold_refuses_a_C_without_citations_and_lands_nothing", func(t *testing.T) {
 		dir, copyPath := probe(t, "badc")
 		f := fold(t, writeAdj(t, dir, adjudication(badC)), copyPath, dir)
-		// Nothing landed, so the partial fold reports ok:false — the "exit 1
-		// only when nothing lands" rule (the exit code is checked below).
+		// Nothing landed, so the fold reports ok:false and exits 1 (the exit
+		// code is checked below), with no audit written.
 		if f.OK || f.Applied != 0 || !rgaaContains(f.RejectedCriteria, targetID) || !strings.Contains(fmt.Sprint(f.Issues), "cit") {
 			t.Fatalf("a C without citations must be refused by name, naming the citations: %+v", f)
 		}
 		code, _, _ := rgaaEngineRun(t, bin, site, nil, append([]string{"verify", "--apply", filepath.Join(dir, "adjudication.json"), "--in", copyPath, "--out", dir, "--json"}, std...)...)
 		if code != 1 {
 			t.Fatalf("exit %d when nothing lands, expected 1", code)
+		}
+	})
+
+	t.Run("a_fold_with_one_refusal_exits_1_and_still_writes_the_accepted_verdict", func(t *testing.T) {
+		// The incomplete fold of SocialGouv/ultra11y#223: the cited C lands, a
+		// C without citations on another criterion is refused, the exit is 1
+		// with ok:false — and the audit carrying the accepted verdict IS
+		// written at auditPath. The bot reads that as data (L.foldJSON), never
+		// as a crash.
+		var otherID string
+		for _, raw := range items {
+			if id := raw.(map[string]any)["criteriaId"].(string); id != targetID && len(evidenceOf[id]) > 0 {
+				otherID = id
+				break
+			}
+		}
+		if otherID == "" {
+			t.Fatal("the fixture needs a second worklist item with evidence")
+		}
+		dir, copyPath := probe(t, "incomplete")
+		var f struct {
+			foldOut
+			AuditPath string `json:"auditPath"`
+		}
+		uncited := map[string]any{"criteriaId": otherID, "verdict": "C", "justification": "Conforme (fixture, sans citation)."}
+		code := rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", writeAdj(t, dir, adjudication(goodC, uncited)), "--in", copyPath, "--out", dir, "--json"}, std...)...)
+		if code != 1 || f.OK || f.Applied != 1 || f.Rejected != 1 || !rgaaContains(f.RejectedCriteria, otherID) {
+			t.Fatalf("one landed + one refused: exit %d ok=%v applied=%d rejected=%d %v (want 1/false/1/1 naming %s)", code, f.OK, f.Applied, f.Rejected, f.RejectedCriteria, otherID)
+		}
+		if !strings.Contains(fmt.Sprint(f.Issues), "criterion "+otherID+":") {
+			t.Fatalf("the refusal line does not name its criterion: %v", f.Issues)
+		}
+		if f.AuditPath == "" {
+			t.Fatal("an incomplete fold printed no auditPath")
+		}
+		var written packAuditDoc
+		rgaaReadJSON(t, f.AuditPath, &written)
+		for _, c := range written.Criteria {
+			if c.ID == targetID && c.Status != "C" {
+				t.Fatalf("the accepted verdict on %s did not land in the written audit: %s", targetID, c.Status)
+			}
+			if c.ID == otherID && c.Status != "manual" {
+				t.Fatalf("the refused criterion %s left « à évaluer »: %s", otherID, c.Status)
+			}
 		}
 	})
 

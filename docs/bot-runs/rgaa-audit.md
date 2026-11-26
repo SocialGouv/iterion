@@ -9,6 +9,44 @@ The bilans below v3 are the v1/v2 single-agent auditor, kept as the record
 of why v3 exists. Earlier runs (pre-dedicated-file) are recorded in the
 2026-06 campaign bilans.
 
+## 2026-11-25 — 3.3.0: ultra11y 9.6.6 (#3705)
+
+- Status: **engine-proven, no run**. The contract, node and page-grid
+  tests run on the real 9.6.6 (`task test:contract:rgaa`); no LLM run was
+  paid.
+- Three contracts moved between 7.2.0 and 9.6.1, all intended upstream
+  (9.6.2–9.6.6 moved none the bot reads; see below):
+  - `verify --apply` exits 1 as soon as the gate refused anything, with
+    the accepted verdicts still written and `ok: false`
+    (SocialGouv/ultra11y#223). The fold nodes read every result through
+    one helper, `L.foldJSON`: 0/1 with a matching `ok` is data; exit 2,
+    a signal, no JSON or a contradicting `ok` kills the node. The trial
+    (`--prune`) and the ledger replay hold the same 0/1/2 split.
+  - `scan --sample` exits 1 on a partial sample (a page refused and named)
+    with the merged audit written. `render` accepts that (`L.scanOutcome`),
+    takes `pages_refused` from the engine's `pages.refused` list, and the
+    annex names the refused pages. No page recorded still fails the layer.
+  - `verify --manual` writes the verdict contract once as
+    `ADJUDICATE.contract.md`; the briefs refer to it. The worklist hands
+    its path (`contract_path`) to the adjudicators and the skills say to
+    read it once before the first brief.
+- 9.0.1 decides 1.1 itself on the fixture's `<img>` without `alt`. Two
+  page-grid tests used 1.1 as their judgment criterion and went red
+  (`fixture has no 1.1 evidence`, `Accueil : 1.1` missing); they now use
+  1.2, which the engine leaves to judgment on both fixture pages.
+- Nothing the bot calls was removed: 8.0.0 dropped `capture write`,
+  `render --setup` / `--scaffold` and the `.snap` audit; 9.0.0 dropped
+  `pack`, `--pack`, `--override`, `--guidance` and the WCAG output (engine
+  result under `core`, which `static_audit` already read).
+- 9.6.1 → 9.6.6, repinned before merge: page verdicts on still-manual
+  criteria (`notShownHere`), absence-grounded page NA, `verify --apply`
+  exiting 0 on a missing *default* ledger (the bot always passes an
+  explicit `--ledger`), sample pages counted with their journey states
+  folded in, distinct no-page labels, the French default fix text
+  « Corrigez la non-conformité relevée. » and decision protocols in the
+  briefs; 9.6.6 renders axe-core's findings in French under `--lang fr`
+  (finding identity unchanged). The RgaaAudit tests passed unchanged.
+
 ## 2026-11-23 — 3.2.1: ultra11y 7.2.0, and the bot becomes ultra11y's documented CI path
 
 - Status: **engine-proven, no run**. The contract and node tests run on the

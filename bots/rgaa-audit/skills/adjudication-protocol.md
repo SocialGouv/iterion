@@ -13,7 +13,10 @@ description: |
 ## Before the first verdict
 
 1. Read the `contract` you were given. It states the verdicts and what each
-   additionally requires. It is authoritative over this page.
+   additionally requires. It is authoritative over this page. Then read,
+   once, the verdict contract file listed in your input
+   (`ADJUDICATE.contract.md`): the engine writes it once per worklist and
+   every brief refers to it instead of repeating it.
 2. Your input lists, per id of your batch and in the batch's order, the
    absolute path of each brief and each evidence file. Open exactly those —
    never a path reconstructed from memory or rebuilt from a directory name.

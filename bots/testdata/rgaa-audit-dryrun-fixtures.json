@@ -80,6 +80,7 @@
     "count": 99,
     "items_dir": "/scratch/rgaa-audit/run-1/items",
     "briefs_dir": "/scratch/rgaa-audit/run-1/adjudicate",
+    "contract_path": "/scratch/rgaa-audit/run-1/ADJUDICATE.contract.md",
     "todo_path": "/scratch/rgaa-audit/run-1/ADJUDICATE.todo.json",
     "verdicts_path": "/scratch/rgaa-audit/run-1/ADJUDICATE.verdicts.json",
     "pending_ids": [

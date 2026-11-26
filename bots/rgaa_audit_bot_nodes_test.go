@@ -660,6 +660,12 @@ L.out({ ok: true, cases: out });
 				t.Fatalf("no brief for %s: %v", id, err)
 			}
 		}
+		// The verdict contract every brief refers to, handed on by path.
+		if p := fmt.Sprint(wl["contract_path"]); filepath.Base(p) != "ADJUDICATE.contract.md" {
+			t.Fatalf("worklist contract_path = %q, want the engine's ADJUDICATE.contract.md", p)
+		} else if _, err := os.Stat(p); err != nil {
+			t.Fatalf("the verdict contract is not on disk: %v", err)
+		}
 		var pending struct {
 			Round int      `json:"round"`
 			IDs   []string `json:"ids"`
@@ -3798,7 +3804,7 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 	}
 	// The batch's files, spelled out — never a template the model completes.
 	adjUser := prompt("adjudicate_user")
-	for _, ref := range []string{"{{input.item_paths}}", "{{input.brief_paths}}"} {
+	for _, ref := range []string{"{{input.item_paths}}", "{{input.brief_paths}}", "{{input.contract_path}}"} {
 		if !strings.Contains(adjUser, ref) {
 			t.Errorf("adjudicate_user does not spell %s", ref)
 		}
@@ -3846,6 +3852,9 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 			t.Errorf("dispatch -> adjudicate maps %s from %v, want the batch's own %s", key, m, key)
 		}
 	}
+	if m := mappingOf(edge("dispatch", "adjudicate"), "contract_path"); m == nil || m.Raw != "{{outputs.worklist.contract_path}}" {
+		t.Errorf("dispatch -> adjudicate maps contract_path from %v, want the worklist's contract_path", m)
+	}
 	if m := mappingOf(edge("refute_dispatch", "refute"), "brief_paths"); m == nil || m.Raw != "{{outputs.refute_dispatch.rbatch.brief_paths}}" {
 		t.Errorf("refute_dispatch -> refute maps brief_paths from %v, want the batch's own brief_paths", m)
 	}
@@ -3878,7 +3887,7 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 		}
 		return false
 	}
-	for _, ref := range []struct{ schema, field string }{{"adjudicate_input", "item_paths"}, {"adjudicate_input", "brief_paths"}, {"refute_input", "brief_paths"}, {"merge_output", "partial_batches"}} {
+	for _, ref := range []struct{ schema, field string }{{"adjudicate_input", "item_paths"}, {"adjudicate_input", "brief_paths"}, {"adjudicate_input", "contract_path"}, {"worklist_output", "contract_path"}, {"refute_input", "brief_paths"}, {"merge_output", "partial_batches"}} {
 		if !has(ref.schema, ref.field) {
 			t.Errorf("schema %s lacks %s", ref.schema, ref.field)
 		}

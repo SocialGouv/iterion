@@ -31,6 +31,11 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	if err := os.CopyFS(filepath.Join(site, ".ultra11y", "pages"), os.DirFS(pages)); err != nil {
 		t.Fatal(err)
 	}
+	// The criterion left unanswered. Not 1.1: since ultra11y 9.0.1
+	// (SocialGouv/ultra11y#203) an <img> without alt is a decisive engine
+	// NC, so 1.1 never reaches the worklist. 1.2 (decorative images) is a
+	// judgment criterion the engine audits on both fixture pages.
+	const open = "1.2"
 	std := []string{"--standard", "rgaa", "--lang", "fr"}
 	run := filepath.Join(t.TempDir(), "run")
 	rgaaInitReportRun(t, run, site, bin, scripts)
@@ -52,10 +57,9 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	rgaaReadJSON(t, worklist.TodoPath, &todo)
 	var items []any
 	for _, it := range todo.Items {
-		if it.CriteriaID == "1.1" {
+		if it.CriteriaID == open {
 			// Left unanswered: the criterion stays « à évaluer », and the
-			// engine holds its page cells open (RGAA 1.1 is audited on both
-			// fixture pages).
+			// engine holds its page cells open on both fixture pages.
 			items = append(items, map[string]any{"criteriaId": it.CriteriaID, "verdict": nil})
 			continue
 		}
@@ -72,9 +76,13 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	adj := filepath.Join(run, "adj.json")
 	rgaaWriteJSON(t, adj, skeleton)
 	var f foldOut
-	rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", adj, "--in", filepath.Join(run, "audit-latest.json"), "--out", run, "--json"}, std...)...)
-	if len(f.RejectedCriteria) != 1 || !rgaaContains(f.RejectedCriteria, "1.1") {
-		t.Fatalf("the fold refused %v, want exactly 1.1 (left unanswered on purpose)", f.RejectedCriteria)
+	// One criterion refused: an incomplete fold, exit 1 with the accepted
+	// verdicts written (ultra11y 9.6.1).
+	if code := rgaaEngineJSON(t, bin, site, nil, &f, append([]string{"verify", "--apply", adj, "--in", filepath.Join(run, "audit-latest.json"), "--out", run, "--json"}, std...)...); code != 1 || f.OK {
+		t.Fatalf("the fold with %s unanswered exited %d ok=%v, want the incomplete fold (1, ok:false)", open, code, f.OK)
+	}
+	if len(f.RejectedCriteria) != 1 || !rgaaContains(f.RejectedCriteria, open) {
+		t.Fatalf("the fold refused %v, want exactly %s (left unanswered on purpose)", f.RejectedCriteria, open)
 	}
 	// The fold rewrote the audit: re-record its hash, as the bot's
 	// commitAudit would (checkAudit compares against this record).
@@ -133,7 +141,7 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(annex), "## Grille par page incomplète") ||
-		!strings.Contains(string(annex), "- Accueil : 1.1") || !strings.Contains(string(annex), "- Contact : 1.1") {
+		!strings.Contains(string(annex), "- Accueil : "+open) || !strings.Contains(string(annex), "- Contact : "+open) {
 		t.Fatalf("the annex does not name the open page cells:\n%s", annex)
 	}
 	// require_complete: the refusal names the cells, not just « 0 criteria ».
@@ -147,7 +155,7 @@ func TestRgaaAuditFinalReportNamesOpenPageCells(t *testing.T) {
 	if ok, _ := res.Out["ok"].(bool); ok || res.Out["fail_code"] != "GRID_INCOMPLETE" {
 		t.Fatalf("final_report answered %v / %v, want the GRID_INCOMPLETE refusal", res.Out["ok"], res.Out["fail_code"])
 	}
-	if reason := fmt.Sprint(res.Out["reason"]); !strings.Contains(reason, "Accueil (1.1)") || !strings.Contains(reason, "Contact (1.1)") {
+	if reason := fmt.Sprint(res.Out["reason"]); !strings.Contains(reason, "Accueil ("+open+")") || !strings.Contains(reason, "Contact ("+open+")") {
 		t.Fatalf("the GRID_INCOMPLETE reason does not name the open page cells:\n%s", reason)
 	}
 }
@@ -204,6 +212,10 @@ func rgaaInitReportRun(t *testing.T, run, site, bin string, scripts map[string]s
 func TestRgaaAuditEngineReportKeepsImageExamplesAsContent(t *testing.T) {
 	bin, _ := rgaaResolveEngine(t)
 	scripts := rgaaBotScripts(t)
+	// The criterion the agent's NC is folded on: a judgment criterion with
+	// image evidence. Not 1.1, which ultra11y 9.0.1 decides itself (an <img>
+	// without alt is a decisive NC) and so keeps out of the worklist.
+	const judged = "1.2"
 	for _, scenario := range []struct{ rendered, symlinked bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		for _, counter := range []struct{ name, line string }{
 			{"malformed", "- **Décidés** : exemple cité dans le constat"},
@@ -243,21 +255,21 @@ func TestRgaaAuditEngineReportKeepsImageExamplesAsContent(t *testing.T) {
 				rgaaReadJSON(t, wl.TodoPath, &todo)
 				var anchor map[string]any
 				for _, item := range todo.Items {
-					if item.CriteriaID == "1.1" && len(item.Evidence) > 0 {
+					if item.CriteriaID == judged && len(item.Evidence) > 0 {
 						anchor = item.Evidence[0]
 					}
 				}
 				if anchor == nil {
-					t.Fatal("fixture has no 1.1 evidence")
+					t.Fatalf("fixture has no %s evidence in the worklist", judged)
 				}
 				message := "Exemples Markdown `![](/img/hero.png)`, `![](images/nope.png)`, `![](bad%escape.png)` et `![Capture](./assets/fake.png)`." + "\n" + counter.line
 				var adj map[string]any
 				rgaaReadJSON(t, wl.VerdictsPath, &adj)
-				adj["items"] = []any{map[string]any{"criteriaId": "1.1", "verdict": "NC", "justification": "Constat ancré (fixture).", "findings": []any{map[string]any{"file": anchor["file"], "line": anchor["line"], "snippet": anchor["snippet"], "normativeRef": "1.1", "message": message}}}}
+				adj["items"] = []any{map[string]any{"criteriaId": judged, "verdict": "NC", "justification": "Constat ancré (fixture).", "findings": []any{map[string]any{"file": anchor["file"], "line": anchor["line"], "snippet": anchor["snippet"], "normativeRef": judged, "message": message}}}}
 				rgaaWriteJSON(t, wl.VerdictsPath, adj)
 				var folded foldOut
-				rgaaEngineJSON(t, bin, site, nil, &folded, append([]string{"verify", "--apply", wl.VerdictsPath, "--in", audit, "--out", run, "--json"}, std...)...)
-				if folded.Applied != 1 || rgaaContains(folded.RejectedCriteria, "1.1") {
+				code := rgaaEngineJSON(t, bin, site, nil, &folded, append([]string{"verify", "--apply", wl.VerdictsPath, "--in", audit, "--out", run, "--json"}, std...)...)
+				if code != 0 || folded.Applied != 1 || rgaaContains(folded.RejectedCriteria, judged) {
 					t.Fatalf("fixture NC refused: %+v", folded)
 				}
 				rgaaWriteJSON(t, filepath.Join(run, "state", "audit.json"), map[string]any{"sha256": rgaaFileSHA(t, audit)})
