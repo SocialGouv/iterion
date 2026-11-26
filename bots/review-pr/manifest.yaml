@@ -1,7 +1,13 @@
 name: review-pr
 display_name: Revi
 icon: 🔎
-version: 0.11.1
+version: 0.11.2
+## 0.11.2 — the merge step reads the reviewers, not the repository:
+## `emit_system` says its evidence is the reviewers' output, that
+## `read_file` and `glob` serve the board skill and its own report, and that
+## a doubted finding is merged as written with the doubt in the report. On
+## the PLIAGE route, converge walked the workspace for up to 57 steps and
+## 2.6 M tokens without changing one finding (#3823).
 ## 0.11.1 — the GLM rescue route moves to glm-5.4: reviewer_alternate's `glm`
 ## fallback (provider zai) names z.ai's current GLM, the id
 ## secrets.ZAIDefaultModel carries. A routing cell on the route still
