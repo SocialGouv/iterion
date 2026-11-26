@@ -801,7 +801,14 @@ team's rows, and an
 invitation `DELETE` or a provision approve/reject on a sibling's record
 answers `404`. A route that changes the org itself (its members, settings,
 sign-in, credentials and the teams those credentials serve) stays the
-org's. `POST /api/me/tokens`
+org's, and so does what it cascades into: removing an org member through a
+pinned token ends that member's grants in every team of the org, with the
+pending invitations they minted that write an org membership
+(`DELETE …/members/{user_id}`), and a demotion sweeps the ones they minted
+above the new role across those teams — sibling teams the token cannot read
+included. A
+token pinned to one team carries its owner's org power; what bounds it is
+the org role of that owner. `POST /api/me/tokens`
 fills the minter's active team in when the caller names none, so **every**
 token of an ordinary account carries a pin and reaches exactly one team: a
 client that needs several teams mints one token per team, which is also how
