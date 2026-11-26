@@ -234,3 +234,20 @@ func TestGhErrorsCarryNoArguments(t *testing.T) {
 		t.Fatalf("err %v, want gh's stderr without the subject or body", err)
 	}
 }
+
+// Once every pull request landed, a worktree that cannot be removed is a
+// warning: the exit code must still say the lot landed.
+func TestALandedLotIsNotUnsaidByAFailedCleanup(t *testing.T) {
+	isolateGit(t)
+	repo := t.TempDir()
+	mustGit(t, repo, "init", "--quiet")
+	t.Chdir(repo)
+	var out strings.Builder
+	err := cleanupAfterLanding(context.Background(), &gitRunner{}, filepath.Join(t.TempDir(), "never-registered"), "t1", &out)
+	if err != nil {
+		t.Fatalf("cleanup failure after a landing returned %v, want nil (exit 0)", err)
+	}
+	if !strings.Contains(out.String(), "landed, but its worktree stays") || !strings.Contains(out.String(), "clean -id t1") {
+		t.Fatalf("stderr %q, want the warning with the clean command", out.String())
+	}
+}
