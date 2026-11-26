@@ -6,6 +6,7 @@ import {
   canDeleteTeam,
   canManageFromRoster,
   canWriteMember,
+  invitableOrgRoles,
   invitableRoles,
   invitableRolesNote,
   orgMirrorOfTeamRole,
@@ -793,9 +794,9 @@ describe("canManageFromRoster", () => {
 // The invitation caps (K) are a DIFFERENT rule from the roster write's: the
 // oracle below is the server's two reads, written from ranks.
 describe("orgMirrorOfTeamRole", () => {
-  it("mirrors the ladder the way identity.OrgRoleForTeamRole does", () => {
-    expect(orgMirrorOfTeamRole("owner")).toBe("admin");
-    expect(orgMirrorOfTeamRole("admin")).toBe("admin");
+  it("mirrors every ladder role to an org member, as identity.OrgRoleForTeamRole does", () => {
+    expect(orgMirrorOfTeamRole("owner")).toBe("member");
+    expect(orgMirrorOfTeamRole("admin")).toBe("member");
     expect(orgMirrorOfTeamRole("member")).toBe("member");
     expect(orgMirrorOfTeamRole("viewer")).toBe("member");
   });
@@ -819,10 +820,12 @@ describe("invitableRoles", () => {
    * roles, anything else 400.
    */
   const routeAccepts = (role: string): boolean => onLadder(role, TEAM_ROLES);
-  /** identity.OrgRoleForTeamRole: "" for rank 0 — config_editor, unknowns. */
+  /**
+   * identity.OrgRoleForTeamRole: "member" for every ladder role, "" for rank
+   * 0 — config_editor, unknowns.
+   */
   const orgMirror = (role: string): string => {
     const rank = TEAM_RANK[role] ?? 0;
-    if (rank >= (TEAM_RANK.admin ?? 0)) return "admin";
     if (rank >= (TEAM_RANK.viewer ?? 0)) return "member";
     return "";
   };
@@ -852,7 +855,7 @@ describe("invitableRoles", () => {
         for (const platformAdmin of [false, true]) {
           const v = viewer({ platformAdmin, orgRole: myOrg, teamRole: myTeam });
           for (const scope of [TEAM, ORPHAN_TEAM, ORG]) {
-            const ladder = scope.kind === "org" ? ORG_ROLES : TEAM_ROLES;
+            const ladder = TEAM_ROLES;
             const got = invitableRoles(v, scope, ladder);
             const want = ladder.filter((r) => serverMints(v, scope, r));
             expect(
@@ -872,26 +875,28 @@ describe("invitableRoles", () => {
     // org-route cell below admin answers 403 at the gate). The mirror is
     // written from the standing, so the exemption rests on the row rather
     // than on which form the mint came from.
-    expect(invitableRoles(viewer({ orgRole: "member", teamRole: "viewer" }), ORG, ORG_ROLES))
-      .toEqual([]);
-    expect(invitableRoles(viewer({ orgRole: "member", teamRole: "owner" }), ORG, ORG_ROLES))
-      .toEqual(["member"]);
-    // An org admin keeps the whole picker: the mirror tops out at admin and
-    // no grant is measured.
-    expect(invitableRoles(viewer({ orgRole: "admin" }), ORG, ORG_ROLES)).toEqual([
-      "member",
-      "admin",
-      "owner",
-    ]);
+    expect(invitableRoles(viewer({ orgRole: "member", teamRole: "viewer" }), ORG, TEAM_ROLES))
+      .toEqual(["config_editor", "viewer"]);
+    expect(invitableRoles(viewer({ orgRole: "member", teamRole: "owner" }), ORG, TEAM_ROLES))
+      .toEqual([...TEAM_ROLES]);
+    // An org admin keeps the whole picker: no grant is measured.
+    expect(invitableRoles(viewer({ orgRole: "admin" }), ORG, TEAM_ROLES)).toEqual([...TEAM_ROLES]);
   });
 
-  it("caps the team admin who is a plain org member at their own grant", () => {
-    // The org mirror of admin and owner is org admin, which they do not hold.
+  it("caps the team admin who is a plain org member at their own grant, and no lower", () => {
+    // Every team role writes an org member, which they hold: the grant is
+    // what bounds them, so they invite a fellow team admin.
     expect(invitableRoles(viewer({ orgRole: "member", teamRole: "admin" }), TEAM, TEAM_ROLES))
-      .toEqual(["config_editor", "viewer", "member"]);
+      .toEqual(["config_editor", "viewer", "member", "admin"]);
   });
 
-  it("lets an org admin mint the owner whose mirror is admin", () => {
+  it("refuses every ladder role to a team admin outside the team's org", () => {
+    // No org row: the member membership the invitation writes is above them.
+    expect(invitableRoles(viewer({ orgRole: null, teamRole: "owner" }), TEAM, TEAM_ROLES))
+      .toEqual(["config_editor"]);
+  });
+
+  it("lets an org admin mint the owner", () => {
     // The roster-write cap would refuse `owner` to an org admin; this one
     // does not, and filtering an invitation with assignableRoles would hide
     // a role the route accepts.
@@ -951,9 +956,21 @@ describe("invitableRolesNote", () => {
       TEAM,
       TEAM_ROLES,
     );
-    expect(note).toContain("admin");
     expect(note).toContain("owner");
-    expect(note).toContain("mirrors it up to an org membership");
+    expect(note).not.toContain("admin");
+    expect(note).toContain("may not be above your own");
+  });
+});
+
+describe("invitableOrgRoles", () => {
+  it("offers the org roles the minter's own standing covers", () => {
+    expect(invitableOrgRoles(viewer({ orgRole: "admin" }), ORG)).toEqual(["member", "admin"]);
+    expect(invitableOrgRoles(viewer({ orgRole: "owner" }), ORG)).toEqual([...ORG_ROLES]);
+    expect(invitableOrgRoles(viewer({ orgRole: "member" }), ORG)).toEqual(["member"]);
+  });
+
+  it("exempts a platform admin", () => {
+    expect(invitableOrgRoles(viewer({ platformAdmin: true }), ORG)).toEqual([...ORG_ROLES]);
   });
 });
 

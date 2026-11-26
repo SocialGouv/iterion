@@ -36,6 +36,20 @@ func (s *Server) gateDerivation(mint auth.Mint, next http.HandlerFunc) http.Hand
 	})
 }
 
+// gateInvitationMint is gateDerivation for the two invitation routes: the
+// mint it asks the chokepoint for is the one the presented credential may
+// make (invitationMint) — an invitation delivered by email only for a
+// personal access token, the team token shown as a link for a session — and
+// the verdict it stamps names that mint, so the primitive the handler reaches
+// (auth.Service.CreateEmailedInvitation or CreateInvitation) refuses the
+// other.
+func (s *Server) gateInvitationMint(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := auth.FromContext(r.Context())
+		s.gateDerivation(invitationMint(id), next).ServeHTTP(w, r)
+	})
+}
+
 // approveTeamTokenMint is the derivation chokepoint wired into the forge
 // orchestrator's one mint (forge.Orchestrator.ApproveTeamTokenMint): the
 // question a team-token mint owes is asked WHERE the mint is decided — inside

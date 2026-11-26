@@ -9,7 +9,6 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
-	"github.com/SocialGouv/iterion/pkg/mail"
 )
 
 // ---- Authenticated handlers ----
@@ -233,11 +232,20 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
+	// A team invitation makes its invitee a member of the team's org and
+	// nothing more: the org rank is a decision about every team of the org,
+	// taken where the org is managed. Refused by name rather than ignored, so
+	// a caller who asked for more is told where it is granted.
+	if orgRole := identity.OrgRole(req.OrgRole); orgRole != "" && orgRole != identity.OrgRoleMember {
+		httpError(w, http.StatusBadRequest,
+			"a team invitation makes its invitee a member of the team's organization, never %s: name the org role from the organization's invitations (POST /api/orgs/{id}/invitations with \"team_id\" and \"org_role\"), open to its admins and owners", orgRole)
+		return
+	}
 	// A mint is the one team-scoped act that hands out ORG standing, since
-	// accepting the invitation mirrors its role up to an org membership, so
-	// it is capped by the minter's own: the team names the org that cap is
-	// read in. A team that cannot be read is a cap that cannot be applied,
-	// which refuses the mint rather than minting uncapped.
+	// accepting the invitation writes the org membership it names, so it is
+	// capped by the minter's own: the team names the org that cap is read in.
+	// A team that cannot be read is a cap that cannot be applied, which
+	// refuses the mint rather than minting uncapped.
 	t, err := s.authStore().GetTeam(r.Context(), teamID)
 	if errors.Is(err, identity.ErrNotFound) {
 		// The words the service answers on its own read of the team, so a
@@ -249,62 +257,20 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusInternalServerError, "read the team: %v", err)
 		return
 	}
-	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role)
+	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role, identity.InvitationOrgRole(role, ""))
 	if !ok {
 		return
 	}
-	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
-		return
-	}
-	s.auditTenant(r, teamID, "invitation.created", "invitation", inv.ID, map[string]any{"email": inv.Email, "role": string(inv.Role)})
-	// The caps above were read BEFORE the row landed, and the sweep that
-	// follows a write lowering the minter's own standing only sees the rows
-	// its listing reaches: the confirmations are what cover a mint that
-	// straddles such a write. They run before the token leaves — by email or
-	// in the response — so an invitation that did not survive them reaches
-	// nobody.
-	if !s.confirmOrgStandingAfterMint(w, r, id, t.OrgID, inv) {
-		return
-	}
-	if !s.confirmTeamGrantAfterMint(w, r, id, grantCapped, inv) {
-		return
-	}
-	// When a real mailer is wired, deliver the invitation by email too
-	// (detached — a relay blip must not fail the create). The in-band
-	// token below stays: CLI/SDK flows and operators without SMTP
-	// copy it manually.
-	if s.authSvc.EmailEnabled() {
-		team, terr := s.authStore().GetTeam(r.Context(), teamID)
-		teamName := teamID
-		if terr == nil {
-			teamName = team.Name
-		}
-		msg := mail.RenderInvitation(inv.Email, mail.InviteData{
-			TeamName:  teamName,
-			Role:      string(inv.Role),
-			AcceptURL: s.authSvc.PublicURL() + "/invitations/accept?token=" + tok,
-			InvitedBy: id.Email,
-		})
-		s.goSafe("invitation-email", func() {
-			bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := s.authSvc.Mailer().Send(bg, msg); err != nil && s.logger != nil {
-				s.logger.Warn("auth: invitation email to %s: %v", msg.To, err)
-			}
-		})
-	}
-	// Return both the persistent ID and the plaintext token so the
-	// admin can copy/email it. The plaintext is never recoverable
-	// after this response.
-	writeJSON(w, struct {
-		ID        string    `json:"id"`
-		Token     string    `json:"token"`
-		Email     string    `json:"email"`
-		Role      string    `json:"role"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}{ID: inv.ID, Token: tok, Email: inv.Email, Role: string(inv.Role), ExpiresAt: inv.ExpiresAt})
+	s.mintInvitation(w, r, id, invitationMintCall{
+		req:         auth.InvitationRequest{TeamID: teamID, Email: req.Email, Role: role, InvitedBy: id.UserID},
+		orgID:       t.OrgID,
+		grantCapped: grantCapped,
+		mail:        s.inviteMailNames(r.Context(), t, id.Email),
+		audit: func(inv identity.Invitation) {
+			s.auditTenant(r, teamID, "invitation.created", "invitation", inv.ID, invitationAuditMeta(inv, t.OrgID))
+		},
+		emailTask: "invitation-email",
+	})
 }
 
 func (s *Server) handleListInvitations(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +284,17 @@ func (s *Server) handleListInvitations(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "list invitations: %v", err)
 		return
+	}
+	// org_role is what accepting writes, which the row alone does not say:
+	// a team with no parent org writes none, and a row minted before
+	// invitations named their org role writes a member.
+	t, err := s.authStore().GetTeam(r.Context(), teamID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "read the team: %v", err)
+		return
+	}
+	for i := range invs {
+		invs[i].OrgRole = invitationOrgRoleIn(invs[i], t.OrgID)
 	}
 	writeJSON(w, struct {
 		Invitations []identity.Invitation `json:"invitations"`
@@ -568,6 +545,13 @@ func (s *Server) handleInvitationLookup(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusGone, "invitation expired")
 		return
 	}
+	// An invitation whose minting token no longer stands is refused at
+	// accept (ADR-174): the lookup says so first, before the invitee fills
+	// a registration form for it.
+	if err := s.authSvc.InvitationCredentialStands(r.Context(), inv); err != nil {
+		s.authError(w, r, err)
+		return
+	}
 	t, err := s.authStore().GetTeam(r.Context(), inv.TeamID)
 	if err != nil {
 		s.authError(w, r, err)
@@ -576,9 +560,10 @@ func (s *Server) handleInvitationLookup(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, struct {
 		Email    string `json:"email"`
 		Role     string `json:"role"`
+		OrgRole  string `json:"org_role,omitempty"`
 		TeamID   string `json:"team_id"`
 		TeamName string `json:"team_name"`
-	}{Email: inv.Email, Role: string(inv.Role), TeamID: t.ID, TeamName: t.Name})
+	}{Email: inv.Email, Role: string(inv.Role), OrgRole: string(invitationOrgRoleIn(inv, t.OrgID)), TeamID: t.ID, TeamName: t.Name})
 }
 
 func (s *Server) handleInvitationAcceptForLoggedIn(w http.ResponseWriter, r *http.Request) {

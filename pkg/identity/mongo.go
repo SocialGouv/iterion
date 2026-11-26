@@ -116,6 +116,7 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 		{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetUnique(true).SetName("token_hash_unique").SetPartialFilterExpression(bson.M{"token_hash": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "team_id", Value: 1}, {Key: "email", Value: 1}}, Options: options.Index().SetName("team_email")},
 		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetName("invitations_ttl").SetExpireAfterSeconds(0)},
+		{Keys: bson.D{{Key: "minted_with", Value: 1}}, Options: options.Index().SetName("minted_with").SetPartialFilterExpression(bson.M{"minted_with": bson.M{"$exists": true}})},
 	}); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("identity: ensure invitations indexes: %w", err)
 	}
@@ -771,6 +772,16 @@ func (s *MongoStore) DeleteInvitationsByInviter(ctx context.Context, userID stri
 		return 0, fmt.Errorf("identity: delete the invitations user %s created: %w", userID, err)
 	}
 	return res.DeletedCount, nil
+}
+
+func (s *MongoStore) ListPendingInvitationsMintedWith(ctx context.Context, credentialID string) ([]Invitation, error) {
+	if credentialID == "" {
+		return nil, errors.New("identity: list invitations by minting credential: no credential id")
+	}
+	// accepted_at is omitempty: a pending row carries none, which a null
+	// match selects.
+	return mongoutil.FindAllSorted[Invitation](ctx, s.invitations, bson.M{"minted_with": credentialID, "accepted_at": nil}, "created_at",
+		"identity: list invitations by minting credential", "identity: decode invitations")
 }
 
 func (s *MongoStore) ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error) {

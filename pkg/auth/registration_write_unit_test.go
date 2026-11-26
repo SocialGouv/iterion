@@ -135,7 +135,7 @@ func TestRegisterWithInvitation_aFailedLandingStampStillAnswersTheLogin(t *testi
 	if _, err := seed.CreateTeam(ctx, identity.Team{ID: "tb", OrgID: "o1", Name: "Team B", Slug: "team-b"}); err != nil {
 		t.Fatal(err)
 	}
-	token, inv, err := svc.CreateInvitation(mintVerdictCtx(ctx), "tb", "invitee@example.org", identity.RoleMember, "inviter")
+	token, inv, err := svc.CreateInvitation(mintVerdictCtx(ctx), InvitationRequest{TeamID: "tb", Email: "invitee@example.org", Role: identity.RoleMember, InvitedBy: "inviter"})
 	if err != nil {
 		t.Fatalf("CreateInvitation: %v", err)
 	}

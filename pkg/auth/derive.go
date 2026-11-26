@@ -64,7 +64,9 @@ const (
 	// POST /api/orgs/{id}/provision-approvals/{approval_id}/approve, which
 	// replays that enable), a config share-link token (POST
 	// /api/teams/{id}/config-shares and its rotate), a team invitation token
-	// (POST /api/teams/{id}/invitations, POST /api/orgs/{id}/invitations).
+	// handed back to the minter (POST /api/teams/{id}/invitations, POST
+	// /api/orgs/{id}/invitations, from a session — a personal access token
+	// mints MintEmailedInvitation there instead).
 	// None of them authenticates AS the account, but each opens a door that
 	// stays open after the minter's session is gone — a delivery channel that
 	// launches runs, a public read of the team's configuration, a
@@ -83,6 +85,17 @@ const (
 	// TestEveryMintPrimitiveCallerLivesInTheGuardsGraph fails on a caller
 	// the guards do not read.
 	MintTeamToken Mint = "a team token (webhook, share link or invitation)"
+	// MintEmailedInvitation is an invitation whose token only its address's
+	// mailbox receives (Service.CreateEmailedInvitation, the
+	// invitation routes when a personal access token presents itself): the
+	// minting credential gets the row and never the token, accepting it is
+	// bound to the address, and it lives no longer than the credential
+	// (expiry capped, and an accept refuses it once the credential no longer
+	// stands — Invitation.MintedWith). It is the one team-scoped mint a
+	// personal access token makes — it hands its holder nothing that
+	// outlives it — while the rank caps every invitation answers stay where
+	// they are (ADR-174).
+	MintEmailedInvitation Mint = "an invitation delivered by email only"
 	// ChangeCredential is a route that changes or removes a credential of
 	// the presented credential's account: POST /api/me/password, POST
 	// /api/me/sessions/revoke-all, DELETE /api/me/tokens/{id}, DELETE
@@ -150,9 +163,11 @@ func (s *Service) SetPATState(fn PATState) { s.patState = fn }
 // token whose row is revoked, expired or gone, and a presented credential
 // past its own expiry; and it refuses, whatever the account's state, what the
 // presented kind may never do (ErrNotDerivable): a personal access token
-// mints no credential of its own account but a WS ticket — it is pinned to its
-// team and to its own expiry, and a switch, a child token, an SSO link or a
-// password would escape both — a WS ticket mints nothing, and an access token
+// mints no credential of its own account but a WS ticket, nor a team token
+// but an invitation delivered by email only (MintEmailedInvitation) — it is
+// pinned to its team and to its own expiry, and a switch, a child token, an
+// SSO link, a password or a token handed back to it would escape both — a WS
+// ticket mints nothing, and an access token
 // that names no session links no SSO identity.
 //
 // An access token that names no session (minted before access tokens named
@@ -172,7 +187,7 @@ func (s *Service) CheckDerivation(ctx context.Context, presented Identity, mint 
 		}
 	case CredentialPAT:
 		switch mint {
-		case MintWSTicket, ChangeCredential, ChangeSignIn, ExercisePlatformAuthority:
+		case MintWSTicket, MintEmailedInvitation, ChangeCredential, ChangeSignIn, ExercisePlatformAuthority:
 		default:
 			return Derivation{}, notDerivable{msg: "a personal access token cannot mint another credential: sign in to mint one"}
 		}

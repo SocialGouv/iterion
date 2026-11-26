@@ -132,6 +132,11 @@ func TestOrgRank_oneSelectionForEveryWriteThatLowersAStanding(t *testing.T) {
 	inv := func(role identity.Role, by, email string) identity.Invitation {
 		return identity.Invitation{ID: "i", TeamID: "t1", Role: role, InvitedBy: by, Email: email}
 	}
+	named := func(role identity.Role, org identity.OrgRole, by, email string) identity.Invitation {
+		i := inv(role, by, email)
+		i.OrgRole = org
+		return i
+	}
 	for _, c := range []struct {
 		name     string
 		standing identity.OrgRole
@@ -154,14 +159,23 @@ func TestOrgRank_oneSelectionForEveryWriteThatLowersAStanding(t *testing.T) {
 			inv(identity.RoleConfigEditor, own, addr), false},
 		{"another member's ladder invitation is not theirs to lose", "", addr, true,
 			inv(identity.RoleAdmin, "somebody-else", "newcomer@example.com"), false},
-		{"a demotion takes what they minted above the standing it leaves", identity.OrgRoleMember, addr, true,
-			inv(identity.RoleAdmin, own, "newcomer@example.com"), true},
+		{"a demotion takes the org role they named above the standing it leaves", identity.OrgRoleMember, addr, true,
+			named(identity.RoleMember, identity.OrgRoleAdmin, own, "newcomer@example.com"), true},
+		// The team role carries no org rank: a team admin row that names no
+		// org role writes an org member membership, which the standing a
+		// demotion to member leaves still covers.
+		{"a demotion leaves a team admin row that names no org role", identity.OrgRoleMember, addr, true,
+			inv(identity.RoleAdmin, own, "newcomer@example.com"), false},
+		{"a demotion leaves a team admin row that names org member", identity.OrgRoleMember, addr, true,
+			named(identity.RoleAdmin, identity.OrgRoleMember, own, "newcomer@example.com"), false},
+		{"a demotion to admin takes the org owner they named", identity.OrgRoleAdmin, addr, true,
+			named(identity.RoleMember, identity.OrgRoleOwner, own, "newcomer@example.com"), true},
 		{"a demotion leaves what is at the standing it leaves", identity.OrgRoleMember, addr, true,
 			inv(identity.RoleMember, own, "newcomer@example.com"), false},
 		{"a demotion leaves the row addressed to a member who keeps their own", identity.OrgRoleMember, addr, true,
 			inv(identity.RoleConfigEditor, own, addr), false},
 		{"a raise leaves everything they minted", identity.OrgRoleOwner, addr, true,
-			inv(identity.RoleOwner, own, "newcomer@example.com"), false},
+			named(identity.RoleOwner, identity.OrgRoleOwner, own, "newcomer@example.com"), false},
 		// The addressed-to half fires at the membership row's ABSENCE, which
 		// is the sentinel its callers pass from a read that found no row —
 		// not at a rank of zero. A rung this build does not rank is held by
@@ -172,8 +186,47 @@ func TestOrgRank_oneSelectionForEveryWriteThatLowersAStanding(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := standingTakesInvitation(own, c.standing, c.addr, c.known, c.inv); got != c.want {
-				t.Errorf("standingTakesInvitation(standing=%q, addr=%q, known=%v, {role:%s by:%s to:%s}) = %v, want %v",
-					c.standing, c.addr, c.known, c.inv.Role, c.inv.InvitedBy, c.inv.Email, got, c.want)
+				t.Errorf("standingTakesInvitation(standing=%q, addr=%q, known=%v, {role:%s org_role:%q by:%s to:%s}) = %v, want %v",
+					c.standing, c.addr, c.known, c.inv.Role, c.inv.OrgRole, c.inv.InvitedBy, c.inv.Email, got, c.want)
+			}
+		})
+	}
+}
+
+// The team twin of the selection above (teamRankTakesInvitation), which the
+// demotion sweep runs: its org half measures the org role the row WRITES, its
+// team half the team role against the creator's grant where that grant is
+// their authority. A creator demoted to member who still holds an owner grant
+// in the team keeps the team admin invitation that names no org role — both
+// halves covered — and loses the one naming org admin, on the org half alone.
+func TestOrgRank_theTeamSelectionMeasuresTheOrgRoleTheRowWrites(t *testing.T) {
+	const own = "leaver"
+	mk := func(role identity.Role, org identity.OrgRole, by string) identity.Invitation {
+		return identity.Invitation{ID: "i", TeamID: "t1", Role: role, OrgRole: org, InvitedBy: by, Email: "newcomer@example.com"}
+	}
+	for _, c := range []struct {
+		name     string
+		hasOrg   bool
+		standing identity.OrgRole
+		grant    identity.Role
+		inv      identity.Invitation
+		want     bool
+	}{
+		{"a team admin row naming no org role, under an owner grant", true, identity.OrgRoleMember, identity.RoleOwner,
+			mk(identity.RoleAdmin, "", own), false},
+		{"a row naming org admin, under an owner grant", true, identity.OrgRoleMember, identity.RoleOwner,
+			mk(identity.RoleMember, identity.OrgRoleAdmin, own), true},
+		{"a row naming org admin, at an admin standing", true, identity.OrgRoleAdmin, "",
+			mk(identity.RoleMember, identity.OrgRoleAdmin, own), false},
+		{"a team admin row above the grant that is their authority", true, identity.OrgRoleMember, identity.RoleMember,
+			mk(identity.RoleAdmin, "", own), true},
+		{"another member's row naming org admin", true, identity.OrgRoleMember, identity.RoleOwner,
+			mk(identity.RoleMember, identity.OrgRoleAdmin, "somebody-else"), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := teamRankTakesInvitation(own, c.hasOrg, c.standing, c.grant, c.inv); got != c.want {
+				t.Errorf("teamRankTakesInvitation(hasOrg=%v, standing=%q, grant=%q, {role:%s org_role:%q by:%s}) = %v, want %v",
+					c.hasOrg, c.standing, c.grant, c.inv.Role, c.inv.OrgRole, c.inv.InvitedBy, got, c.want)
 			}
 		})
 	}
@@ -503,16 +556,18 @@ func TestOrgMembers_aStandingThatCannotBeReadRefusesTheRoleWrite(t *testing.T) {
 
 // ---- rule 2: a standing that drops takes the invitations minted above it ----
 
-// A demotion lowers the standing every invitation its holder MINTED was
-// capped at: accepting one writes the team grant and, on the ladder, the org
-// membership its role is mirrored up to (pkg/auth
-// grantOrgMembershipForTeam), so an invitation above the role just written
-// would still hand out a rank its creator no longer holds. What stands: an
-// invitation at the new standing, one mirrored up to NOTHING (config_editor,
-// ADR-078), and one somebody ELSE minted — including one they minted FOR the
-// demoted member, above the new standing. Invitations are revoked by who
-// minted them, blind to who receives them, so one the demoted member minted
-// for their own address goes too.
+// A demotion lowers the authority every invitation its holder MINTED was
+// capped by. These team-route rows write an org member, which a member
+// standing covers, so what takes the ones above the new standing is the TEAM
+// half of the sweep (teamRankTakesInvitation, K.2): a standing below admin no
+// longer carries the team, and the demoted member holds no grant in it, so a
+// row at a team rank above none goes. The org half — a row naming an org role
+// above the new standing — has its own witness
+// (TestOrgMembers_aDemotionRevokesTheOrgRoleTheMemberNamedAboveTheirNewStanding).
+// What stands: a row writing NO org membership (config_editor, ADR-078), and
+// one somebody ELSE minted — including one they minted FOR the demoted
+// member. Invitations are revoked by who minted them, blind to who receives
+// them, so one the demoted member minted for their own address goes too.
 func TestOrgMembers_aDemotionRevokesTheInvitationsTheMemberMintedAboveTheirNewStanding(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	s.auditStore = audit.NewMemoryStore()
@@ -582,12 +637,12 @@ func TestOrgMembers_aDemotionRevokesTheInvitationsTheMemberMintedAboveTheirNewSt
 	// The member row went too: the demoted creator holds no grant in any team
 	// of the org, so the cap that would bind their minting now measures a
 	// grant that covers nothing and refuses the member row the old standing
-	// carried — the team half of the same predicate the mirror half answers.
+	// carried — the team half of the same predicate the org half answers.
 	if _, err := real.GetInvitation(ctx, atID); err == nil {
 		t.Errorf("the member invitation of a demoted creator who holds no grant stands: the cap that binds them now refuses it")
 	}
 	for _, kept := range []struct{ what, id string }{
-		{"mirrored up to nothing", offLadderID},
+		{"writing no org membership", offLadderID},
 		{"somebody else minted for the demoted member, above the new standing", toThemID},
 		{"minted by somebody else", othersID},
 		{"minted by somebody else above the new standing", byOwnerID},
@@ -624,6 +679,56 @@ func TestOrgMembers_aDemotionRevokesTheInvitationsTheMemberMintedAboveTheirNewSt
 	inT2 := waitForTenantAuditRows(t, s.auditStore, "t2", "invitation.deleted", 1)
 	if inT2[0].TargetID != aboveInT2ID {
 		t.Errorf("the t2 audit line names %q, want the invitation revoked there (%s)", inT2[0].TargetID, aboveInT2ID)
+	}
+}
+
+// The demotion's org half alone, through the routes: a creator who keeps an
+// OWNER grant in the team covers every team role there, so only the org role
+// an invitation WRITES can put it above the standing a demotion to member
+// leaves. The org invitation naming org admin goes; the team admin invitation
+// naming no org role — an org member membership on accept — stands.
+func TestOrgMembers_aDemotionRevokesTheOrgRoleTheMemberNamedAboveTheirNewStanding(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+	ctx := context.Background()
+	real := s.authStore()
+	if err := real.UpsertMembership(ctx, identity.Membership{
+		UserID: "orgadmin", TeamID: "t1", Role: identity.RoleOwner, JoinedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mintOrg := func(email, body string) string {
+		t.Helper()
+		w := newErrorRecorder()
+		s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
+			`{"email":"`+email+`","team_id":"t1",`+body+`}`, "o1"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("minting for %s: code=%d body=%s", email, w.Code, w.Body.String())
+		}
+		var minted struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || minted.ID == "" {
+			t.Fatalf("the mint answered no invitation: %v %s", err, w.Body.String())
+		}
+		return minted.ID
+	}
+	namedAdminID := mintOrg("newcomer@example.com", `"role":"member","org_role":"admin"`)
+	teamAdminID := mintOrg("second@example.com", `"role":"admin"`)
+
+	demote := patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember)
+	if demote.Code != http.StatusOK {
+		t.Fatalf("demoting the creator: code=%d body=%s, want 200", demote.Code, demote.Body.String())
+	}
+	if got, err := real.GetInvitation(ctx, namedAdminID); err == nil {
+		t.Errorf("the invitation naming org admin of a creator demoted to member stands: %+v", got)
+	}
+	if _, err := real.GetInvitation(ctx, teamAdminID); err != nil {
+		t.Errorf("the demotion revoked the team admin invitation its creator's owner grant still covers: %v", err)
+	}
+	rows := waitForTenantAuditRows(t, s.auditStore, "t1", "invitation.deleted", 1)
+	if rows[0].TargetID != namedAdminID || rows[0].Meta["reason"] != "org_member_demoted" {
+		t.Errorf("the audit line is %+v, want the invitation naming org admin, under org_member_demoted", rows[0])
 	}
 }
 
@@ -676,7 +781,7 @@ func TestOrgOffboarding_aRemovalRevokesTheInvitationsTheMemberMintedAboveWhatThe
 			othersID, _ := mintInvitationAs(t, s, racerCtx, "t1", "byracer@example.com", identity.RoleMember)
 			// The same creator in ANOTHER org, through the service: the route
 			// would refuse it, since they hold no standing in o2.
-			_, elsewhere, err := s.authSvc.CreateInvitation(testMintVerdictContext(ctx), "t9", "elsewhere@example.com", identity.RoleAdmin, "orgadmin")
+			_, elsewhere, err := s.authSvc.CreateInvitation(testMintVerdictContext(ctx), auth.InvitationRequest{TeamID: "t9", Email: "elsewhere@example.com", Role: identity.RoleAdmin, InvitedBy: "orgadmin"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1023,27 +1128,38 @@ func (g *mintParkGate) CreateInvitation(ctx context.Context, inv identity.Invita
 }
 
 // The order the sweep cannot cover, through the real pair of handlers: the
-// mint reads its standing, a demotion writes the row and sweeps the team, and
-// only then does the mint's row land. The sweep listed a team that did not
-// hold it yet, so what refuses it is the mint's own confirmation — without
-// which that invitation seats an org admin on a plain member's authority.
+// mint reads its standing, a write lowers it and sweeps the team, and only
+// then does the mint's row land. The sweep listed a team that did not hold it
+// yet, so what refuses it is the mint's own confirmation — without which that
+// invitation writes an org rank its creator no longer holds: an org admin on a
+// plain member's authority (the org route, across a demotion), an org member
+// on the authority of an account the org removed (the team route, across a
+// removal).
 func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmation(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		mint func(*Server, context.Context) *errorRecorder
+		name  string
+		mint  func(*Server, context.Context) *errorRecorder
+		lower func(*Server) *errorRecorder
+		have  string
 	}{
-		{"the team route", func(s *Server, ctx context.Context) *errorRecorder {
+		{"the team route, across a removal", func(s *Server, ctx context.Context) *errorRecorder {
 			w := newErrorRecorder()
 			s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
 				`{"email":"accomplice@example.com","role":"admin"}`, "t1", ""))
 			return w
-		}},
-		{"the org route", func(s *Server, ctx context.Context) *errorRecorder {
+		}, func(s *Server) *errorRecorder {
+			w := newErrorRecorder()
+			s.handleRemoveOrgMember(w, teamReq(superAdminCtx(), "DELETE", "/api/orgs/o1/members/orgadmin", "", "o1", "orgadmin"))
+			return w
+		}, "none"},
+		{"the org route, across a demotion", func(s *Server, ctx context.Context) *errorRecorder {
 			w := newErrorRecorder()
 			s.handleCreateOrgInvitation(w, teamReq(ctx, "POST", "/api/orgs/o1/invitations",
-				`{"email":"accomplice@example.com","role":"admin","team_id":"t1"}`, "o1", ""))
+				`{"email":"accomplice@example.com","role":"admin","team_id":"t1","org_role":"admin"}`, "o1", ""))
 			return w
-		}},
+		}, func(s *Server) *errorRecorder {
+			return patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember)
+		}, "member"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := newOrgCredsTestServer(t)
@@ -1059,9 +1175,9 @@ func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmatio
 			go func() { done <- c.mint(s, orgAdminCtx()) }()
 			awaitGate(t, gate.reached, "the mint parked just before its insert")
 
-			demote := patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember)
-			if demote.Code != http.StatusOK {
-				t.Fatalf("the demotion that ran inside the mint: code=%d body=%s, want 200", demote.Code, demote.Body.String())
+			lower := c.lower(s)
+			if lower.Code != http.StatusOK && lower.Code != http.StatusNoContent {
+				t.Fatalf("the write that lowered the standing inside the mint: code=%d body=%s, want 2xx", lower.Code, lower.Body.String())
 			}
 			close(gate.release)
 			w := <-done
@@ -1073,7 +1189,7 @@ func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmatio
 			body := w.Body.String()
 			for _, want := range []string{
 				"cannot carry an org role above its creator's",
-				"your own org role in this team's organization is member by the time it was minted",
+				"your own org role in this team's organization is " + c.have + " by the time it was minted",
 				"the invitation this request minted was revoked",
 			} {
 				if !strings.Contains(body, want) {
@@ -1096,6 +1212,66 @@ func TestTeamInvitations_aMintThatLandsAfterTheSweepIsRefusedByItsOwnConfirmatio
 				t.Errorf("the audit line of the revoked invitation names %v, want creator_standing_dropped", got)
 			}
 		})
+	}
+}
+
+// TestTeamInvitations_aTeamRouteMintStraddlingADemotionIsRefusedByTheGrant:
+// an org admin mints a team-admin invitation on the team route — their
+// standing carries the team by itself, so the cap measures no grant — and is
+// demoted to member before the row lands. The row writes an org member, which
+// the demoted standing covers, so the standing's confirmation keeps it; the
+// grant's confirmation re-reads the standing, finds it below admin, and
+// measures the grant the minter does not hold (teamRankTakesInvitation, K.2):
+// the row a sweep's listing missed meets the sweep's own rule.
+func TestTeamInvitations_aTeamRouteMintStraddlingADemotionIsRefusedByTheGrant(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+	ctx := context.Background()
+	real := s.authStore()
+	seedAccount(t, s, "accomplice", "accomplice@example.com")
+	gate := &mintParkGate{Store: real, email: "accomplice@example.com",
+		reached: make(chan struct{}), release: make(chan struct{})}
+	s.authSvc.SetStoreForTest(gate)
+
+	done := make(chan *errorRecorder, 1)
+	go func() {
+		w := newErrorRecorder()
+		s.handleCreateInvitation(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
+			`{"email":"accomplice@example.com","role":"admin"}`, "t1", ""))
+		done <- w
+	}()
+	awaitGate(t, gate.reached, "the mint parked just before its insert")
+	if lower := patchOrgRole(s, superAdminCtx(), "o1", "orgadmin", identity.OrgRoleMember); lower.Code != http.StatusOK {
+		t.Fatalf("the demotion inside the mint: code=%d body=%s, want 200", lower.Code, lower.Body.String())
+	}
+	close(gate.release)
+	w := <-done
+	s.authSvc.SetStoreForTest(real)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("the team-route mint whose standing dropped below admin before its row landed: code=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		"a team invitation cannot carry a team role above its creator's grant",
+		"the invitation this request minted was revoked",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the refusal does not name %q: %s", want, body)
+		}
+	}
+	invs, err := real.ListInvitationsByTeam(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inv := range invs {
+		if inv.Email == "accomplice@example.com" {
+			t.Fatalf("the refused mint left its invitation standing: %+v", inv)
+		}
+	}
+	rows := waitForTenantAuditRows(t, s.auditStore, "t1", "invitation.deleted", 1)
+	if got := rows[0].Meta["reason"]; got != "creator_team_rank_dropped" {
+		t.Errorf("the audit line of the revoked invitation names %v, want creator_team_rank_dropped", got)
 	}
 }
 
@@ -2031,8 +2207,8 @@ func TestTeamInvitations_whatTheConfirmationsRevokeAnswers(t *testing.T) {
 				to: identity.OrgRoleMember, revokeErr: c.revokeErr,
 			})
 			w := newErrorRecorder()
-			s.handleCreateInvitation(w, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
-				`{"email":"newcomer@example.com","role":"admin"}`, "t1", ""))
+			s.handleCreateOrgInvitation(w, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
+				`{"email":"newcomer@example.com","role":"admin","team_id":"t1","org_role":"admin"}`, "o1"))
 			s.authSvc.SetStoreForTest(real)
 			if w.Code != http.StatusForbidden {
 				t.Fatalf("a mint whose standing dropped: code=%d body=%s, want 403", w.Code, w.Body.String())
@@ -2148,8 +2324,8 @@ func TestTeamInvitations_aClientGoneAtTheMintStillLosesTheUnconfirmedInvitation(
 	s.authSvc.SetStoreForTest(&mintCancelGate{Store: real, userID: "orgadmin", orgID: "o1", cancel: cancel})
 
 	w := newErrorRecorder()
-	s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
-		`{"email":"accomplice@example.com","role":"admin"}`, "t1", ""))
+	s.handleCreateOrgInvitation(w, orgReq(ctx, "POST", "/api/orgs/o1/invitations",
+		`{"email":"accomplice@example.com","role":"admin","team_id":"t1","org_role":"admin"}`, "o1"))
 	s.authSvc.SetStoreForTest(real)
 
 	if om, err := real.GetOrgMembership(bg, "orgadmin", "o1"); err != nil || om.Role != identity.OrgRoleMember {

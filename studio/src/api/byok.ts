@@ -1,6 +1,7 @@
 // BYOK + OAuth-forfait API client.
 
 import { apiBase } from "@/lib/scope";
+import type { InvitationMinted } from "./orgMembers";
 
 const BASE = apiBase().replace(/\/$/, "");
 
@@ -281,6 +282,8 @@ export interface InvitationView {
   id: string;
   email: string;
   role: string;
+  /** The org membership accepting writes; absent on rows minted before it existed (member). */
+  org_role?: string;
   team_id: string;
   expires_at: string;
   accepted_at?: string;
@@ -291,13 +294,7 @@ export async function listInvitations(teamID: string): Promise<InvitationView[]>
   return res.invitations ?? [];
 }
 
-export async function createInvitation(teamID: string, input: { email: string; role: string }): Promise<{
-  id: string;
-  token: string;
-  email: string;
-  role: string;
-  expires_at: string;
-}> {
+export async function createInvitation(teamID: string, input: { email: string; role: string }): Promise<InvitationMinted> {
   return send(`/teams/${encodeURIComponent(teamID)}/invitations`, {
     method: "POST",
     body: JSON.stringify(input),

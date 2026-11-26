@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
@@ -36,12 +36,26 @@ vi.mock("@/auth/AuthContext", async (importOriginal) => {
 
 const listOrgMembers = vi.fn<(orgID: string) => Promise<OrgMemberView[]>>();
 const listOrgInvitations = vi.fn(async () => [] as unknown[]);
+const createOrgInvitation = vi.fn(
+  async (_orgID: string, input: { email: string; role: string; org_role?: string; team_id?: string }) => ({
+    id: "i1",
+    token: "tok",
+    delivery: "link" as const,
+    email: input.email,
+    role: input.role,
+    org_role: input.org_role ?? "member",
+    team_id: "t1",
+    expires_at: "2026-12-01T00:00:00Z",
+  }),
+);
 vi.mock("@/api/orgMembers", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/orgMembers")>();
   return {
     ...actual,
     listOrgMembers: (id: string) => listOrgMembers(id),
     listOrgInvitations: () => listOrgInvitations(),
+    createOrgInvitation: (orgID: string, input: { email: string; role: string; org_role?: string; team_id?: string }) =>
+      createOrgInvitation(orgID, input),
   };
 });
 const getOrg = vi.fn();
@@ -346,6 +360,75 @@ describe("OrgPage · the roster's rank gate", () => {
     expect(
       screen.getByText(/Roles above your own are not offered \(owner\)/),
     ).toBeTruthy();
+  });
+});
+
+describe("OrgPage · the invitation names its org role apart from its team role", () => {
+  it("caps the org role at the viewer's own standing and sends the one picked", async () => {
+    identity.orgs = [treeOrg("admin")];
+    listOrgMembers.mockResolvedValue([member("me", "admin")]);
+    createOrgInvitation.mockClear();
+    mount();
+
+    await screen.findByRole("button", { name: "Send invite" });
+    const teamRole = screen.getByLabelText("Team role") as HTMLSelectElement;
+    const orgRole = screen.getByLabelText("Org role") as HTMLSelectElement;
+    // An org admin names any team role (no grant of theirs bounds it), and
+    // an org role up to their own: owner is above it.
+    await waitFor(() => expect(orgRole.disabled).toBe(false));
+    expect(Array.from(orgRole.options).map((o) => o.value)).toEqual(["member", "admin"]);
+    expect(orgRole.value).toBe("member");
+    expect(Array.from(teamRole.options).map((o) => o.value)).toContain("owner");
+
+    fireEvent.change(screen.getByPlaceholderText("email@example.com"), {
+      target: { value: "victor@example.org" },
+    });
+    fireEvent.change(teamRole, { target: { value: "member" } });
+    fireEvent.change(orgRole, { target: { value: "admin" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+    await waitFor(() => expect(createOrgInvitation).toHaveBeenCalledTimes(1));
+    expect(createOrgInvitation.mock.calls[0]![1]).toMatchObject({
+      email: "victor@example.org",
+      role: "member",
+      org_role: "admin",
+    });
+  });
+
+  it("shows the org role each pending invitation writes", async () => {
+    identity.orgs = [treeOrg("admin")];
+    listOrgMembers.mockResolvedValue([member("me", "admin")]);
+    listOrgInvitations.mockResolvedValueOnce([
+      { id: "i1", email: "named@example.org", role: "member", org_role: "admin", expires_at: "2026-12-01T00:00:00Z" },
+      { id: "i2", email: "legacy@example.org", role: "admin", expires_at: "2026-12-01T00:00:00Z" },
+      { id: "i3", email: "ce@example.org", role: "config_editor", expires_at: "2026-12-01T00:00:00Z" },
+    ]);
+    mount();
+
+    const row = async (email: string) =>
+      (await screen.findByText(email)).closest("tr") as HTMLTableRowElement;
+    const cells = (tr: HTMLTableRowElement) => Array.from(tr.cells).map((c) => c.textContent);
+    expect(cells(await row("named@example.org")).slice(1, 3)).toEqual(["member", "admin"]);
+    expect(cells(await row("legacy@example.org")).slice(1, 3)).toEqual(["admin", "member"]);
+    expect(cells(await row("ce@example.org")).slice(1, 3)).toEqual(["config_editor", "—"]);
+  });
+
+  it("names no org role for a config editor, who joins no organization", async () => {
+    identity.orgs = [treeOrg("admin")];
+    listOrgMembers.mockResolvedValue([member("me", "admin")]);
+    createOrgInvitation.mockClear();
+    mount();
+
+    await screen.findByRole("button", { name: "Send invite" });
+    const teamRole = screen.getByLabelText("Team role") as HTMLSelectElement;
+    const orgRole = screen.getByLabelText("Org role") as HTMLSelectElement;
+    fireEvent.change(teamRole, { target: { value: "config_editor" } });
+    await waitFor(() => expect(orgRole.disabled).toBe(true));
+    fireEvent.change(screen.getByPlaceholderText("email@example.com"), {
+      target: { value: "ce@example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+    await waitFor(() => expect(createOrgInvitation).toHaveBeenCalledTimes(1));
+    expect(createOrgInvitation.mock.calls[0]![1].org_role).toBeUndefined();
   });
 });
 

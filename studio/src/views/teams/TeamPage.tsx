@@ -457,7 +457,10 @@ function Members({
     setActionErr(null);
     try {
       const r = await createInvitation(teamID, { email: draft.email, role: inviteRole });
-      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
+      if (r.token) {
+        const token = r.token;
+        setIssued((list) => [{ email: draft.email, token }, ...list]);
+      }
       setDraft({ email: "", role: "member" });
       reload();
     } catch (e) {
@@ -657,10 +660,13 @@ function Members({
               {standingBlocked.reason}
             </p>
           )}
-          <p className="text-caption text-fg-subtle">
-            Invitees new to the organization get org membership automatically
-            when they accept.
-          </p>
+          {scope.kind === "team" && scope.hasParentOrg && (
+            <p className="text-caption text-fg-subtle">
+              Accepting makes the invitee a member of the organization, whatever
+              their team role (a config editor joins none): an org admin is
+              invited from the organization's page.
+            </p>
+          )}
           {inviteRolesNote && (
             <p id={inviteRolesNoteID} className="text-caption text-fg-subtle">
               {inviteRolesNote}

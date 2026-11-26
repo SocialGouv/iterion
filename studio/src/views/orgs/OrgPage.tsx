@@ -20,12 +20,13 @@ import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 import { AddExistingMemberPanel } from "@/components/shared/AddExistingMemberPanel";
 import PanelLoading from "@/components/shared/PanelLoading";
 import { RoleSelect } from "@/components/shared/RoleSelect";
-import { ORG_ROLES, confirmOwnerGrant } from "@/lib/roles";
+import { TEAM_ROLES, confirmOwnerGrant } from "@/lib/roles";
 import {
   assignableRoles,
   assignableRolesNote,
   canManageFromRoster,
   canWriteMember,
+  invitableOrgRoles,
   invitableRoles,
   reconcileRole,
   roleOptions,
@@ -61,6 +62,16 @@ import AuditTab from "@/views/teams/tabs/AuditTab";
 // its writes — and a refusal may name the member holding the rank it refused,
 // whom canManageOrg admits.
 const ORG_SCOPE: WriteScope = { kind: "org" };
+
+/**
+ * The org role a pending invitation writes when accepted, as the server reads
+ * it (identity.Invitation.OrgRoleOnAccept): none for a config editor, the
+ * named role, or member for a row that names none.
+ */
+function invitationOrgRoleLabel(role: string, orgRole: string | undefined): string {
+  if (role === "config_editor") return "—";
+  return orgRole || "member";
+}
 
 type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing" | "governance" | "pool";
 
@@ -271,15 +282,16 @@ function OrgMembers({
   const invs = invitationsQuery.data ?? [];
   const offeredRoles = assignableRoles(viewer, ORG_SCOPE);
   const rolesNote = assignableRolesNote(viewer, ORG_SCOPE);
-  // The roles an invitation minted here may carry, which are capped by a
-  // DIFFERENT rule from a roster write's: an accepted invitation is mirrored
-  // up to OrgRoleForTeamRole of its role, and that mirror must not be above
-  // the minter's own standing (K.1). The cap takes nothing from the ladder of
-  // a viewer this page's gate admits — it reads the same row canManageOrg
-  // reads, so that standing is admin or owner, and the mirror tops out at
-  // admin — and it is applied all the same: the picker then agrees with the
-  // server from the standing itself, not from an argument about the gate.
-  const inviteRoles = invitableRoles(viewer, ORG_SCOPE, ORG_ROLES);
+  // An invitation minted here names two roles: the TEAM role it grants in
+  // the team it joins, and the ORG role it writes — decided apart, so a team
+  // admin is not an org admin unless this form says so. Each picker is capped
+  // by the server's own rule (requireRankToInvite): the team role by the
+  // grant cap, which an org standing of admin — what this page's gate admits
+  // — exempts; the org role by the minter's own org standing. Both are
+  // applied all the same: the pickers then agree with the server from the
+  // standing itself, not from an argument about the gate.
+  const inviteRoles = invitableRoles(viewer, ORG_SCOPE, TEAM_ROLES);
+  const inviteOrgRoles = invitableOrgRoles(viewer, ORG_SCOPE);
   // Mutation failures share the banner with either fetch error (mutation
   // wins, like the old single slot). They're tagged with their scope so a
   // stale one never outlives an org switch — the manual reload cleared it
@@ -297,12 +309,16 @@ function OrgMembers({
         ? errorMessage(invitationsQuery.error)
         : null);
   const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState({ email: "", role: "member", team_id: "" });
+  const [draft, setDraft] = useState({ email: "", role: "member", org_role: "member", team_id: "" });
   // What the form will actually send, which is what the select must show.
   // `null` is a list with nothing in it: unreachable here, since the standing
   // the gate admits carries the whole ladder — kept because the list is data
   // and the alternative is an assertion on the value the form submits.
   const inviteRole = reconcileRole(inviteRoles, draft.role);
+  // config_editor is off the ladder and writes no org membership (ADR-078):
+  // the org-role picker has nothing to name then, and the form sends none.
+  const inviteOrgRole =
+    inviteRole === "config_editor" ? null : reconcileRole(inviteOrgRoles, draft.org_role);
   // The ids of this section's controls and of the texts they name — the
   // invitation form's three, and one per roster row below. All unique to this
   // instance: a module constant collides the day a second Members section
@@ -313,6 +329,7 @@ function OrgMembers({
   const inviteEmailID = `${sectionID}-org-invite-email`;
   const inviteRoleID = `${sectionID}-org-invite-role`;
   const inviteTeamID = `${sectionID}-org-invite-team`;
+  const inviteOrgRoleID = `${sectionID}-org-invite-org-role`;
   // Every invite issued in this session, newest first — tokens appear
   // once server-side, so a second invite must not clobber the first's
   // still-uncopied link.
@@ -353,16 +370,21 @@ function OrgMembers({
     if (inviteRole == null) return;
     // Same ladder, same handover, slower door — see TeamPage.invite.
     if (!(await confirmOwnerGrant(confirm, inviteRole))) return;
+    if (inviteOrgRole != null && !(await confirmOwnerGrant(confirm, inviteOrgRole))) return;
     setBusy(true);
     setMutErr(null);
     try {
       const r = await createOrgInvitation(orgID, {
         email: draft.email,
         role: inviteRole,
+        org_role: inviteOrgRole ?? undefined,
         team_id: draft.team_id || undefined,
       });
-      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
-      setDraft({ email: "", role: "member", team_id: draft.team_id });
+      if (r.token) {
+        const token = r.token;
+        setIssued((list) => [{ email: draft.email, token }, ...list]);
+      }
+      setDraft({ email: "", role: "member", org_role: "member", team_id: draft.team_id });
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -488,7 +510,7 @@ function OrgMembers({
             </div>
             <div>
               <label htmlFor={inviteRoleID} className="sr-only">
-                Role
+                Team role
               </label>
               <Select
                 size="md"
@@ -496,12 +518,40 @@ function OrgMembers({
                 value={inviteRole ?? ""}
                 disabled={inviteRole == null}
                 onChange={(e) => setDraft({ ...draft, role: e.target.value })}
+                title="The role the invitation grants in the team it joins"
               >
                 {inviteRoles.map((r) => (
                   <option key={r} value={r}>
-                    {r}
+                    team {r}
                   </option>
                 ))}
+              </Select>
+            </div>
+            <div>
+              <label htmlFor={inviteOrgRoleID} className="sr-only">
+                Org role
+              </label>
+              <Select
+                size="md"
+                id={inviteOrgRoleID}
+                value={inviteOrgRole ?? ""}
+                disabled={inviteOrgRole == null}
+                onChange={(e) => setDraft({ ...draft, org_role: e.target.value })}
+                title={
+                  inviteOrgRole == null
+                    ? "A config editor joins no organization: there is no org role to name"
+                    : "The role the invitation gives in this organization. An org admin manages every team in it, its members and its sign-in"
+                }
+              >
+                {inviteOrgRole == null ? (
+                  <option value="">no org role</option>
+                ) : (
+                  inviteOrgRoles.map((r) => (
+                    <option key={r} value={r}>
+                      org {r}
+                    </option>
+                  ))
+                )}
               </Select>
             </div>
             {orgTeams.length > 0 && (
@@ -630,7 +680,8 @@ function OrgMembers({
             <Table caption="Pending organization invitations">
               <THead>
                 <Th>Email</Th>
-                <Th>Role</Th>
+                <Th>Team role</Th>
+                <Th>Org role</Th>
                 <Th>Expires</Th>
                 <Th align="right" srLabel="Actions" />
               </THead>
@@ -639,6 +690,7 @@ function OrgMembers({
                   <Tr key={i.id}>
                     <Td>{i.email}</Td>
                     <Td>{i.role}</Td>
+                    <Td>{invitationOrgRoleLabel(i.role, i.org_role)}</Td>
                     <Td className="text-fg-muted">
                       {formatDateTime(i.expires_at)}
                     </Td>

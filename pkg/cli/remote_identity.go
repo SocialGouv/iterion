@@ -94,20 +94,24 @@ func (c *RemoteClient) withMintAdvice(err error) error {
 func teamTokenMintServerAdvice(base string) string {
 	return "Do it in the studio: " + strings.TrimRight(base, "/") + ", or from a CLI holding a session credential.\n" +
 		"The CLI stores a personal access token, which is pinned to its team and its own expiry;\n" +
-		"a token that would outlive it — a webhook, share-link or invitation token, or the hook\n" +
+		"a token that would outlive it — a webhook or share-link token, or the hook\n" +
 		"token a repo's FIRST provisioning mints — is minted by a live session only."
 }
 
 // RefuseTeamTokenMintFromPAT is the pre-flight refusal of a command whose
 // route ALWAYS mints a team token (auth.MintTeamToken — the webhook mints,
-// the share-link mints, the team and org invitations). The instance refuses
-// those to a personal access token (403, #1668), and a personal access
-// token is the only thing the CLI ever stores — every `remote login` branch
-// saves an `iap_…` — so the refusal is stated here, before anything is sent,
-// with the one place the deed can be done.
+// the share-link mints). The instance refuses those to a personal access
+// token (403, #1668), and a personal access token is the only thing the CLI
+// ever stores — every `remote login` branch saves an `iap_…` — so the
+// refusal is stated here, before anything is sent, with the one place the
+// deed can be done.
 //
-// Its CLI callers are `webhooks create`, `webhooks rotate` and `teams|orgs
-// invitations create`; the share-link mints have no first-hand command.
+// Its CLI callers are `webhooks create` and `webhooks rotate`; the
+// share-link mints have no first-hand command. The team and org invitations
+// are NOT here: from a personal access token the instance mints them for
+// delivery by email only (auth.MintEmailedInvitation, ADR-174), so those
+// commands send, and an instance with no mailer — or one older than that
+// mint — answers its own refusal.
 //
 // The repo-bot provisioning is NOT here, and must not be: whether it mints
 // depends on state only the instance holds — a repo's first enable reserves
@@ -131,7 +135,7 @@ func (c *RemoteClient) RefuseTeamTokenMintFromPAT(where string) error {
 func teamTokenMintAdvice(base, where string) string {
 	return "Do it in the studio: " + strings.TrimRight(base, "/") + " → " + where + ".\n" +
 		"The CLI stores a personal access token, which is pinned to its team and its own expiry;\n" +
-		"a token that would outlive it — a webhook, share-link or invitation token — is minted by a live session only."
+		"a token that would outlive it — a webhook or share-link token — is minted by a live session only."
 }
 
 // teamSwitchAdvice names the two ways to put the CLI on another team, given
@@ -516,10 +520,12 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	}
 	for _, t := range toks.Tokens {
 		if t.Fingerprint != "" && t.Fingerprint == oldFingerprint && t.RevokedAt == nil {
-			if _, err := newClient.Call(ctx, "DELETE", "/api/me/tokens/"+t.ID, nil, nil); err != nil {
+			var revoked patRevocation
+			if _, err := newClient.Call(ctx, "DELETE", "/api/me/tokens/"+t.ID, nil, &revoked); err != nil {
 				return fmt.Errorf("switched, but revoking the previous CLI token %s failed: %w", t.ID, err)
 			}
 			p.Line("Previous CLI token %s revoked", t.ID)
+			printEndedInvitations(p, revoked)
 			return nil
 		}
 	}
@@ -668,4 +674,30 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 	}
 	p.Table([]string{"", "ORG ID", "NAME", "ROLE"}, rows)
 	return nil
+}
+
+// patRevocation is what revoking a personal access token answers when it
+// ended invitations: the pending ones that token emailed (ADR-174), which
+// live no longer than it.
+type patRevocation struct {
+	InvitationsRevoked []struct {
+		Email  string `json:"email"`
+		TeamID string `json:"team_id"`
+		Role   string `json:"role"`
+	} `json:"invitations_revoked"`
+	InvitationsError string `json:"invitations_error"`
+}
+
+// printEndedInvitations tells the operator which invitations a revoked token
+// took with it, so a rotation is never a silent end of them.
+func printEndedInvitations(p *Printer, r patRevocation) {
+	if n := len(r.InvitationsRevoked); n > 0 {
+		p.Line("%d pending invitation(s) sent with that token ended with it — invite them again:", n)
+		for _, inv := range r.InvitationsRevoked {
+			p.Line("  %s (team %s, role %s)", inv.Email, inv.TeamID, inv.Role)
+		}
+	}
+	if r.InvitationsError != "" {
+		p.Line("Warning: %s", r.InvitationsError)
+	}
 }

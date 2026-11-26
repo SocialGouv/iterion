@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
-	"github.com/SocialGouv/iterion/pkg/mail"
 )
 
 // registerOrgRoutes wires the org self-service surface: the org roster
@@ -25,7 +23,7 @@ func (s *Server) registerOrgRoutes() {
 	s.mux.Handle("GET /api/orgs/{id}/invitations", s.requireAuth(http.HandlerFunc(s.handleListOrgInvitations)))
 	// The mint is gated exactly like the team-scoped twin
 	// (auth.MintTeamToken — see auth_routes.go).
-	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(s.gateDerivation(auth.MintTeamToken, http.HandlerFunc(s.handleCreateOrgInvitation))))
+	s.mux.Handle("POST /api/orgs/{id}/invitations", s.requireAuth(s.gateInvitationMint(http.HandlerFunc(s.handleCreateOrgInvitation))))
 	s.mux.Handle("DELETE /api/orgs/{id}/invitations/{invite_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteOrgInvitation)))
 	s.mux.Handle("GET /api/orgs/{id}/usage", s.requireAuth(http.HandlerFunc(s.handleOrgUsage)))
 	s.mux.Handle("GET /api/orgs/{id}/teams", s.requireAuth(http.HandlerFunc(s.handleListOrgTeams)))
@@ -810,7 +808,7 @@ const orgStandingAfterRemoval identity.OrgRole = ""
 // mint keeps it, by design and with no race
 // (standingAfterMintTakesInvitation).
 func standingTakesInvitation(ownID string, standing identity.OrgRole, addr string, addrKnown bool, inv identity.Invitation) bool {
-	return (inv.InvitedBy == ownID && orgMirrorAbove(standing, inv.Role)) ||
+	return (inv.InvitedBy == ownID && orgMirrorAbove(standing, inv)) ||
 		standingGoneTakesAddressedTo(standing, addr, addrKnown, inv)
 }
 
@@ -858,7 +856,7 @@ func teamRankTakesInvitation(ownID string, hasOrg bool, standing identity.OrgRol
 	if inv.InvitedBy != ownID {
 		return false
 	}
-	want := identity.OrgRoleForTeamRole(inv.Role)
+	want := inv.OrgRoleOnAccept()
 	if want == "" {
 		return false
 	}
@@ -1124,15 +1122,15 @@ func (s *Server) sweepInvitationsKeptOnTeamGrant(w http.ResponseWriter, r *http.
 	return false
 }
 
-// orgMirrorAbove reports whether a team role's org mirror
-// (identity.OrgRoleForTeamRole) is above standing — the question an
-// invitation's role is measured by once its creator's standing moves. A role
-// mirrored up to NOTHING (config_editor, rank 0 — ADR-078 decision 4) is
-// above no standing and is excluded explicitly: AtLeast answers false for an
-// empty want by construction, which would read as "above" and revoke the one
+// orgMirrorAbove reports whether the org membership an invitation writes
+// (identity.Invitation.OrgRoleOnAccept) is above standing — the question an
+// invitation is measured by once its creator's standing moves. An invitation
+// that writes NONE (config_editor, rank 0 — ADR-078 decision 4) is above no
+// standing and is excluded explicitly: AtLeast answers false for an empty
+// want by construction, which would read as "above" and revoke the one
 // invitation no standing can outrank.
-func orgMirrorAbove(standing identity.OrgRole, role identity.Role) bool {
-	want := identity.OrgRoleForTeamRole(role)
+func orgMirrorAbove(standing identity.OrgRole, inv identity.Invitation) bool {
+	want := inv.OrgRoleOnAccept()
 	return want != "" && !standing.AtLeast(want)
 }
 
@@ -1193,10 +1191,18 @@ func (s *Server) handleListOrgInvitations(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]identity.Invitation, 0)
 	for _, t := range teams {
+		// A credential pinned to one team reads that team's invitations
+		// only, as the team route answers it.
+		if id.PinRefusesTeam(t.ID) {
+			continue
+		}
 		invs, err := s.authStore().ListInvitationsByTeam(r.Context(), t.ID)
 		if err != nil {
 			httpError(w, http.StatusInternalServerError, "list the invitations of team %s: %v", t.ID, err)
 			return
+		}
+		for i := range invs {
+			invs[i].OrgRole = invitationOrgRoleIn(invs[i], orgID)
 		}
 		out = append(out, invs...)
 	}
@@ -1216,6 +1222,9 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 		Email  string `json:"email"`
 		Role   string `json:"role"`
 		TeamID string `json:"team_id,omitempty"`
+		// OrgRole is the org membership accepting writes, decided apart
+		// from the team role: member when absent.
+		OrgRole string `json:"org_role,omitempty"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -1223,6 +1232,16 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 	role := identity.Role(req.Role)
 	if !role.Valid() {
 		httpError(w, http.StatusBadRequest, "invalid role")
+		return
+	}
+	named := identity.OrgRole(req.OrgRole)
+	if named != "" && !named.Valid() {
+		httpError(w, http.StatusBadRequest, "invalid org_role %q: one of member, admin, owner", req.OrgRole)
+		return
+	}
+	orgRole := identity.InvitationOrgRole(role, named)
+	if named != "" && orgRole == "" {
+		httpError(w, http.StatusBadRequest, "a %s invitation carries no org membership (ADR-078), so it cannot name org_role %s", role, named)
 		return
 	}
 	// Invitations join a team (which grants org membership on accept).
@@ -1257,54 +1276,31 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusNotFound, "team not in org")
 		return
 	}
-	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role)
+	// A credential pinned to one team (a personal access token) reaches that
+	// team's org through canManageOrg, and the team the invitation joins is
+	// the one it may NOT reach unless it is the pinned one: an invitation
+	// into a sibling team would hand out a grant where the token itself
+	// reads nothing — the same refusal canManageTeam answers on the team
+	// route.
+	if id.PinRefusesTeam(teamID) {
+		httpError(w, http.StatusForbidden,
+			"this credential is pinned to team %s, so it invites into that team only: name it as team_id, or invite from a session", id.TeamPin)
+		return
+	}
+	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role, orgRole)
 	if !ok {
 		return
 	}
-	tok, inv, err := s.authSvc.CreateInvitation(r.Context(), teamID, req.Email, role, id.UserID)
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
-		return
-	}
-	s.auditOrg(r, orgID, "org_invitation.created", "invitation", inv.ID, map[string]any{"email": inv.Email, "role": string(inv.Role)})
-	// Each cap read before the row landed, confirmed once it has: the same
-	// pairs the team route owes (confirmOrgStandingAfterMint,
-	// confirmTeamGrantAfterMint), before the token leaves by email or in the
-	// response.
-	if !s.confirmOrgStandingAfterMint(w, r, id, t.OrgID, inv) {
-		return
-	}
-	if !s.confirmTeamGrantAfterMint(w, r, id, grantCapped, inv) {
-		return
-	}
-	if s.authSvc.EmailEnabled() {
-		org, oerr := s.authStore().GetOrg(r.Context(), orgID)
-		orgName := orgID
-		if oerr == nil {
-			orgName = org.Name
-		}
-		msg := mail.RenderInvitation(inv.Email, mail.InviteData{
-			TeamName:  orgName,
-			Role:      string(inv.Role),
-			AcceptURL: s.authSvc.PublicURL() + "/invitations/accept?token=" + tok,
-			InvitedBy: id.Email,
-		})
-		s.goSafe("org-invitation-email", func() {
-			bg, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := s.authSvc.Mailer().Send(bg, msg); err != nil && s.logger != nil {
-				s.logger.Warn("auth: org invitation email to %s: %v", msg.To, err)
-			}
-		})
-	}
-	writeJSON(w, struct {
-		ID        string    `json:"id"`
-		Token     string    `json:"token"`
-		Email     string    `json:"email"`
-		Role      string    `json:"role"`
-		TeamID    string    `json:"team_id"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}{ID: inv.ID, Token: tok, Email: inv.Email, Role: string(inv.Role), TeamID: teamID, ExpiresAt: inv.ExpiresAt})
+	s.mintInvitation(w, r, id, invitationMintCall{
+		req:         auth.InvitationRequest{TeamID: teamID, Email: req.Email, Role: role, OrgRole: named, InvitedBy: id.UserID},
+		orgID:       t.OrgID,
+		grantCapped: grantCapped,
+		mail:        s.inviteMailNames(r.Context(), t, id.Email),
+		audit: func(inv identity.Invitation) {
+			s.auditOrg(r, orgID, "org_invitation.created", "invitation", inv.ID, invitationAuditMeta(inv, orgID))
+		},
+		emailTask: "org-invitation-email",
+	})
 }
 
 func (s *Server) handleDeleteOrgInvitation(w http.ResponseWriter, r *http.Request) {
@@ -1322,6 +1318,12 @@ func (s *Server) handleDeleteOrgInvitation(w http.ResponseWriter, r *http.Reques
 	}
 	// Confirm the invitation's team belongs to this org.
 	if t, terr := s.authStore().GetTeam(r.Context(), inv.TeamID); terr != nil || t.OrgID != orgID {
+		httpError(w, http.StatusNotFound, "invitation not in org")
+		return
+	}
+	// A credential pinned to one team revokes that team's invitations only:
+	// a sibling team's is one it cannot even read.
+	if id.PinRefusesTeam(inv.TeamID) {
 		httpError(w, http.StatusNotFound, "invitation not in org")
 		return
 	}

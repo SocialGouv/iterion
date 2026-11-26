@@ -15,6 +15,8 @@ export interface OrgInvitationView {
   id: string;
   email: string;
   role: Role;
+  /** The org membership accepting writes; absent on rows minted before it existed (member). */
+  org_role?: OrgRole;
   team_id?: string;
   expires_at: string;
 }
@@ -71,8 +73,8 @@ export async function listOrgInvitations(orgID: string): Promise<OrgInvitationVi
 
 export async function createOrgInvitation(
   orgID: string,
-  input: { email: string; role: string; team_id?: string },
-): Promise<{ id: string; token: string; email: string; role: string }> {
+  input: { email: string; role: string; org_role?: string; team_id?: string },
+): Promise<InvitationMinted> {
   return request(`/orgs/${encodeURIComponent(orgID)}/invitations`, {
     method: "POST",
     body: JSON.stringify(input),
@@ -84,4 +86,21 @@ export async function deleteOrgInvitation(orgID: string, inviteID: string): Prom
     `/orgs/${encodeURIComponent(orgID)}/invitations/${encodeURIComponent(inviteID)}`,
     { method: "DELETE" },
   );
+}
+
+/**
+ * What both invitation routes answer. `token` is there when `delivery` is
+ * "link" (a studio session: hand the link over; it is emailed too when the
+ * instance has a mailer), and absent when it is "email" (a personal access
+ * token: the address alone received it).
+ */
+export interface InvitationMinted {
+  id: string;
+  token?: string;
+  delivery: "link" | "email";
+  email: string;
+  role: string;
+  org_role?: string;
+  team_id: string;
+  expires_at: string;
 }

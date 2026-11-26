@@ -14,111 +14,174 @@ import (
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
 
-// Minting a team invitation grants ORG standing, not only team access:
-// accepting one writes the team grant AND, for a role on the org ladder, an
-// org membership at identity.OrgRoleForTeamRole (pkg/auth
-// grantOrgMembershipForTeam). Gated by the team-management check alone, that
-// is a way up — a team admin who is a plain org member mints an admin/owner
-// invitation for their own address and comes back an org ADMIN, with
-// canManageOrg over the org's own admins; the off-boarded holder of an orphan
-// admin grant passes the same check on that grant alone and re-enters the org
-// the removal took them out of.
+// Minting an invitation grants ORG standing, not only team access: accepting
+// one writes the team grant AND, for a role on the org ladder, the org
+// membership it names (identity.Invitation.OrgRoleOnAccept, pkg/auth
+// grantOrgMembershipForTeam). Gated by the management check alone, that is a
+// way up — an org admin names org owner on an invitation to their own address
+// and comes back an org OWNER, the rank above the one the roster gave them;
+// the off-boarded holder of an orphan admin grant passes the team-management
+// check on that grant alone and re-enters the org the removal took them out
+// of.
 //
-// So the cap is the minter's own standing, and the refusal is measured on
-// what it denies: no invitation row, no org membership, and the org's own
-// admin still an org admin.
+// So the cap is the minter's own standing, measured against the org role the
+// invitation writes, and the refusal is measured on what it denies: no
+// invitation row, and the minter's org standing where it was.
 func TestTeamInvitations_aMintCannotCarryAnOrgRoleAboveItsCreators(t *testing.T) {
-	for _, seed := range []struct {
-		name string
-		seed func(*testing.T, *Server)
-		have string
+	for _, c := range []struct {
+		name   string
+		seed   func(*testing.T, *Server)
+		minter string
+		mint   func(*Server, context.Context) *errorRecorder
+		writes identity.OrgRole
+		have   string
 	}{
-		{"an ordinary team admin who is a plain org member", func(t *testing.T, s *Server) {
-			t.Helper()
-			seedRacer(t, s)
-			if err := s.authStore().UpsertMembership(context.Background(), identity.Membership{
-				UserID: racerID, TeamID: "t1", Role: identity.RoleAdmin, JoinedAt: time.Now(),
-			}); err != nil {
+		{"an org admin names org owner on the org route", func(*testing.T, *Server) {}, "orgadmin",
+			func(s *Server, ctx context.Context) *errorRecorder {
+				w := newErrorRecorder()
+				s.handleCreateOrgInvitation(w, orgReq(ctx, "POST", "/api/orgs/o1/invitations",
+					`{"email":"orgadmin@example.com","role":"member","team_id":"t1","org_role":"owner"}`, "o1"))
+				return w
+			}, identity.OrgRoleOwner, "admin"},
+		{"the off-boarded holder of an orphan admin grant mints owner on the team route", seedOrphanAdminGrant, racerID,
+			func(s *Server, ctx context.Context) *errorRecorder {
+				w := newErrorRecorder()
+				s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
+					`{"email":"racer@example.com","role":"owner"}`, "t1", ""))
+				return w
+			}, identity.OrgRoleMember, "none"},
+		{"the off-boarded holder of an orphan admin grant mints admin on the team route", seedOrphanAdminGrant, racerID,
+			func(s *Server, ctx context.Context) *errorRecorder {
+				w := newErrorRecorder()
+				s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
+					`{"email":"racer@example.com","role":"admin"}`, "t1", ""))
+				return w
+			}, identity.OrgRoleMember, "none"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newOrgCredsTestServer(t)
+			c.seed(t, s)
+			ctx := context.Background()
+			real := s.authStore()
+			minter := auth.Identity{UserID: c.minter}
+			if !s.canManageTeam(ctx, minter, "t1") {
+				t.Fatal("the minter does not manage the team — then this is not the mint the test measures")
+			}
+
+			stood, stoodErr := real.GetOrgMembership(ctx, c.minter, "o1")
+
+			selfCtx := auth.WithIdentity(ctx, minter)
+			mint := c.mint(s, selfCtx)
+			if mint.Code != http.StatusForbidden {
+				t.Fatalf("minting an invitation that writes an org %s membership for one's own address: code=%d body=%s, want 403",
+					c.writes, mint.Code, mint.Body.String())
+			}
+			body := mint.Body.String()
+			for _, want := range []string{
+				"cannot carry an org role above its creator's",
+				"this one writes an org " + string(c.writes) + " membership",
+				"your own org role in this team's organization is " + c.have,
+			} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the refusal does not name %q: %s", want, body)
+				}
+			}
+			// Refused AT the mint, before any row: the confirmation after the
+			// insert refuses in the same words, so a cap that let the mint
+			// through would still answer 403 — naming the row it revoked.
+			if strings.Contains(body, "the invitation this request minted") {
+				t.Errorf("the refusal came after a row was minted, not from the cap at the mint: %s", body)
+			}
+			// The row, not the body: a refusal that answered 403 and
+			// minted anyway leaves an accept away from the rank.
+			invs, err := real.ListInvitationsByTeam(ctx, "t1")
+			if err != nil {
 				t.Fatal(err)
 			}
-		}, "member"},
-		{"the off-boarded holder of an orphan admin grant", seedOrphanAdminGrant, "none"},
-	} {
-		for _, role := range []identity.Role{identity.RoleOwner, identity.RoleAdmin} {
-			t.Run(seed.name+" mints "+string(role), func(t *testing.T) {
-				s := newOrgCredsTestServer(t)
-				seed.seed(t, s)
-				ctx := context.Background()
-				real := s.authStore()
-				if !s.canManageTeam(ctx, auth.Identity{UserID: racerID}, "t1") {
-					t.Fatal("the minter does not manage the team — then this is not the mint the test measures")
-				}
-				if s.canManageOrg(ctx, auth.Identity{UserID: racerID}, "o1") {
-					t.Fatal("the minter already manages the org — then this is not the escalation the test measures")
-				}
+			if len(invs) != 0 {
+				t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
+			}
+			// And the standing it was refused for did not move.
+			now, nowErr := real.GetOrgMembership(ctx, c.minter, "o1")
+			if (stoodErr == nil) != (nowErr == nil) || stood.Role != now.Role {
+				t.Errorf("the refused mint moved the minter's org standing: %+v (%v) -> %+v (%v)",
+					stood, stoodErr, now, nowErr)
+			}
+		})
+	}
+}
 
-				stood, stoodErr := real.GetOrgMembership(ctx, racerID, "o1")
+// The team route cannot hand out an org rank at all: whatever team role it
+// mints, accepting it writes an org MEMBER membership, never more (ADR-048,
+// org role apart from team role). So a team admin who is a plain org member
+// mints an admin invitation for their own address — it carries nothing above
+// their standing — and accepting it leaves them a plain org member, with no
+// hold on the org's own admins. A body naming an org role above member is
+// refused before any row is written: the org route, gated on managing the
+// org, is the one that names one.
+func TestTeamInvitations_aTeamRouteMintWritesAnOrgMemberWhateverItsTeamRole(t *testing.T) {
+	s := newOrgCredsTestServer(t)
+	seedRacerAsTeamAdmin(t, s)
+	ctx := context.Background()
+	real := s.authStore()
+	selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
+	if s.canManageOrg(ctx, auth.Identity{UserID: racerID}, "o1") {
+		t.Fatal("the minter already manages the org — then this is not the escalation the test measures")
+	}
 
-				selfCtx := auth.WithIdentity(ctx, auth.Identity{UserID: racerID})
-				mint := newErrorRecorder()
-				s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
-					`{"email":"racer@example.com","role":"`+string(role)+`"}`, "t1", ""))
-				if mint.Code != http.StatusForbidden {
-					t.Fatalf("minting a %s invitation for one's own address: code=%d body=%s, want 403",
-						role, mint.Code, mint.Body.String())
-				}
-				body := mint.Body.String()
-				for _, want := range []string{
-					"cannot carry an org role above its creator's",
-					"an invitation at role " + string(role),
-					"an org admin membership",
-					"your own org role in this team's organization is " + seed.have,
-				} {
-					if !strings.Contains(body, want) {
-						t.Errorf("the refusal does not name %q: %s", want, body)
-					}
-				}
-				// The row, not the body: a refusal that answered 403 and
-				// minted anyway leaves an accept away from the org.
-				invs, err := real.ListInvitationsByTeam(ctx, "t1")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(invs) != 0 {
-					t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
-				}
-				// And the standing it was refused for did not move: a cap
-				// that minted and let the accept through would raise it to
-				// org admin.
-				now, nowErr := real.GetOrgMembership(ctx, racerID, "o1")
-				if (stoodErr == nil) != (nowErr == nil) || stood.Role != now.Role {
-					t.Errorf("the refused mint moved the minter's org standing: %+v (%v) -> %+v (%v)",
-						stood, stoodErr, now, nowErr)
-				}
-				if s.canManageOrg(ctx, auth.Identity{UserID: racerID}, "o1") {
-					t.Errorf("the refused minter manages the org: %+v", now)
-				}
-				// And the capability the accepted invitation would have
-				// yielded is still out of reach: the org's own admin keeps
-				// their membership.
-				rm := newErrorRecorder()
-				s.handleRemoveOrgMember(rm, teamReq(selfCtx, "DELETE", "/api/orgs/o1/members/orgadmin", "", "o1", "orgadmin"))
-				if rm.Code != http.StatusForbidden {
-					t.Errorf("the refused minter removing the org's own admin: code=%d body=%s, want 403",
-						rm.Code, rm.Body.String())
-				}
-				if _, err := real.GetOrgMembership(ctx, "orgadmin", "o1"); err != nil {
-					t.Errorf("the org admin's own membership is gone: %v", err)
-				}
-			})
-		}
+	named := newErrorRecorder()
+	s.handleCreateInvitation(named, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
+		`{"email":"racer@example.com","role":"admin","org_role":"admin"}`, "t1", ""))
+	if named.Code != http.StatusBadRequest {
+		t.Fatalf("a team invitation naming org admin: code=%d body=%s, want 400", named.Code, named.Body.String())
+	}
+	if invs, err := real.ListInvitationsByTeam(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	} else if len(invs) != 0 {
+		t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
+	}
+
+	mint := newErrorRecorder()
+	s.handleCreateInvitation(mint, teamReq(selfCtx, "POST", "/api/teams/t1/invitations",
+		`{"email":"racer@example.com","role":"admin"}`, "t1", ""))
+	if mint.Code != http.StatusOK {
+		t.Fatalf("a team admin minting an admin invitation for their own address: code=%d body=%s, want 200",
+			mint.Code, mint.Body.String())
+	}
+	var minted struct {
+		Token   string `json:"token"`
+		OrgRole string `json:"org_role"`
+	}
+	if err := json.Unmarshal(mint.Body.Bytes(), &minted); err != nil || minted.Token == "" {
+		t.Fatalf("the mint answered no token: %v %s", err, mint.Body.String())
+	}
+	if minted.OrgRole != string(identity.OrgRoleMember) {
+		t.Errorf("the team invitation answers org_role %q, want member", minted.OrgRole)
+	}
+	if _, err := s.authSvc.AcceptInvitationForExistingUser(ctx, racerID, minted.Token); err != nil {
+		t.Fatalf("accepting it: %v", err)
+	}
+	if om, err := real.GetOrgMembership(ctx, racerID, "o1"); err != nil || om.Role != identity.OrgRoleMember {
+		t.Errorf("accepting a team admin invitation left the org membership %+v (%v), want member", om, err)
+	}
+	if s.canManageOrg(ctx, auth.Identity{UserID: racerID}, "o1") {
+		t.Error("accepting a team admin invitation made its minter an org manager")
+	}
+	rm := newErrorRecorder()
+	s.handleRemoveOrgMember(rm, teamReq(selfCtx, "DELETE", "/api/orgs/o1/members/orgadmin", "", "o1", "orgadmin"))
+	if rm.Code != http.StatusForbidden {
+		t.Errorf("the minter removing the org's own admin: code=%d body=%s, want 403", rm.Code, rm.Body.String())
+	}
+	if _, err := real.GetOrgMembership(ctx, "orgadmin", "o1"); err != nil {
+		t.Errorf("the org admin's own membership is gone: %v", err)
 	}
 }
 
 // The rung that closes an account's way BACK IN: an account with no org
 // membership at all — the off-boarded holder of an orphan admin grant, who
-// passes canManageTeam on that grant alone — reaches no org role, so every
-// role on the ladder is above their standing, `member` and `viewer` included.
+// passes canManageTeam on that grant alone — reaches no org role, so the org
+// member membership every ladder invitation writes is above their standing,
+// `member` and `viewer` included.
 // Minting one to their own address and accepting it is the two-request door
 // that re-admits them to the org the removal took them out of, which is why
 // the exemption list of the cap holds the EMPTY mirror and not the lowest
@@ -158,11 +221,10 @@ func TestTeamInvitations_anOrphanGrantHolderMintsNoWayBackIntoTheOrg(t *testing.
 				t.Fatalf("minting a %s invitation with no org standing at all: code=%d body=%s, want 403",
 					role, mint.Code, mint.Body.String())
 			}
-			// The refusal names what it refused, for a role whose mirror is
-			// the bottom of the ladder as for the top.
+			// The refusal names what it refused: the bottom rung of the org
+			// ladder, which every team invitation writes.
 			for _, want := range []string{
-				"an invitation at role " + string(role),
-				"an org member membership",
+				"this one writes an org member membership",
 				"your own org role in this team's organization is none",
 			} {
 				if body := mint.Body.String(); !strings.Contains(body, want) {
@@ -605,7 +667,8 @@ func TestOrgRoutes_orgTeamsThatCannotBeListedAreNotAnOrgWithoutATeam(t *testing.
 // a choice and the API doc states it: the org's first NON-personal team — the
 // storage tenant of ADR-048, not the personal team a founder's signup made —
 // and, on accept, a team grant AT THE ROLE ASKED FOR there, besides the org
-// membership the ladder mirrors up. There is no org-only invitation.
+// membership at the org role the invitation names. There is no org-only
+// invitation.
 func TestOrgInvitations_theDefaultTeamIsTheOrgsFirstNonPersonalTeam(t *testing.T) {
 	s := newOrgCredsTestServer(t)
 	ctx := context.Background()
@@ -640,16 +703,20 @@ func TestOrgInvitations_theDefaultTeamIsTheOrgsFirstNonPersonalTeam(t *testing.T
 
 	w := newErrorRecorder()
 	s.handleCreateOrgInvitation(w, orgReq(auth.WithIdentity(ctx, auth.Identity{UserID: "o4owner"}),
-		"POST", "/api/orgs/o4/invitations", `{"email":"newcomer@example.com","role":"owner"}`, "o4"))
+		"POST", "/api/orgs/o4/invitations", `{"email":"newcomer@example.com","role":"owner","org_role":"admin"}`, "o4"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("minting with no team_id: code=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 	var minted struct {
-		TeamID string `json:"team_id"`
-		Token  string `json:"token"`
+		TeamID  string `json:"team_id"`
+		Token   string `json:"token"`
+		OrgRole string `json:"org_role"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil {
 		t.Fatal(err)
+	}
+	if minted.OrgRole != string(identity.OrgRoleAdmin) {
+		t.Errorf("the invitation answers org_role %q, want admin — the org role the body named", minted.OrgRole)
 	}
 	if minted.TeamID != "n4" {
 		t.Fatalf("the invitation joins team %q, want n4 — the org's first NON-personal team", minted.TeamID)
@@ -665,7 +732,7 @@ func TestOrgInvitations_theDefaultTeamIsTheOrgsFirstNonPersonalTeam(t *testing.T
 		t.Errorf("the team grant carries role %q, want owner — the role the invitation asked for", m.Role)
 	}
 	if om, err := real.GetOrgMembership(ctx, "newcomer", "o4"); err != nil || om.Role != identity.OrgRoleAdmin {
-		t.Errorf("the org membership the ladder mirrors up is %+v (%v), want admin", om, err)
+		t.Errorf("the org membership the accept wrote is %+v (%v), want admin — the org role the invitation named", om, err)
 	}
 }
 
@@ -893,21 +960,54 @@ func TestOrgInvitations_theDefaultTeamOfAnOrgWhoseTeamsAreAllPersonal(t *testing
 // The standing is the ROW, not the claim: a token carries the org role its
 // session was minted with, which a removal or a demotion since does not
 // rewrite. Reading it here would hand the cap to the holder of a stale
-// claim — the reason SwitchTeam reads the membership too.
+// claim — the reason SwitchTeam reads the membership too. On both routes: an
+// org admin whose claim says owner names org owner, and the off-boarded
+// holder of an orphan grant whose claim still says admin mints a team
+// invitation that writes an org member membership they no longer hold.
 func TestTeamInvitations_aTokenClaimingMoreThanTheRowDoesNotMint(t *testing.T) {
-	s := newOrgCredsTestServer(t)
-	seedRacerAsTeamAdmin(t, s)
-	stale := auth.Identity{UserID: racerID, OrgID: "o1", OrgRole: identity.OrgRoleAdmin}
-
-	mint := newErrorRecorder()
-	s.handleCreateInvitation(mint, teamReq(auth.WithIdentity(context.Background(), stale),
-		"POST", "/api/teams/t1/invitations", `{"email":"racer@example.com","role":"owner"}`, "t1", ""))
-	if mint.Code != http.StatusForbidden {
-		t.Fatalf("minting on a claim the membership row does not back: code=%d body=%s, want 403",
-			mint.Code, mint.Body.String())
-	}
-	if body := mint.Body.String(); !strings.Contains(body, "your own org role in this team's organization is member") {
-		t.Errorf("the refusal does not name the role the ROW carries: %s", body)
+	for _, c := range []struct {
+		name  string
+		seed  func(*testing.T, *Server)
+		stale auth.Identity
+		mint  func(*Server, context.Context) *errorRecorder
+		row   string
+	}{
+		{"an org admin claiming owner names org owner", func(*testing.T, *Server) {},
+			auth.Identity{UserID: "orgadmin", OrgID: "o1", OrgRole: identity.OrgRoleOwner},
+			func(s *Server, ctx context.Context) *errorRecorder {
+				w := newErrorRecorder()
+				s.handleCreateOrgInvitation(w, orgReq(ctx, "POST", "/api/orgs/o1/invitations",
+					`{"email":"orgadmin@example.com","role":"member","team_id":"t1","org_role":"owner"}`, "o1"))
+				return w
+			}, "admin"},
+		{"an orphan grant holder claiming org admin mints a team invitation", seedOrphanAdminGrant,
+			auth.Identity{UserID: racerID, OrgID: "o1", OrgRole: identity.OrgRoleAdmin},
+			func(s *Server, ctx context.Context) *errorRecorder {
+				w := newErrorRecorder()
+				s.handleCreateInvitation(w, teamReq(ctx, "POST", "/api/teams/t1/invitations",
+					`{"email":"racer@example.com","role":"member"}`, "t1", ""))
+				return w
+			}, "none"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newOrgCredsTestServer(t)
+			c.seed(t, s)
+			mint := c.mint(s, auth.WithIdentity(context.Background(), c.stale))
+			if mint.Code != http.StatusForbidden {
+				t.Fatalf("minting on a claim the membership row does not back: code=%d body=%s, want 403",
+					mint.Code, mint.Body.String())
+			}
+			if body := mint.Body.String(); !strings.Contains(body, "your own org role in this team's organization is "+c.row) {
+				t.Errorf("the refusal does not name the role the ROW carries: %s", body)
+			}
+			invs, err := s.authStore().ListInvitationsByTeam(context.Background(), "t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(invs) != 0 {
+				t.Fatalf("the refused mint wrote an invitation anyway: %+v", invs)
+			}
+		})
 	}
 }
 
@@ -977,7 +1077,7 @@ func TestOrgInvitations_aStandingThatVanishesAfterTheGateRefusesTheMint(t *testi
 }
 
 // What the cap does NOT reach, measured rather than claimed: a pending
-// invitation carries the role it was minted with, and the mint is the only
+// invitation carries the roles it was minted with, and the mint is the only
 // place the minter's standing is read — the accept reads nothing about its
 // creator, here a standing taken straight out of the store. Which is why the
 // rank is kept in step at the row instead: the roster's own writes revoke the
@@ -994,10 +1094,10 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 		t.Fatal(err)
 	}
 	mint := newErrorRecorder()
-	s.handleCreateInvitation(mint, teamReq(orgAdminCtx(), "POST", "/api/teams/t1/invitations",
-		`{"email":"successor@example.com","role":"owner"}`, "t1", ""))
+	s.handleCreateOrgInvitation(mint, orgReq(orgAdminCtx(), "POST", "/api/orgs/o1/invitations",
+		`{"email":"successor@example.com","role":"owner","team_id":"t1","org_role":"admin"}`, "o1"))
 	if mint.Code != http.StatusOK {
-		t.Fatalf("an org admin minting an owner invitation: code=%d body=%s", mint.Code, mint.Body.String())
+		t.Fatalf("an org admin minting an owner invitation that names org admin: code=%d body=%s", mint.Code, mint.Body.String())
 	}
 	var minted struct {
 		ID    string `json:"id"`
@@ -1025,7 +1125,7 @@ func TestTeamInvitations_aPendingInvitationOutlivesItsCreatorsStanding(t *testin
 		t.Fatalf("the accept wrote no org membership: %v", err)
 	}
 	if om.Role != identity.OrgRoleAdmin {
-		t.Errorf("the accepted owner invitation mirrored up to %q, want %q", om.Role, identity.OrgRoleAdmin)
+		t.Errorf("the accepted invitation wrote org role %q, want %q — the one it named", om.Role, identity.OrgRoleAdmin)
 	}
 	// The remedy, on the state above: a pending invitation is revoked
 	// before it is accepted, by whoever manages the org now.

@@ -627,11 +627,11 @@ describe("TeamPage · the gate the roster decides", () => {
 // `org_id`, which the non-member path of the subject hook carries.
 describe("TeamPage · what the invitation form announces", () => {
   it("announces why its ladder is short, with ids that belong to the form", async () => {
-    // A team admin who is a plain org member: the picker is narrowed (the org
-    // mirror of admin and owner is org admin, which they do not hold). The
-    // note that says so is the explanation a reader focused on the select
-    // needs, so the select points at it — a <p> nothing references is text
-    // for a mouse.
+    // A team admin who is a plain org member: the picker is narrowed at their
+    // own grant (owner is above it), and admin — which writes only an org
+    // member — stays on offer. The note that says so is the explanation a
+    // reader focused on the select needs, so the select points at it — a <p>
+    // nothing references is text for a mouse.
     identity.orgs = tree("member", "admin");
     listTeamMembers.mockResolvedValue([teamMember("me", "admin")]);
     listOrgMembers.mockResolvedValue([orgMember("me", "member")]);
@@ -644,10 +644,13 @@ describe("TeamPage · what the invitation form announces", () => {
       "config_editor",
       "viewer",
       "member",
+      "admin",
     ]);
     expect(announcedReason(select)).toContain(
       "Roles an invitation of yours cannot carry are not offered",
     );
+    // The team has a parent org: the form says what accepting writes there.
+    expect(screen.getAllByText(/member of the organization/).length).toBeGreaterThan(0);
 
     // A second instance of the same form names its OWN reasons: the ids come
     // from the instance, so two Members sections on one page do not describe
@@ -671,6 +674,13 @@ describe("TeamPage · a team with no parent org", () => {
     // memberships — never carries it: the page resolves it through getTeam.
     identity.orgs = [];
     getTeam.mockResolvedValue({ id: TEAM_ID, name: "PIC", slug: "pic", personal: false });
+  });
+
+  it("says nothing of an org membership the invitation cannot write", async () => {
+    listTeamMembers.mockResolvedValue([teamMember("me", "owner")]);
+    mount();
+    await screen.findByRole("button", { name: "Send invite" });
+    expect(screen.queryByText(/member of the organization/)).toBeNull();
   });
 
   it("decides on the grant alone, and offers no org remedy", async () => {
@@ -792,9 +802,9 @@ describe("TeamPage · the surfaces that place and invite", () => {
   });
 
   it("offers only the roles an invitation of this minter may carry", async () => {
-    // A team admin who is a plain org member: the org MIRROR of admin and
-    // owner is org admin, which they do not hold, so
-    // requireOrgStandingToInvite refuses both.
+    // A team admin who is a plain org member: every team invitation writes
+    // an org member, which they hold, so the grant cap is what bounds them —
+    // they invite a fellow admin, never an owner.
     identity.orgs = tree("member", "admin");
     listTeamMembers.mockResolvedValue([teamMember("me", "admin")]);
     listOrgMembers.mockResolvedValue([orgMember("me", "member")]);
@@ -807,6 +817,7 @@ describe("TeamPage · the surfaces that place and invite", () => {
       "config_editor",
       "viewer",
       "member",
+      "admin",
     ]);
     expect(
       screen.getByText(/Roles an invitation of yours cannot carry are not offered/),

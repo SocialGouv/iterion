@@ -113,7 +113,10 @@ The same rule reaches every command whose route mints a **team token** — a
 token that outlives the credential it is minted from. Three of them mint one
 on every call, so the CLI states the refusal itself, before anything is sent
 — not even the `/api/auth/me` the team and org scope resolution would read:
-`webhooks create`, `webhooks rotate` and `teams|orgs invitations create`.
+`webhooks create` and `webhooks rotate`. `teams|orgs invitations create` send: from
+a personal access token the instance emails the invitation and answers
+`"delivery": "email"` with no token (ADR-174) — an instance with no mailer refuses
+it, and the studio's Invite shows the link to hand over instead.
 The advice names the **studio**, not a login: a login stores another personal
 access token, which mints no more than this one. Reads and the gestures that
 mint nothing stay available — `webhooks list`, the invitation list and
@@ -188,7 +191,7 @@ the staging step alone and prints the upload id.
 | `schedules` | `list · create · update · delete` (team-scoped, cloud recurring bots; `update <id> --data` is the PATCH — a field left out is kept; `key_overrides` pins a BYOK key per provider, see [scheduling.md](scheduling.md#notes--limits)) |
 | `teams` | `list · create · switch · members · invitations · update · status · delete · add-member` |
 | `orgs` | `list · switch · members · invitations · usage · teams · add-member · approvals · credential-audience · oauth · settings` |
-| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email>` (from the studio, or from a CLI holding a session credential: the invitation is a team token, which a stored personal access token does not mint) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
+| `… members` (both) | `members` alone lists; `add <user-id> <role>` places an account that ALREADY exists (idempotent), `set-role` updates an existing membership, `remove` revokes. A team grant needs the user in the team's org first, so the order for someone new is `orgs members add` then `teams members add`. **`orgs members add` is super-admin only** — an org admin adds by `orgs invitations create <email> [--role <team-role>] [--org-role member|admin|owner] [--team <id>]` (emailed from the CLI's stored token; the org role is capped at their own) and keeps `set-role`/`remove`; `teams members add` stays theirs, its candidates being already in the org. |
 | `me` | `password · sessions-revoke-all · sso-links` |
 | `tokens` | `list · create · revoke` |
 | `secrets` / `api-keys` | `list · set/create · rotate/update · delete` (`--scope team\|me`) |

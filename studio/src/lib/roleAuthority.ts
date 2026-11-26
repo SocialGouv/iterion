@@ -543,15 +543,30 @@ export function canDeleteTeam(
 }
 
 /**
- * The org role an accepted invitation at this TEAM role mirrors up to — the
- * studio twin of identity.OrgRoleForTeamRole. Null where there is no mirror:
- * config_editor (rank 0, off the ladder — ADR-078), which is why no invitation
- * cap touches it, and any value this build cannot place, which invitableRoles
- * refuses outright rather than minting uncapped.
+ * The org role an accepted TEAM invitation at this team role writes — the
+ * studio twin of identity.OrgRoleForTeamRole: an org member for every ladder
+ * role, owner included, since a team rank is a rank in that team only (an
+ * org admin is named on purpose, from the org page's own picker —
+ * invitableOrgRoles). Null where there is no membership at all: config_editor
+ * (rank 0, off the ladder — ADR-078), which is why no invitation cap touches
+ * it, and any value this build cannot place, which invitableRoles refuses
+ * outright rather than minting uncapped.
  */
 export function orgMirrorOfTeamRole(role: string): string | null {
   if (unplaceable(role, TEAM_ROLES) || role === "config_editor") return null;
-  return outranksViewer(role, "member", TEAM_ROLES) ? "admin" : "member";
+  return "member";
+}
+
+/**
+ * invitableOrgRoles is the org page's org-role picker: the org roles an
+ * invitation minted from the org route may name, which the server caps at
+ * the minter's own org standing (requireRankToInvite's ORG cap, measuring the
+ * org role the invitation names). A platform admin is exempt.
+ */
+export function invitableOrgRoles(viewer: ViewerStanding, scope: WriteScope): readonly string[] {
+  if (viewer.platformAdmin) return ORG_ROLES;
+  const standing = orgStandingIn(viewer, scope);
+  return ORG_ROLES.filter((role) => covers(standing, role, ORG_ROLES));
 }
 
 /**
@@ -559,18 +574,19 @@ export function orgMirrorOfTeamRole(role: string): string | null {
  * this viewer's invitation may carry — the two caps the minting routes apply
  * (K), which are NOT the cap on a roster write:
  *
- *  1. the ORG cap (requireOrgStandingToInvite): accepting an invitation writes
- *     the team grant AND, for a role on the ladder, an org membership at the
- *     role's org MIRROR — so the mirror must not be above the minter's own org
- *     standing. It applies where the team has a parent org to read it in.
+ *  1. the ORG cap (requireRankToInvite): accepting an invitation writes the
+ *     team grant AND, for a role on the ladder, an org membership — a member
+ *     for this picker's team role (orgMirrorOfTeamRole); the org page names
+ *     its org role in a picker of its own (invitableOrgRoles) — which must not
+ *     be above the minter's own org standing. It applies where the team has a
+ *     parent org to read it in.
  *  2. the TEAM cap: where the minter's authority over the team is their own
  *     grant — no parent org, or an org standing below admin — the minted team
  *     role must not be above their own, the same bound as the roster write.
  *
- * `offered` is the picker's own ladder: the team pickers offer TEAM_ROLES, the
- * org page's offers the three org-ladder names, which are team roles too (an
- * org invitation joins a team in the org). A platform admin is exempt, and
- * config_editor — no org mirror, off the team ladder — is capped by neither.
+ * `offered` is the picker's own ladder of TEAM roles: an org invitation joins
+ * a team in the org too. A platform admin is exempt, and config_editor — no
+ * org membership, off the team ladder — is capped by neither.
  */
 export function invitableRoles(
   viewer: ViewerStanding,
@@ -616,5 +632,5 @@ export function invitableRolesNote(
   const missing = offered.filter((r) => !allowed.includes(r));
   if (missing.length === 0) return null;
   const list = missing.map(roleLabel).join(", ");
-  return `Roles an invitation of yours cannot carry are not offered (${list}): accepting one grants that role on the team and mirrors it up to an org membership, and neither may be above your own standing.`;
+  return `Roles an invitation of yours cannot carry are not offered (${list}): accepting one grants that role on the team, and it may not be above your own.`;
 }
