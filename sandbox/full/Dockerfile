@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.29@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 #
 # iterion-sandbox-full — opt-in richer variant of iterion-sandbox-slim
 # with common language toolchains AND operator/ops tooling pre-installed
@@ -22,7 +22,7 @@
 # users who need them should publish their own image, or declare the
 # extras in a workspace-local devbox.json.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge@sha256:9bda52529cb5dec74d4fb3c26da02dafe088628632b32e954fa3e6ee5570a6dc
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-slim-base:edge@sha256:dfe8332e3626b4f3602b1cf7818400a6878320aaa47d331c5d06e0bc7d56f9ea
 FROM ${BASE}
 
 USER root

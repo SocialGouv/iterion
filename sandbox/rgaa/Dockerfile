@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.29@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 #
 # iterion-sandbox-rgaa — the rgaa capability class (#2632, decision (a)):
 # everything iterion-sandbox-browser carries (Chromium + Playwright MCP,
@@ -22,7 +22,7 @@
 # sandbox-images.yml) with the freshly-built browser-base; the default is
 # the published one for local rebuilds.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-browser-base:edge
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-browser-base:edge@sha256:cf973bac88d428979856a801e18137a3d298a9646ea84bcf9686b080fa9742e0
 FROM ${BASE}
 
 USER root
