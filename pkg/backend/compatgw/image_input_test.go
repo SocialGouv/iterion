@@ -2,6 +2,7 @@ package compatgw
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,23 +77,25 @@ func TestResolveCatalog_APlantedRecordStatesNoImageInput(t *testing.T) {
 	}
 }
 
-// The operator table declares image_input for a gateway that publishes
-// nothing.
-func TestOperatorModels_DeclaresImageInput(t *testing.T) {
+// The operator table refuses image_input as it refuses reasoning_efforts: the
+// launch seam names the field, and the table answers nothing.
+func TestOperatorModels_RefusesImageInput(t *testing.T) {
 	ResetCatalogCaches()
-	get := mapGet(map[string]string{CatalogModelsEnv: `{"gw/text":{"image_input":false},"gw/any":{}}`})
-	if got := imageWord(ResolveCatalog("gw/text", nil, get).Spec.ImageInput); got != "false" {
-		t.Errorf("gw/text: image_input %s, want false", got)
+	t.Cleanup(ResetCatalogCaches)
+	get := mapGet(map[string]string{CatalogModelsEnv: `{"gw/text":{"image_input":false}}`})
+	if err := CheckOperatorTable(get); err == nil || !strings.Contains(err.Error(), `unknown field "image_input"`) {
+		t.Fatalf("the operator table accepted image_input: err = %v", err)
 	}
-	if got := imageWord(ResolveCatalog("gw/any", nil, get).Spec.ImageInput); got != "unstated" {
-		t.Errorf("gw/any: image_input %s, want unstated", got)
+	if res := ResolveCatalogQuiet("gw/text", nil, get); res.Known() {
+		t.Fatalf("a refused table answered: %+v", res)
 	}
 }
 
 // The rung that answers an id answers its image flag too, whole: an operator
-// row for scaleway/glm-5.3 that states no image_input hides the models.dev
-// row's false (images are sent), and stating image_input on that row is how
-// the operator refuses them (the documented remedy in image-acceptance.md).
+// row for scaleway/glm-5.3 answers and its image flag is unknown — the
+// models.dev row's false is hidden, images are sent — and a priced feed entry
+// does the same unless it states image_input, which is how such an id is
+// made to refuse images (the documented remedy in image-acceptance.md).
 func TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag(t *testing.T) {
 	ResetCatalogCaches()
 	silent := mapGet(map[string]string{
@@ -100,28 +103,28 @@ func TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag(t *testing.T) {
 		CatalogModelsEnv:   `{"scaleway/glm-5.3":{"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`,
 	})
 	if res := ResolveCatalogQuiet("scaleway/glm-5.3", nil, silent); res.Source != SourceOperator || res.Spec.ImageInput != nil {
-		t.Fatalf("an operator row without image_input resolved source %s image_input %s, want operator and unstated", res.Source, imageWord(res.Spec.ImageInput))
-	}
-	ResetCatalogCaches()
-	stated := mapGet(map[string]string{
-		CatalogProviderEnv: "scaleway",
-		CatalogModelsEnv:   `{"scaleway/glm-5.3":{"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15,"image_input":false}}`,
-	})
-	if got := imageWord(ResolveCatalogQuiet("scaleway/glm-5.3", nil, stated).Spec.ImageInput); got != "false" {
-		t.Fatalf("an operator row stating image_input false resolved %s", got)
+		t.Fatalf("an operator row resolved source %s image_input %s, want operator and unstated", res.Source, imageWord(res.Spec.ImageInput))
 	}
 	// The run's feed answers before both, whole: a priced feed entry that
-	// states no image_input hides the scaleway row too; stating it refuses.
-	for _, tc := range []struct{ spec, want string }{
-		{`{"input_cost_per_m":2.01,"output_cost_per_m":6.15}`, "unstated"},
-		{`{"input_cost_per_m":2.01,"output_cost_per_m":6.15,"image_input":false}`, "false"},
+	// states no image_input hides the scaleway row too; stating it refuses,
+	// over an operator row for the same id as well.
+	for _, tc := range []struct {
+		spec, want string
+		operator   bool
+	}{
+		{`{"input_cost_per_m":2.01,"output_cost_per_m":6.15}`, "unstated", false},
+		{`{"input_cost_per_m":2.01,"output_cost_per_m":6.15,"image_input":false}`, "false", false},
+		{`{"input_cost_per_m":2.01,"output_cost_per_m":6.15,"image_input":false}`, "false", true},
 	} {
 		ResetCatalogCaches()
 		table := `{"entries":{"scaleway/glm-5.3":{"feed":"pliage","refreshed_at":"` + time.Now().UTC().Format(time.RFC3339) + `","fresh_for":7200,"spec":` + tc.spec + `}}}`
-		get := mapGet(map[string]string{CatalogProviderEnv: "scaleway", FeedTableEnv: table})
-		res := ResolveCatalogQuiet("scaleway/glm-5.3", nil, get)
+		env := map[string]string{CatalogProviderEnv: "scaleway", FeedTableEnv: table}
+		if tc.operator {
+			env[CatalogModelsEnv] = `{"scaleway/glm-5.3":{"input_usd_per_mtok":2.01,"output_usd_per_mtok":6.15}}`
+		}
+		res := ResolveCatalogQuiet("scaleway/glm-5.3", nil, mapGet(env))
 		if res.Source != SourceFeed("pliage") || imageWord(res.Spec.ImageInput) != tc.want {
-			t.Fatalf("feed entry %s resolved source %s image_input %s, want feed:pliage and %s", tc.spec, res.Source, imageWord(res.Spec.ImageInput), tc.want)
+			t.Fatalf("feed entry %s (operator row %v) resolved source %s image_input %s, want feed:pliage and %s", tc.spec, tc.operator, res.Source, imageWord(res.Spec.ImageInput), tc.want)
 		}
 	}
 }

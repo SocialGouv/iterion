@@ -279,11 +279,12 @@ func NormalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id
 // OPENAI_COMPATIBLE_MODELS, `{"<gateway id>": {"context_window": N,
 // "max_output_tokens": N, "input_usd_per_mtok": F, "output_usd_per_mtok": F,
 // "cache_read_usd_per_mtok": F, "reasoning": B, "tool_call": B,
-// "temperature": B, "image_input": B}}`. Unknown fields are refused (a
-// typo'd price silently ignored is worse than a refusal) — reasoning_efforts
-// among them: accepted
-// efforts are not this table's field (a feed's entries carry them, and the
-// runner's env fallback has its own name, OPENAI_COMPATIBLE_REASONING_EFFORTS).
+// "temperature": B}}`. Unknown fields are refused (a typo'd price silently
+// ignored is worse than a refusal) — reasoning_efforts and image_input among
+// them: they are not this table's fields (a feed's entries carry them, and
+// the runner's env fallback for efforts has its own name,
+// OPENAI_COMPATIBLE_REASONING_EFFORTS). A runner reads this table, and an
+// older runner's strict parser would refuse a table carrying either whole.
 // Prices arrive as a pair or not at all, negatives are refused. compatgw's
 // operator table parses through this function; a feed's entries parse
 // through ParseFeedEntries, the same body with one more field. `what` names
@@ -295,8 +296,9 @@ func ParseEntries(raw, what string) (map[string]modelspecs.Spec, error) {
 
 // ParseFeedEntries is the strict parser of a feed's entries — an exec
 // feed's stdout and a declared feed's document: the operator-table format
-// plus `"reasoning_efforts": [...]`, the model's accepted efforts in
-// modelspecs.ParseEffortLevels' vocabulary. Every ParseEntries rule holds;
+// plus `"image_input": B` and `"reasoning_efforts": [...]`, the model's
+// accepted efforts in modelspecs.ParseEffortLevels' vocabulary. Every
+// ParseEntries rule holds;
 // on top, an effort list that is empty, null, repeats a level or names one
 // outside the vocabulary refuses, naming the id, and so does an id that
 // normalizes to nothing — the fold would drop it unsaid. ParseEntries
@@ -323,7 +325,6 @@ type operatorEntry struct {
 	Reasoning           *bool   `json:"reasoning"`
 	ToolCall            *bool   `json:"tool_call"`
 	Temperature         *bool   `json:"temperature"`
-	ImageInput          *bool   `json:"image_input"`
 }
 
 func (e operatorEntry) spec(what, id string) (modelspecs.Spec, error) {
@@ -342,19 +343,21 @@ func (e operatorEntry) spec(what, id string) (modelspecs.Spec, error) {
 		Reasoning:         e.Reasoning,
 		ToolCall:          e.ToolCall,
 		Temperature:       e.Temperature,
-		ImageInput:        e.ImageInput,
 	}, nil
 }
 
 // feedEntry is a feed's field set: the operator table's plus the accepted
-// efforts. Absent reasoning_efforts leaves the spec's list nil (unstated).
+// efforts and the image_input flag. Absent reasoning_efforts leaves the
+// spec's list nil (unstated), absent image_input the flag nil (unknown).
 type feedEntry struct {
 	operatorEntry
+	ImageInput       *bool           `json:"image_input"`
 	ReasoningEfforts json.RawMessage `json:"reasoning_efforts"`
 }
 
 func (e feedEntry) spec(what, id string) (modelspecs.Spec, error) {
 	spec, err := e.operatorEntry.spec(what, id)
+	spec.ImageInput = e.ImageInput
 	if err != nil || e.ReasoningEfforts == nil {
 		return spec, err
 	}

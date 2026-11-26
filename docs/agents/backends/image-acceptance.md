@@ -10,14 +10,22 @@ answer is the catalog's `image_input` flag (`modelspecs.Spec.ImageInput`).
 A gateway route reads it from the catalog rung that answers the id, in the
 usual order: the host's forwarded record in the sandbox, the run's feed (a
 LiteLLM listing's `supports_vision`, a declared or exec entry's
-`image_input`), the operator table (`"image_input": false`), then the
-models.dev provider row (`modalities.input`), live then snapshot. That
-rung answers whole, so it answers the image flag too. A feed entry or
-operator row that answers the id without stating `image_input` leaves the
-flag unknown, even when the models.dev row below it says text-only, and
-images are sent. To refuse images on an id such a row answers, state
-`image_input` on that row, within the rollout limits below
-(`TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag`). A native route
+`image_input`), the operator table, then the models.dev provider row
+(`modalities.input`), live then snapshot. That rung answers whole, so it
+answers the image flag too. A feed entry or operator row that answers the
+id without stating `image_input` leaves the flag unknown, even when the
+models.dev row below it says text-only, and images are sent.
+
+The operator table (`OPENAI_COMPATIBLE_MODELS`) refuses `image_input`, as
+it refuses `reasoning_efforts` (ADR-166): a runner parses that table, and a
+runner older than the field would refuse it whole. The table then fails
+with `OPENAI_COMPATIBLE_MODELS does not parse: … unknown field
+"image_input"` (`TestTheOperatorTableRefusesImageInput`,
+`TestOperatorModels_RefusesImageInput`). To refuse images on an id, state
+`image_input` on a priced entry of a declared or exec feed. The run's feed
+answers before the operator table, so that entry wins over an operator row
+for the same id (`TestResolveCatalog_TheAnsweringRungAnswersTheImageFlag`).
+Follow the rollout limit below. A native route
 reads the models.dev row of the provider that serves it, live then
 snapshot. A GLM id on the anthropic wire (`anthropic/glm-*` or a bare
 `glm-*`) reads z.ai's rows (`zai-coding-plan`, then `zai`). `moonshot`
@@ -35,22 +43,18 @@ text-only, and the vision models above take images. `iterion models` prints
 the flag in its `IMAGES` column, and the capability API returns it as
 `image_input`.
 
-Mixed versions during a rollout: a binary older than `image_input` parses
-the operator table and feed entries strictly, so it refuses a table that
-states it.
-
-- An older runner refuses the whole of `OPENAI_COMPATIBLE_MODELS`, and
-  every gateway id it carries resolves to unknown. Write `image_input` into
-  the operator table only once every runner reading it runs this release.
-- An older server replica refuses the write of a declared feed stating it
-  and folds nothing from that feed, prices included. An older replica
-  holding the reconciler's lease fails to refresh an exec feed that prints
-  it. That failing refresh writes the entries back with their prices and
-  without `image_input`, so images are sent to those ids until this release
-  refreshes the feed. Write `image_input` into a declared or exec feed only
-  once no older server replica can fold or refresh it
-  (`TestAnOlderBinaryRefusesATableStatingImageInput`,
-  `TestAnOlderReplicasFailingRefreshDropsAnExecFeedsImageInput`).
+Mixed versions during a rollout: a server older than `image_input` parses
+feed entries strictly. An older replica refuses the write of a declared
+feed stating it, and folds nothing from that feed, prices included. An
+older replica holding the reconciler's lease fails to refresh an exec feed
+that prints it. That failing refresh writes the entries back with their
+prices and without `image_input`, so images are sent to those ids until
+this release refreshes the feed. Write `image_input` into a declared or
+exec feed only once no older server replica can fold or refresh it
+(`TestAnOlderServerRefusesFeedEntriesStatingImageInput`,
+`TestAnOlderReplicasFailingRefreshDropsAnExecFeedsImageInput`). A runner
+reads the folded run table leniently, so an older runner ignores the flag
+and sends images.
 
 On a refusing route, an image tool returns a recoverable tool error
 (`tool.ImagesRefusedError`). It names the route, keeps the tool's own

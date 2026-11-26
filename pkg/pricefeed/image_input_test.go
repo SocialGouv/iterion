@@ -81,20 +81,15 @@ func TestLiteLLMSourceFoldsSupportsVisionAcrossDeployments(t *testing.T) {
 
 // The operator table and a feed's entries accept image_input, so an operator
 // can declare it for a gateway that publishes nothing; unstated stays nil.
-func TestEntriesAcceptImageInput(t *testing.T) {
+func TestFeedEntriesAcceptImageInput(t *testing.T) {
 	raw := `{"scaleway/glm-5.3":{"image_input":false},"scaleway/gemma":{"image_input":true},"other":{"context_window":8}}`
-	for name, parse := range map[string]func(string, string) (map[string]modelspecs.Spec, error){
-		"ParseEntries":     ParseEntries,
-		"ParseFeedEntries": ParseFeedEntries,
-	} {
-		table, err := parse(raw, "test")
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		for id, want := range map[string]string{"scaleway/glm-5.3": "false", "scaleway/gemma": "true", "other": "unstated"} {
-			if got := imageWord(table[id].ImageInput); got != want {
-				t.Errorf("%s %s: image_input %s, want %s", name, id, got, want)
-			}
+	table, err := ParseFeedEntries(raw, "test")
+	if err != nil {
+		t.Fatalf("ParseFeedEntries: %v", err)
+	}
+	for id, want := range map[string]string{"scaleway/glm-5.3": "false", "scaleway/gemma": "true", "other": "unstated"} {
+		if got := imageWord(table[id].ImageInput); got != want {
+			t.Errorf("%s: image_input %s, want %s", id, got, want)
 		}
 	}
 	// A declared row stating only image_input states something: it answers.

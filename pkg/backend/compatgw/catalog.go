@@ -37,8 +37,11 @@ import (
 // serves. `{"scaleway/gpt-oss-120b": {"context_window": 131072, ...}}` —
 // unknown fields refused (a typo'd price silently ignored is worse than a
 // refusal), prices as a pair or nothing, and the capability flags
-// (`reasoning`, `tool_call`, `temperature`, `image_input`) each optional: a
-// flag the operator leaves out stays UNKNOWN downstream, never false (#2103).
+// (`reasoning`, `tool_call`, `temperature`) each optional: a flag the
+// operator leaves out stays UNKNOWN downstream, never false (#2103).
+// `image_input` and `reasoning_efforts` are refused here: a runner parses
+// this table, and an older runner's strict parser would refuse it whole —
+// a feed's entries carry them (pricefeed.ParseFeedEntries).
 const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 
 // ResolvedEnvName carries the HOST's own catalog resolution into the
