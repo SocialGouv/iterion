@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
+	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
+	"github.com/SocialGouv/iterion/pkg/backend/modelroute"
+	"github.com/SocialGouv/iterion/pkg/backend/modelspecs"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/claw/pkg/api"
 )
@@ -25,14 +29,63 @@ var clawImageBoundEnvVars = tool.ImagePolicyEnvVars
 // entry of a generation: the request builder reads it from opts, the tool
 // door from the returned context. A malformed operator value fails the
 // generation, naming the knob.
+//
+// The policy's Acceptance is what the route's catalog states about image
+// input (routeImageInput), under the operator's tool.EnvImageAcceptance
+// override: a route known to refuse images turns a tool image into a
+// recoverable tool error and an image of the conversation into a refusal
+// or a marker, before any request goes out.
 func withRouteImagePolicy(ctx context.Context, opts *GenerationOptions) (context.Context, error) {
 	knobs := imageBoundKnobs()
-	policy, err := tool.RouteImagePolicy(opts.Model, func(name string) string { return knobs[name] })
+	getKnob := func(name string) string { return knobs[name] }
+	policy, err := tool.RouteImagePolicy(opts.Model, getKnob)
+	if err != nil {
+		return ctx, fmt.Errorf("model %s: image policy: %w", opts.Model, err)
+	}
+	policy.Acceptance, err = tool.ImageAcceptanceFor(routeImageInput(ctx, opts.Model), getKnob)
 	if err != nil {
 		return ctx, fmt.Errorf("model %s: image policy: %w", opts.Model, err)
 	}
 	opts.images = policy
 	return context.WithValue(ctx, imagePolicyKey{}, policy), nil
+}
+
+// anthropicVisionProviders are the routing prefixes serving Anthropic's
+// Messages API, where every Claude model takes images.
+var anthropicVisionProviders = map[string]bool{"anthropic": true, "bedrock": true, "vertex": true}
+
+// routeImageInput is what the catalogs state about a route taking images:
+// nil when nothing states it, which sends images.
+//
+//   - A gateway route (openai_compatible/<id>) answers from the gateway's
+//     catalog (compatgw.ResolveCatalogQuiet — the host's forwarded record in
+//     the sandbox, the run's feed, the operator table, then the models.dev
+//     provider the operator named, live then snapshot), keyed by the
+//     provider-qualified id: a bare id's publishers disagree (glm-5.3 is
+//     text-only at some, takes images at others), and a disagreement must
+//     not refuse a working vision route.
+//   - A Claude model on an Anthropic route takes images.
+//   - Any other routed spec answers from the models.dev registry's exact
+//     "<provider>/<model>" key, never its cross-provider bare index.
+//   - A bare spec, whose provider the registry picks, states nothing.
+//
+// Quiet: the dispatch seam already said an unknown gateway id out loud.
+func routeImageInput(ctx context.Context, spec string) *bool {
+	route := modelroute.Parse(spec)
+	switch {
+	case route.Gateway():
+		getenv := func(name string) string { return envGetenv(ctx, name) }
+		return compatgw.ResolveCatalogQuiet(route.Wire, modelspecs.Default(), getenv).Spec.ImageInput
+	case anthropicVisionProviders[route.Provider] && strings.Contains(strings.ToLower(route.Wire), "claude"):
+		accepted := true
+		return &accepted
+	case route.Provider == "":
+		return nil
+	}
+	if s, ok := modelspecs.Default().LookupExact(route.Provider, route.Wire); ok {
+		return s.ImageInput
+	}
+	return nil
 }
 
 // imageBoundKnobs reads the image bounds' escape hatches the way the
@@ -49,6 +102,7 @@ func imageBoundKnobs() map[string]string {
 		tool.EnvRequestImageMaxCount:       envtrust.Inherited(tool.EnvRequestImageMaxCount),
 		tool.EnvRequestManyImagesThreshold: envtrust.Inherited(tool.EnvRequestManyImagesThreshold),
 		tool.EnvRequestManyImagesMaxSide:   envtrust.Inherited(tool.EnvRequestManyImagesMaxSide),
+		tool.EnvImageAcceptance:            envtrust.Inherited(tool.EnvImageAcceptance),
 	}
 }
 
@@ -81,7 +135,23 @@ const (
 	// because the prompt's images and that run's carry more than the
 	// threshold with one over the side.
 	requestImageManyImagesLastRun = "[image omitted from this request: with the prompt's images and the last tool calls' other images, the request carries more than %d images, one over %d pixels a side, which this model route refuses (%s, %s) — calling the tool again will not help; ask for fewer images at a time]"
+	// requestImageRouteRefused: an image produced under another route and
+	// replayed on one that takes no image at all.
+	requestImageRouteRefused = "[image omitted from this request: model route %q does not accept images — it was produced under another route; calling the tool again will not help, get what you need another way, as text]"
 )
+
+// RequestImagesRefusedError is a request whose prompt carries images — the
+// operator's attachments — on a model route known not to accept any: it is
+// refused before it goes out, never sent for the provider to reject.
+type RequestImagesRefusedError struct {
+	Route string
+	Count int
+}
+
+func (e *RequestImagesRefusedError) Error() string {
+	return fmt.Sprintf("the prompt carries %d image(s), and model route %q does not accept images: route the node to a model that takes images, drop the attachments, or set %s=send if the route's catalog is wrong",
+		e.Count, e.Route, tool.EnvImageAcceptance)
+}
 
 // requestBudgetHysteresis is the share of the per-request budget a request
 // is brought down to once it goes over: the cut point among the tool images
@@ -183,6 +253,10 @@ type toolImageRef struct {
 // A tool image whose media type contradicts its header goes out under the
 // header's. Prompt images are never dropped: when they alone break the
 // budget or the many-image rule, the request is refused with a typed error.
+//
+// On a route known to refuse images (tool.ImagesRefused) no image goes out:
+// a prompt image refuses the request, every tool image becomes a marker
+// (refuseRouteImages).
 func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.Message, error) {
 	maxB, maxC := policy.MaxRequestImageBytes, policy.MaxRequestImages
 	thr, manySide := policy.ManyImagesThreshold, policy.ManyImagesMaxSide
@@ -216,6 +290,9 @@ func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.
 				refs = append(refs, r)
 			}
 		}
+	}
+	if policy.Acceptance == tool.ImagesRefused {
+		return refuseRouteImages(messages, refs, promptCount, policy.Route)
 	}
 	if (maxB > 0 && promptBytes > maxB) || (maxC > 0 && promptCount > maxC) {
 		return nil, &RequestImagesTooLargeError{Route: policy.Route, Bytes: promptBytes, MaxBytes: maxB, Count: promptCount, MaxCount: maxC}
@@ -320,7 +397,31 @@ func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.
 	if len(markers) == 0 && len(fixes) == 0 {
 		return messages, nil
 	}
+	return replaceToolImages(messages, refs, markers, fixes), nil
+}
 
+// refuseRouteImages is boundRequestImages on a route known to refuse
+// images: a prompt image refuses the request, and every tool image of the
+// conversation — produced under another route, replayed on this one by a
+// fallback — goes out as a marker saying so.
+func refuseRouteImages(messages []api.Message, refs []toolImageRef, promptCount int, route string) ([]api.Message, error) {
+	if promptCount > 0 {
+		return nil, &RequestImagesRefusedError{Route: route, Count: promptCount}
+	}
+	if len(refs) == 0 {
+		return messages, nil
+	}
+	markers := make(map[int]string, len(refs))
+	for idx := range refs {
+		markers[idx] = fmt.Sprintf(requestImageRouteRefused, route)
+	}
+	return replaceToolImages(messages, refs, markers, nil), nil
+}
+
+// replaceToolImages returns a copy of messages in which each tool image refs
+// indexes is replaced by its marker (a reduction note following a replaced
+// image goes with it) or by its fixed block; messages itself is untouched.
+func replaceToolImages(messages []api.Message, refs []toolImageRef, markers map[int]string, fixes map[int]api.ContentBlock) []api.Message {
 	type blockKey struct{ msg, block int }
 	byInner := map[blockKey]map[int]int{}
 	for idx, r := range refs {
@@ -363,5 +464,5 @@ func boundRequestImages(messages []api.Message, policy tool.ImagePolicy) ([]api.
 		}
 		out[k.msg].Content[k.block].Content = rebuilt
 	}
-	return out, nil
+	return out
 }

@@ -64,6 +64,7 @@ import (
 // files, refused here and recorded on #2789.
 var serialFamily = map[string]string{
 	"codemode_sandbox_crossing_test.go":     "Setenv",
+	"generation_image_acceptance_test.go":   "SetDefault, Setenv",
 	"sandbox_transport_env_test.go":         "Setenv",
 	"output_correction_composition_test.go": "Setenv",
 	"output_correction_control_test.go":     "Setenv",

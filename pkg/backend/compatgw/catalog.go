@@ -37,8 +37,8 @@ import (
 // serves. `{"scaleway/gpt-oss-120b": {"context_window": 131072, ...}}` —
 // unknown fields refused (a typo'd price silently ignored is worse than a
 // refusal), prices as a pair or nothing, and the capability flags
-// (`reasoning`, `tool_call`, `temperature`) each optional: a flag the
-// operator leaves out stays UNKNOWN downstream, never false (#2103).
+// (`reasoning`, `tool_call`, `temperature`, `image_input`) each optional: a
+// flag the operator leaves out stays UNKNOWN downstream, never false (#2103).
 const CatalogModelsEnv = "OPENAI_COMPATIBLE_MODELS"
 
 // ResolvedEnvName carries the HOST's own catalog resolution into the
@@ -319,6 +319,7 @@ func resolveCatalog(modelID string, live *modelspecs.Registry, get func(string) 
 				Reasoning:         rec.Reasoning,
 				ToolCall:          rec.ToolCall,
 				Temperature:       rec.Temperature,
+				ImageInput:        rec.ImageInput,
 			},
 			Source:      rec.Source,
 			RefreshedAt: rec.RefreshedAtTime(),
@@ -462,6 +463,7 @@ type ResolvedEnvRecord struct {
 	Reasoning           *bool      `json:"reasoning,omitempty"`
 	ToolCall            *bool      `json:"tool_call,omitempty"`
 	Temperature         *bool      `json:"temperature,omitempty"`
+	ImageInput          *bool      `json:"image_input,omitempty"`
 }
 
 // RefreshedAtTime answers the record's feed age as a value (zero when
@@ -488,6 +490,7 @@ func ForwardableRecord(modelID string, r Resolved) ResolvedEnvRecord {
 		Reasoning:           r.Spec.Reasoning,
 		ToolCall:            r.Spec.ToolCall,
 		Temperature:         r.Spec.Temperature,
+		ImageInput:          r.Spec.ImageInput,
 	}
 	if _, isFeed := FeedSource(r.Source); isFeed && !r.RefreshedAt.IsZero() {
 		stamp := r.RefreshedAt

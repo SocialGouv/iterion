@@ -93,8 +93,9 @@ const (
 	defaultDecodePixels = 50_000_000
 )
 
-// ImagePolicyEnvVars are the escape hatches RouteImagePolicy reads, in one
-// list for the reader and the sandbox crossing alike.
+// ImagePolicyEnvVars are the escape hatches the image policy reads
+// (RouteImagePolicy's bounds, ImageAcceptanceFor's override), in one list
+// for the reader and the sandbox crossing alike.
 var ImagePolicyEnvVars = []string{
 	EnvImageMaxBase64Bytes,
 	EnvImageMaxSide,
@@ -103,6 +104,39 @@ var ImagePolicyEnvVars = []string{
 	EnvRequestImageMaxCount,
 	EnvRequestManyImagesThreshold,
 	EnvRequestManyImagesMaxSide,
+	EnvImageAcceptance,
+}
+
+// EnvImageAcceptance overrides what a route's catalog states about image
+// input (ImageAcceptanceFor): "auto" (or empty) follows the catalog, "send"
+// sends images whatever the catalog states — a gateway whose catalog row
+// says text-only while the model it serves takes images — and "refuse"
+// refuses them on every route. It applies to every route of the process.
+const EnvImageAcceptance = "ITERION_IMAGE_ACCEPTANCE"
+
+// ImageAcceptanceFor turns what a route's catalog states about image input
+// — nil unstated, else whether the model takes images — into the policy's
+// Acceptance, under the EnvImageAcceptance hatch getenv reads. Unstated is
+// ImagesUnknown: images are sent, since a refusal on a guess would break a
+// working vision route. A hatch value other than auto, send or refuse is an
+// error, never ignored.
+func ImageAcceptanceFor(stated *bool, getenv func(string) string) (ImageAcceptance, error) {
+	switch raw := strings.ToLower(strings.TrimSpace(getenv(EnvImageAcceptance))); raw {
+	case "", "auto":
+	case "send":
+		return ImagesAccepted, nil
+	case "refuse":
+		return ImagesRefused, nil
+	default:
+		return ImagesUnknown, fmt.Errorf("%s=%q: want auto, send or refuse", EnvImageAcceptance, raw)
+	}
+	switch {
+	case stated == nil:
+		return ImagesUnknown, nil
+	case *stated:
+		return ImagesAccepted, nil
+	}
+	return ImagesRefused, nil
 }
 
 // anthropicImageProviders are the routing prefixes Anthropic's Messages API
@@ -192,14 +226,25 @@ func (p ImagePolicy) EffectiveMaxImageBytes() (max int, knobs string) {
 }
 
 // ImagesRefusedError is a tool image a route that takes no image would
-// receive. The model reads it as a recoverable tool error.
+// receive. The model reads it as a recoverable tool error, never sent: it
+// says calling again will not help and how to get the content another way.
 type ImagesRefusedError struct {
 	Tool  string
 	Route string
 }
 
 func (e *ImagesRefusedError) Error() string {
-	return fmt.Sprintf("%s returned an image, and the model route %q does not accept images", e.Tool, e.Route)
+	var advice string
+	switch e.Tool {
+	case "read_image":
+		advice = "get what you need from the file another way — read it as text if it is a text format (SVG, a document), or use a tool that extracts or describes its content"
+	case "screenshot", "computer_use":
+		advice = "get what you need from the screen another way — read the page or the application's state as text"
+	default:
+		advice = "get what you need another way, as text"
+	}
+	return fmt.Sprintf("%s returned an image, and model route %q does not accept images: calling %s again will not help — %s (operators: %s=send overrides the route's catalog)",
+		e.Tool, e.Route, e.Tool, advice, EnvImageAcceptance)
 }
 
 // ImageTooLargeError is a tool image over one of the route's per-image

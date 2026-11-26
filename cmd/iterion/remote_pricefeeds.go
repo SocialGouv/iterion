@@ -247,7 +247,7 @@ func priceEntrySummary(s *modelspecs.Spec) string {
 	for _, flag := range []struct {
 		name  string
 		value *bool
-	}{{"reasoning", s.Reasoning}, {"tool_call", s.ToolCall}, {"temperature", s.Temperature}} {
+	}{{"reasoning", s.Reasoning}, {"tool_call", s.ToolCall}, {"temperature", s.Temperature}, {"image_input", s.ImageInput}} {
 		if flag.value != nil {
 			parts = append(parts, fmt.Sprintf("%s=%v", flag.name, *flag.value))
 		}

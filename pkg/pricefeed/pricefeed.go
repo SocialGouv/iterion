@@ -279,8 +279,9 @@ func NormalizeID(id string) string { return strings.ToLower(strings.TrimSpace(id
 // OPENAI_COMPATIBLE_MODELS, `{"<gateway id>": {"context_window": N,
 // "max_output_tokens": N, "input_usd_per_mtok": F, "output_usd_per_mtok": F,
 // "cache_read_usd_per_mtok": F, "reasoning": B, "tool_call": B,
-// "temperature": B}}`. Unknown fields are refused (a typo'd price silently
-// ignored is worse than a refusal) — reasoning_efforts among them: accepted
+// "temperature": B, "image_input": B}}`. Unknown fields are refused (a
+// typo'd price silently ignored is worse than a refusal) — reasoning_efforts
+// among them: accepted
 // efforts are not this table's field (a feed's entries carry them, and the
 // runner's env fallback has its own name, OPENAI_COMPATIBLE_REASONING_EFFORTS).
 // Prices arrive as a pair or not at all, negatives are refused. compatgw's
@@ -322,6 +323,7 @@ type operatorEntry struct {
 	Reasoning           *bool   `json:"reasoning"`
 	ToolCall            *bool   `json:"tool_call"`
 	Temperature         *bool   `json:"temperature"`
+	ImageInput          *bool   `json:"image_input"`
 }
 
 func (e operatorEntry) spec(what, id string) (modelspecs.Spec, error) {
@@ -340,6 +342,7 @@ func (e operatorEntry) spec(what, id string) (modelspecs.Spec, error) {
 		Reasoning:         e.Reasoning,
 		ToolCall:          e.ToolCall,
 		Temperature:       e.Temperature,
+		ImageInput:        e.ImageInput,
 	}, nil
 }
 
@@ -827,7 +830,7 @@ func feedRef(feed, scope string) string {
 
 // fieldOrder is the format's field order, the order a warning names
 // fields in.
-var fieldOrder = []string{"input_usd_per_mtok", "output_usd_per_mtok", "context_window", "max_output_tokens", "cache_read_usd_per_mtok", "reasoning", "tool_call", "temperature"}
+var fieldOrder = []string{"input_usd_per_mtok", "output_usd_per_mtok", "context_window", "max_output_tokens", "cache_read_usd_per_mtok", "reasoning", "tool_call", "temperature", "image_input"}
 
 // statedFields names the fields a price entry states, efforts aside.
 func statedFields(spec modelspecs.Spec) []string {

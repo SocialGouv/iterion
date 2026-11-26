@@ -108,6 +108,9 @@ func unpricedFields(spec modelspecs.Spec) []string {
 	if spec.Temperature != nil {
 		stated = append(stated, "temperature")
 	}
+	if spec.ImageInput != nil {
+		stated = append(stated, "image_input")
+	}
 	return stated
 }
 

@@ -273,6 +273,7 @@ var operatorInfraNames = map[string]bool{
 	// side rule and the decode bound of a reduced capture. "0" unbounds each,
 	// and the decode bound guards the runner's memory, so no bot var may
 	// speak for them.
+	"ITERION_IMAGE_ACCEPTANCE":              true,
 	"ITERION_IMAGE_MAX_BASE64_BYTES":        true,
 	"ITERION_IMAGE_MAX_DECODE_PIXELS":       true,
 	"ITERION_IMAGE_MAX_SIDE":                true,

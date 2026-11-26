@@ -200,6 +200,7 @@ func SpecEqual(a, b modelspecs.Spec) bool {
 		return false
 	}
 	return boolPtrEqual(a.Reasoning, b.Reasoning) && boolPtrEqual(a.ToolCall, b.ToolCall) && boolPtrEqual(a.Temperature, b.Temperature) &&
+		boolPtrEqual(a.ImageInput, b.ImageInput) &&
 		slices.Equal(a.ReasoningEfforts, b.ReasoningEfforts)
 }
 
