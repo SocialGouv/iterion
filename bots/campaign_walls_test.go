@@ -154,7 +154,7 @@ def stmt(st, skip):
     if isinstance(st, (ast.For, ast.While)):
         # A for loop's head is its iterable, the node's "iter" field, read
         # through getattr: the repository's guard against the purged workflow
-        # extension (pkg/cli TestNoIterExtensionAnywhere) flags the dotted form.
+        # extension (internal/sweep/itertoken TestNoIterExtensionAnywhere) flags the dotted form.
         head = expr_wall(getattr(st, "iter") if isinstance(st, ast.For) else st.test)
         if st is ctx.get("loop"):
             return head, None

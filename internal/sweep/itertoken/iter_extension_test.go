@@ -1,13 +1,13 @@
-package cli_test
+package itertoken
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // TestNoIterExtensionAnywhere is the zero-trace guard for the deprecated
@@ -37,12 +37,12 @@ import (
 // support — so purging the token there would falsify the record rather than
 // fix anything. Those files describe history, never a live reference.
 func TestNoIterExtensionAnywhere(t *testing.T) {
-	root := repoRootForDocsTest(t)
+	root := sweepwalk.ModuleRoot(t)
 
-	cmd := gittest.Cmd(root, "grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
+	cmd := gittest.Cmd(root, gitlib.NoRunHooks("grep", "-nIE", `\.iter([^a-zA-Z0-9._]|$)`,
 		"--", ".", ":(exclude)vendor/",
 		":(exclude)third_party/tiktoken-go-tokenizer/",
-		":(exclude)CHANGELOG.md", ":(exclude)docs/changelog/")
+		":(exclude)CHANGELOG.md", ":(exclude)docs/changelog/")...)
 	out, err := cmd.Output()
 	// git grep exits 1 with no output when there are no matches — the
 	// success case. A real match exits 0 with the offending lines.
@@ -65,7 +65,7 @@ func TestNoIterExtensionAnywhere(t *testing.T) {
 			continue
 		}
 		// This guard file documents the token in its own comments.
-		if strings.Contains(line, "cli_docs_examples_test.go") {
+		if strings.Contains(line, "internal/sweep/itertoken/iter_extension_test.go") {
 			continue
 		}
 		violations = append(violations, line)
@@ -75,25 +75,5 @@ func TestNoIterExtensionAnywhere(t *testing.T) {
 		t.Fatalf("the deprecated `.iter` extension reappeared — workflows are "+
 			"`.bot` (`.botz` for bundles); purge these references:\n  %s",
 			strings.Join(violations, "\n  "))
-	}
-}
-
-// repoRootForDocsTest walks up from the test's working directory (the package
-// dir) until it finds the go.mod, returning the repo root.
-func repoRootForDocsTest(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("repo root (go.mod) not found from %s", dir)
-		}
-		dir = parent
 	}
 }

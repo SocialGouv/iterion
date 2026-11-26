@@ -1,8 +1,6 @@
-package cli_test
+package authorcorpus
 
 import (
-	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
-	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"maps"
 	"os"
 	"path/filepath"
@@ -10,12 +8,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/author"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser/parsertest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
+	"github.com/SocialGouv/iterion/pkg/dsl/unit/unittest"
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 )
@@ -23,9 +24,8 @@ import (
 // everyBotInTheTree is every `.bot` this repository holds — the bots the
 // catalogue serves, the examples, the end-to-end missions, the fixtures:
 // the corpus an author adopting the YAML twin of a .bot works on.
-func everyBotInTheTree(t *testing.T) []string {
+func everyBotInTheTree(t *testing.T, root string) []string {
 	t.Helper()
-	root := filepath.Join("..", "..")
 	var out []string
 	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -218,8 +218,13 @@ func TestE056IsSilentExactlyWhenTheTwoFilesAreOneProgram(t *testing.T) {
 	var skipped []string
 	pairs, silent, named, reachedNothing := 0, 0, 0, 0
 	cases := map[string]int{} // an edit → the corpus files it materialised for
-	for _, path := range everyBotInTheTree(t) {
-		name := filepath.ToSlash(strings.TrimPrefix(path, ".."+string(filepath.Separator)+".."+string(filepath.Separator)))
+	root := sweepwalk.ModuleRoot(t)
+	for _, path := range everyBotInTheTree(t, root) {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatalf("%s is not under the module root %s: %v", path, root, err)
+		}
+		name := filepath.ToSlash(rel)
 		t.Run(name, func(t *testing.T) {
 			bot, doc, why := aPairOfItsOwn(t, path)
 			if why != "" {

@@ -7,18 +7,22 @@
 # stale or missing row only degrades the balance — it never errors.
 # race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
 # (under -race in test-native-exec), so neither carries a row here.
+# internal/sweep/authorcorpus carries the corpus benches moved out of pkg/cli
+# (#3758): their 64 s unit duration (#3758's measurement) scaled by pkg/cli's race/unit ratio
+# (583/116), taken off pkg/cli's row.
 github.com/SocialGouv/iterion/bots	1564
 github.com/SocialGouv/iterion/pkg/server	1070
 github.com/SocialGouv/iterion/internal/fswatch	945
 github.com/SocialGouv/iterion/pkg/runtime	745
 github.com/SocialGouv/iterion/pkg/auth	607
-github.com/SocialGouv/iterion/pkg/cli	583
 github.com/SocialGouv/iterion/pkg/backend/model	559
 github.com/SocialGouv/iterion/pkg/backend/delegate	489
 github.com/SocialGouv/iterion/pkg/runview	407
 github.com/SocialGouv/iterion/cmd/iterion	403
 github.com/SocialGouv/iterion/pkg/scripthost	352
+github.com/SocialGouv/iterion/internal/sweep/authorcorpus	322
 github.com/SocialGouv/iterion/internal/floortest	271
+github.com/SocialGouv/iterion/pkg/cli	261
 github.com/SocialGouv/iterion/internal/docsguard	205
 github.com/SocialGouv/iterion/pkg/store	158
 github.com/SocialGouv/iterion/pkg/backend/secretguard	157

@@ -7,6 +7,8 @@
 # legs keep their own table (test-shards-weights.tsv): the detector (with cgo)
 # and the co-packing reorder the costs (the unit reading ran unsharded). e2e
 # (test-e2e's) and pkg/sandbox/kubernetes (test-native-exec's) carry no row.
+# internal/sweep/authorcorpus carries the corpus benches moved out of pkg/cli
+# (#3758): 64 s, the moved tests' CI duration in #3758's measurement, taken off pkg/cli's row.
 github.com/SocialGouv/iterion/bots	751
 github.com/SocialGouv/iterion/pkg/server	518
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
@@ -16,10 +18,11 @@ github.com/SocialGouv/iterion/pkg/backend/model	206
 github.com/SocialGouv/iterion/internal/fswatch	175
 github.com/SocialGouv/iterion/pkg/runview	135
 github.com/SocialGouv/iterion/pkg/runner	127
-github.com/SocialGouv/iterion/pkg/cli	116
 github.com/SocialGouv/iterion/internal/automaintguard	98
 github.com/SocialGouv/iterion/cmd/iterion-desktop	94
 github.com/SocialGouv/iterion/pkg/auth	73
+github.com/SocialGouv/iterion/internal/sweep/authorcorpus	64
+github.com/SocialGouv/iterion/pkg/cli	52
 github.com/SocialGouv/iterion/pkg/dsl/unit	47
 github.com/SocialGouv/iterion/internal/layerguard	41
 github.com/SocialGouv/iterion/pkg/claw/internal/tools	41
