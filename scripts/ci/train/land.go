@@ -211,15 +211,11 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 	}
 
 	defer l.afterLanding(ctx, rep)
-	for k, s := range rep.Steps {
+	for _, s := range rep.Steps {
 		n := s.PR.Number
-		if k > 0 && !l.DryRun {
-			tip, err := l.fetchMain(ctx)
-			if err != nil {
-				return l.stop(rep, fmt.Sprintf("stopped before #%d: reading main: %v", n, err))
-			}
-			if tip != cur {
-				return l.stop(rep, fmt.Sprintf("stopped before #%d: main moved to %s (%q) after the last landing %s — merging now would land a tree nobody gated; the rest needs a new train on the current main", n, short(tip), l.subject(ctx, tip), short(cur)))
+		if !l.DryRun {
+			if err := l.mainStill(ctx, rep, n, cur); err != nil {
+				return err
 			}
 		}
 		mergeHead := s.PR.HeadSHA
@@ -234,7 +230,9 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 			// squash would get differently must all be derived files this
 			// step regenerated. Anything else — a generator's stray write, an
 			// edited lot.json — never reaches a branch.
-			diff, err := l.Git.lines(ctx, l.Dir, "diff", "--name-only", tree, s.Tree)
+			// --no-renames: with rename detection, a non-derived file moved
+			// onto a derived path would list only the derived one.
+			diff, err := l.Git.lines(ctx, l.Dir, "diff", "--name-only", "--no-renames", tree, s.Tree)
 			if err != nil {
 				return l.stop(rep, fmt.Sprintf("stopped before #%d: %v", n, err))
 			}
@@ -308,8 +306,15 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 			cur = strings.TrimSpace(fake)
 			continue
 		}
+		// The guard that matters is this one, the last gesture before the
+		// merge: the resolution push, the wait for GitHub to report it and
+		// the re-read above all take time, and a push to main inside that
+		// window would have GitHub squash onto a tree nobody gated.
+		if err := l.mainStill(ctx, rep, n, cur); err != nil {
+			return err
+		}
 		if err := l.GH.Merge(ctx, n, mergeHead, subject, body); err != nil {
-			return l.stop(rep, fmt.Sprintf("stopped at #%d: the merge was refused: %v", n, err))
+			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, fmt.Sprintf("gh reported the merge failed: %v", err))
 		}
 		rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, UpdatedBranch: updated})
 		land := &rep.Landed[len(rep.Landed)-1]
@@ -322,7 +327,7 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 		}
 		if !pr.Merged {
 			rep.Landed = rep.Landed[:len(rep.Landed)-1]
-			return l.stop(rep, fmt.Sprintf("stopped at #%d: gh exited 0 but #%d is not merged (state %s, auto-merge %v) — gh does that for a pull request already in a merge queue; nothing of it landed", n, n, pr.State, pr.AutoMerge))
+			return l.notMerged(ctx, rep, n, cur, mergeHead, updated, fmt.Sprintf("gh exited 0 but #%d reads not merged (state %s, auto-merge %v) — gh does that for a pull request already in a merge queue", n, pr.State, pr.AutoMerge))
 		}
 		land.Merge = pr.MergeCommit
 		tip, err := l.fetchMain(ctx)
@@ -379,6 +384,36 @@ func (l *Lander) Land(ctx context.Context, rep *Report) error {
 	rep.Witnessed = fmt.Sprintf("the witness is the first 🧪 Tests run that completes on a main tip containing %s (git merge-base --is-ancestor %s <tip>); the heavy layer runs on the nightly", cur, cur)
 	l.logf("landed %d pull request(s); last landing %s — %s", len(rep.Landed), short(cur), rep.Witnessed)
 	return l.saveOrLog(rep)
+}
+
+// mainStill stops the landing unless main is still cur, the last landing
+// (the lot's base before the first one).
+func (l *Lander) mainStill(ctx context.Context, rep *Report, n int, cur string) error {
+	tip, err := l.fetchMain(ctx)
+	if err != nil {
+		return l.stop(rep, fmt.Sprintf("stopped before #%d: reading main: %v", n, err))
+	}
+	if tip != cur {
+		return l.stop(rep, fmt.Sprintf("stopped before #%d: main moved to %s (%q) after %s — merging now would land a tree nobody gated; the rest needs a new train on the current main", n, short(tip), l.subject(ctx, tip), short(cur)))
+	}
+	return nil
+}
+
+// notMerged ends a landing whose merge did not read as done. Whether it
+// landed is not taken from gh's word either way: main is read back, and if
+// it moved, the move is recorded as an unverified landing of n — a merge
+// that went through behind an error is still on main.
+func (l *Lander) notMerged(ctx context.Context, rep *Report, n int, cur, mergeHead string, updated bool, why string) error {
+	tip, err := l.fetchMain(ctx)
+	if err != nil {
+		rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, UpdatedBranch: updated})
+		return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, and main could not be read back (%v) — check main by hand", n, why, err))
+	}
+	if tip == cur {
+		return l.stop(rep, fmt.Sprintf("stopped at #%d: %s; main is still %s — nothing of it landed", n, why, short(cur)))
+	}
+	rep.Landed = append(rep.Landed, Landing{PR: n, MergedHead: mergeHead, Merge: tip, UpdatedBranch: updated})
+	return l.stop(rep, fmt.Sprintf("stopped at #%d: %s, but main moved to %s (%q) — recorded as an unverified landing; check main by hand", n, why, short(tip), l.subject(ctx, tip)))
 }
 
 // afterLanding cancels the pull request runs still in flight for each landed
