@@ -433,9 +433,10 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	var newToken, orgID string
 	if viaBrowser {
 		// The approval mints from the approving live session — never from
-		// the stored PAT, which this path presents to nothing but the
-		// read-only resolution above and the account read here (the
-		// revocation below is done with the NEW token).
+		// the stored PAT, which this path presents to the read-only
+		// resolution above, the account read here and, at the end, its own
+		// revocation (the new token revokes it only when it no longer
+		// authenticates).
 		before, err := c.Me(ctx)
 		if err != nil {
 			return fmt.Errorf("read the account the CLI is signed in as, before approving anything: %w — nothing was sent", err)

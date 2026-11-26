@@ -127,8 +127,24 @@ func TestOrgAudit_APinnedTokenReadsNoSiblingTeamsRows(t *testing.T) {
 	if code, _, body := f.call(t, http.MethodPatch, "/api/orgs/o1/teams/tb/caps", f.user.AccessToken, `{"max_concurrent_runs":3}`); code != http.StatusOK {
 		t.Fatalf("the session setting tb's caps: %d %s", code, body)
 	}
+	// A second invitation into tb, revoked through the org route: its
+	// deletion row names tb too.
+	if code, _, body := f.call(t, http.MethodPost, "/api/orgs/o1/invitations", f.user.AccessToken,
+		`{"email":"tb-revoked@example.com","role":"member","team_id":"tb"}`); code != http.StatusOK {
+		t.Fatalf("a session's second invitation into tb: %d %s", code, body)
+	}
+	var revoked string
+	for _, inv := range invitationsOfTeam(t, f, "tb") {
+		if inv.Email == "tb-revoked@example.com" {
+			revoked = inv.ID
+		}
+	}
+	if code, _, body := f.call(t, http.MethodDelete, "/api/orgs/o1/invitations/"+revoked, f.user.AccessToken, ""); code != http.StatusNoContent {
+		t.Fatalf("the session revoking tb's second invitation: %d %s", code, body)
+	}
 	waitForTenantAuditRows(t, f.s.auditStore, "o1", "team.caps_updated", 1)
-	waitForTenantAuditRows(t, f.s.auditStore, "o1", "org_invitation.created", 2)
+	waitForTenantAuditRows(t, f.s.auditStore, "o1", "org_invitation.created", 3)
+	waitForTenantAuditRows(t, f.s.auditStore, "o1", "org_invitation.deleted", 1)
 
 	code, _, all := f.call(t, http.MethodGet, "/api/orgs/o1/audit", f.user.AccessToken, "")
 	if code != http.StatusOK || !strings.Contains(all, "tb-invitee@example.com") || !strings.Contains(all, "team.caps_updated") {
@@ -138,10 +154,10 @@ func TestOrgAudit_APinnedTokenReadsNoSiblingTeamsRows(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(pinned, "ta-invitee@example.com") {
 		t.Fatalf("a ta-pinned PAT reading the org trail: %d %s, want ta's rows", code, pinned)
 	}
-	if strings.Contains(pinned, "tb-invitee@example.com") || strings.Contains(pinned, "team.caps_updated") {
+	if strings.Contains(pinned, "tb-invitee@example.com") || strings.Contains(pinned, "tb-revoked@example.com") || strings.Contains(pinned, "team.caps_updated") {
 		t.Fatalf("a ta-pinned PAT read sibling team tb's rows from the org trail: %s", pinned)
 	}
-	if !strings.Contains(pinned, `"next_offset":3`) {
-		t.Fatalf("the pinned page's next_offset does not count the whole trail (3 rows): %s", pinned)
+	if !strings.Contains(pinned, `"next_offset":5`) {
+		t.Fatalf("the pinned page's next_offset does not count the whole trail (5 rows): %s", pinned)
 	}
 }
