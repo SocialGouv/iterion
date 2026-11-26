@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # Iterion container image. Multi-stage:
 #   1. studio-builder — vite build of the React studio → dist/
 #   2. go-builder     — go build (vendor mode, CGO disabled, ldflags
@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------
 # --platform=$BUILDPLATFORM: the studio bundle is JS (arch-independent), so build
 # it once on the builder's native arch — never under emulation for an arm64 target.
-FROM --platform=$BUILDPLATFORM node:26-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS studio-builder
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS studio-builder
 WORKDIR /app
 # pnpm-workspace.yaml + pnpm-lock.yaml live at the repo root; the
 # studio/ directory is a workspace member that doesn't carry its own
@@ -103,7 +103,7 @@ RUN sh scripts/build-execenv-capsule.sh "$TARGETARCH" /out/iterion-execenv-capsu
 # ---------------------------------------------------------------------
 # Stage 3 — Pinned LLM CLIs
 # ---------------------------------------------------------------------
-FROM node:26-bookworm-slim@sha256:28147155d47dc31abe0a46e0d12b59b2fb3d0a2dcc5dc65fce76a074180b16fe AS llm-clis
+FROM node:26-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9 AS llm-clis
 WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
@@ -116,7 +116,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
 # ---------------------------------------------------------------------
-FROM debian:12-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
+FROM debian:12-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS runtime
 
 # NOTE: the VERSION/COMMIT ARGs are consumed at the BOTTOM of this stage (just
 # above the iterion binary COPY). COMMIT changes on every push; declaring it

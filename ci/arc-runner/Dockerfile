@@ -1,5 +1,5 @@
 # Keep ARC's immutable runner binary current through Renovate's Docker manager.
-FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+FROM ghcr.io/actions/actions-runner:2.338.2@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
 
 USER root
 # Go's race detector needs the C compiler and libc headers.
