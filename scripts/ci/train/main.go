@@ -418,7 +418,17 @@ func cmdLand(ctx context.Context, args []string, stderr io.Writer) error {
 	if *dry || *keep {
 		return nil
 	}
-	return removeWorktree(ctx, g, root)
+	return cleanupAfterLanding(ctx, g, root, *id, stderr)
+}
+
+// cleanupAfterLanding removes a landed train's worktree. Its failure is a
+// warning, never the exit code: main already carries the whole lot, and an
+// exit 2 ("no verdict") would tell a script nothing landed.
+func cleanupAfterLanding(ctx context.Context, g *gitRunner, root, id string, stderr io.Writer) error {
+	if err := removeWorktree(ctx, g, root); err != nil {
+		fmt.Fprintf(stderr, "ci:train: landed, but its worktree stays: %v — drop it with `task ci:train -- clean -id %s`\n", err, id)
+	}
+	return nil
 }
 
 func cmdClean(ctx context.Context, args []string, stderr io.Writer) error {
