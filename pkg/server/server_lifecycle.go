@@ -400,6 +400,11 @@ func (s *Server) ListenAndServe() error {
 	// launch — so a bot nobody launches rots unseen (#2354). Gauge-only, no
 	// durable state, hence no election and no cloud twin owed.
 	s.startOverrideShadowObserver()
+	// Shared-gateway gauge (ADR-167 T2): per gateway host, the alive subbot
+	// trees holding its capacity subject, read off the one listing the
+	// run-admission ledger counts. Gauge-only, no durable state, hence no
+	// election: every replica publishes the same reading.
+	s.startGatewayAliveRunsObserver()
 	// Merge-gate sweeper (cloud only): the reconciliation net under the
 	// reconciler's lossy outcome event. Same cadence as the retry sweeper next
 	// door, and needed for the same reason — a required check nobody answers

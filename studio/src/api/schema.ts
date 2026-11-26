@@ -208,6 +208,26 @@ export interface paths {
         patch: operations["patchAdminLlmApiKeysByKeyId"];
         trace?: never;
     };
+    "/api/admin/llm/gateway-alive-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /api/admin/llm/gateway-alive-runs
+         * @description Super-admin only. Per gateway host (sorted), the alive subbot trees (the iterion_gateway_alive_runs gauge) and alive runs (the run-admission ledger's count) holding its capacity subject gw:<host>, all teams together; the trees alive on the host whose subjects do not name it (unnamed_trees: the host read from the key row each stamped fingerprint names, never from content_boundary.gateway_host; a subbot child judged with its tree); per bot of the tree's root, its trees; and the trees that sealed a gateway key whose host cannot be read (unresolved_trees). Counts and bot ids only. Observe-only: nothing is reserved on a gateway.
+         */
+        get: operations["getAdminLlmGatewayAliveRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/llm/oauth/connections": {
         parameters: {
             query?: never;
@@ -9354,6 +9374,24 @@ export interface components {
             sync_issues_enabled: boolean;
             web_url?: string;
         };
+        gatewayAliveRunsView: {
+            hosts: components["schemas"]["gatewayHostAliveRuns"][];
+            /** Format: date-time */
+            read_at: string;
+            unresolved_trees: number;
+        };
+        gatewayBotAliveTrees: {
+            alive_trees: number;
+            bot_id: string;
+        };
+        gatewayHostAliveRuns: {
+            alive_runs: number;
+            alive_trees: number;
+            bots: components["schemas"]["gatewayBotAliveTrees"][];
+            host: string;
+            subject: string;
+            unnamed_trees: number;
+        };
         launchBudgetSpec: {
             max_cost_usd?: number;
             max_duration?: string;
@@ -10437,6 +10475,54 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminLlmGatewayAliveRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["gatewayAliveRunsView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The alive runs or the key rows could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description run_store_without_alive_capacity_listing or api_key_store_without_gateway_key_lookup: the instance does not host the reading */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,6 +302,51 @@ func (f failingPlatformList) ListByTenant(context.Context, string) ([]botsource.
 	return nil, f.err
 }
 
+// hangingPlatformList answers its first row listing, then hangs every later
+// one until its context ends — a read stuck on an established connection. hung
+// closes when the first hanging call starts.
+type hangingPlatformList struct {
+	botsource.Store
+	calls *atomic.Int32
+	hung  chan struct{}
+}
+
+func (h hangingPlatformList) ListByTenant(ctx context.Context, tenant string) ([]botsource.BotSource, error) {
+	switch h.calls.Add(1) {
+	case 1:
+		return h.Store.ListByTenant(ctx, tenant)
+	case 2:
+		close(h.hung)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A pass whose row listing hangs fails at its deadline and raises the
+// unavailable flag, holding the per-slug values: without a bound they freeze
+// while the flag still reads clean. Only a failed pass sets the flag here —
+// the loop is run without the arming — so reading 1 is the deadline at work.
+func TestRunOverrideShadowObserver_AHungRowListFailsItsPass(t *testing.T) {
+	s := newShadowObserverServer(t, "0.8.0", "0.7.0")
+	list := hangingPlatformList{Store: s.botSources, calls: &atomic.Int32{}, hung: make(chan struct{})}
+	s.botSources = list
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runOverrideShadowObserver(ctx, 40*time.Millisecond)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitClosed(t, list.hung, "the observer never listed the platform rows a second time")
+	waitForGauge(t, s.cfg.Metrics, shadowUnavailSeries, 1, "a row listing that hangs must fail its pass at the deadline and raise the flag")
+	if got := scrapedGauges(t, s.cfg.Metrics)[shadowsNewerSeries]; got != 1 {
+		t.Fatalf("%s = %v after a hung pass, want the shadow's last value 1 held", shadowsNewerSeries, got)
+	}
+}
+
 func TestOverrideShadowObserver_AnUnreadableRowListHoldsAndFlags(t *testing.T) {
 	s := newShadowObserverServer(t, "0.8.0", "0.7.0")
 	ctx := context.Background()
@@ -571,26 +617,14 @@ func TestRunOverrideShadowObserver_ABootPassPrecedesTheFirstTick(t *testing.T) {
 
 // A loop defined and never STARTED is this ticket's own defect one level up:
 // the two reporters it replaces were each wired and each passive. Asserted on
-// the source because ListenAndServe cannot be run here, through this package's
-// own sweep (bot_resolver_sweep_test.go) rather than a raw read: sweepServerFiles
-// strips line comments before handing the body over, so a call commented OUT
-// cannot satisfy the witness — which a `strings.Contains` on the raw bytes
-// happily would, leaving the whole feature dead behind a green gate. The `seen`
-// guard is the other half: a renamed file would otherwise make this vacuous.
+// the parsed source because no test boots ListenAndServe past its
+// recovery-passive return (assertArmedAtBoot): the call must be a statement
+// of its body, so a call
+// commented out, behind a dead branch or in another function cannot satisfy
+// the witness — which a text search on the file happily would, leaving the
+// whole feature dead behind a green gate.
 func TestServerLifecycle_ArmsTheOverrideShadowObserver(t *testing.T) {
-	seen := false
-	sweepServerFiles(t, func(name, body string) {
-		if name != "server_lifecycle.go" {
-			return
-		}
-		seen = true
-		if !strings.Contains(body, "s.startOverrideShadowObserver()") {
-			t.Error("server_lifecycle.go does not arm the override-shadow observer — the gauges would sit at their registered zeros, which is exactly what a clean deployment reads")
-		}
-	})
-	if !seen {
-		t.Fatal("server_lifecycle.go was not swept: this witness would pass on a file it never read")
-	}
+	assertArmedAtBoot(t, "startOverrideShadowObserver")
 }
 
 // The pass itself must not panic reaching for a registry or a store it does

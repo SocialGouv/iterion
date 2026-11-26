@@ -323,6 +323,8 @@ FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_bot_override_shadows_newer{slug}` | server | The five-minute shadow poll over the platform bot rows, per slug |
 | `iterion_bot_shadow_check_unavailable` | server | The same poll, when the catalog or the platform rows could not be read — a bot root that is not there included |
 | `iterion_bot_override_unorderable_version{slug}` | server | The same poll, for a pair whose versions do not order |
+| `iterion_gateway_alive_runs{host}` | server | The one-minute sample of alive subbot trees holding each gateway's `gw:<host>` subject; the same listing on every replica, so `max by (host)` over the replicas whose `_unavailable` is 0; no series for a host with none |
+| `iterion_gateway_alive_runs_unavailable` | server | 1 until that sample's first pass succeeds and after any failed or timed-out read; the per-host series hold their last values. No series on a runner pod |
 
 All from a shared registry in
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) so the

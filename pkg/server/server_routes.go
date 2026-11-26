@@ -377,6 +377,11 @@ func (s *Server) routes() {
 	// (api-keys need the BYOK store, oauth the forfait store).
 	s.registerAdminLLMRoutes()
 
+	// Shared-gateway status (super-admin, ADR-167 T2): per gateway host, the
+	// alive runs and trees holding its capacity subject, and the trees on it
+	// whose subjects do not name it.
+	s.registerGatewayAliveRunsRoutes()
+
 	// Platform forge OAuth apps (super-admin): one registration of a forge
 	// instance's application serves every team's connect flow.
 	s.registerAdminForgeRoutes()

@@ -127,6 +127,22 @@ type Registry struct {
 	// choice, and paging on one iterion cannot even order would be a page
 	// nobody can clear.
 	BotOverrideUnorderableVersion *prometheus.GaugeVec // slug
+
+	// --- Shared gateway capacity (ADR-167 T2) ----------------------
+	// GatewayAliveRuns is, per gateway host, the alive subbot trees whose
+	// runs hold its capacity subject `gw:<host>` (a tree is one place,
+	// ADR-167 §5), all teams together — the reading an operator sizes the
+	// gateway's bound on. The label is the host, not a tenant: the gateways
+	// with alive runs are few, and a host with none has no series (a whole
+	// pass replaces the vector).
+	GatewayAliveRuns *GaugeSnapshot // host
+	// GatewayAliveRunsUnavailable keeps the gauge above readable: a host
+	// absent there reads "no alive run" both on a quiet gateway and on a
+	// replica whose read failed, so a failed or timed-out read raises this
+	// and HOLDS the per-host values. A SampledGauge: only the process that
+	// samples (the server) publishes it, so a runner pod sharing the
+	// registry never reports an availability nobody measured.
+	GatewayAliveRunsUnavailable *SampledGauge
 }
 
 // The dispositions of one pull-forward probe, each counted at the ONE site
@@ -294,6 +310,14 @@ func New() *Registry {
 		Help: "1 when the platform override of this slug and the bundle below it cannot be ordered — a free-form or suffixed version, or a side that declares no version at all — so no staleness verdict is made either way. Informational: no alert rule reads this series.",
 	}, []string{"slug"})
 
+	r.GatewayAliveRuns = newGaugeSnapshot(prometheus.GaugeOpts{
+		Name: "iterion_gateway_alive_runs",
+		Help: "Alive subbot trees holding gw:<host> (ADR-167 §5: a tree is one place), all teams together. Every server replica samples the same listing: aggregate with max over the replicas whose iterion_gateway_alive_runs_unavailable is 0, never sum — a blind replica holds its last values. A host with none has no series.",
+	}, "host")
+	r.GatewayAliveRunsUnavailable = newSampledGauge(prometheus.GaugeOpts{
+		Name: "iterion_gateway_alive_runs_unavailable",
+		Help: "1 until a pass succeeds and after any failed or timed-out read; the per-host series of iterion_gateway_alive_runs then hold their last values. Published only by a process that samples them (the server).",
+	})
 	r.DLQDepthByPool = newGaugeSnapshot(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth_by_pool",
 		Help: "Messages parked on each registry-known, non-disabled runner pool DLQ.",
@@ -309,6 +333,7 @@ func New() *Registry {
 		r.AuthLoginsTotal, r.AuthPasswordResetsTotal,
 		r.LaunchDeniedTotal, r.RunsOrphanRecovered, r.OrphanSweepErrors, r.DLQDepth, r.DLQDepthByPool,
 		r.BotOverrideShadowsNewer, r.BotShadowCheckUnavailable, r.BotOverrideUnorderableVersion,
+		r.GatewayAliveRuns, r.GatewayAliveRunsUnavailable,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
 		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps, r.RunsRetryProbes,
 	)

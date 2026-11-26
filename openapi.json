@@ -6775,6 +6775,78 @@
         ],
         "type": "object"
       },
+      "gatewayAliveRunsView": {
+        "properties": {
+          "hosts": {
+            "items": {
+              "$ref": "#/components/schemas/gatewayHostAliveRuns"
+            },
+            "type": "array"
+          },
+          "read_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "unresolved_trees": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "read_at",
+          "hosts",
+          "unresolved_trees"
+        ],
+        "type": "object"
+      },
+      "gatewayBotAliveTrees": {
+        "properties": {
+          "alive_trees": {
+            "type": "integer"
+          },
+          "bot_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bot_id",
+          "alive_trees"
+        ],
+        "type": "object"
+      },
+      "gatewayHostAliveRuns": {
+        "properties": {
+          "alive_runs": {
+            "type": "integer"
+          },
+          "alive_trees": {
+            "type": "integer"
+          },
+          "bots": {
+            "items": {
+              "$ref": "#/components/schemas/gatewayBotAliveTrees"
+            },
+            "type": "array"
+          },
+          "host": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "unnamed_trees": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "host",
+          "subject",
+          "alive_trees",
+          "alive_runs",
+          "unnamed_trees",
+          "bots"
+        ],
+        "type": "object"
+      },
       "launchBudgetSpec": {
         "properties": {
           "max_cost_usd": {
@@ -9090,6 +9162,40 @@
           }
         },
         "summary": "PATCH /api/admin/llm/api-keys/{key_id}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/llm/gateway-alive-runs": {
+      "get": {
+        "description": "Super-admin only. Per gateway host (sorted), the alive subbot trees (the iterion_gateway_alive_runs gauge) and alive runs (the run-admission ledger's count) holding its capacity subject gw:\u003chost\u003e, all teams together; the trees alive on the host whose subjects do not name it (unnamed_trees: the host read from the key row each stamped fingerprint names, never from content_boundary.gateway_host; a subbot child judged with its tree); per bot of the tree's root, its trees; and the trees that sealed a gateway key whose host cannot be read (unresolved_trees). Counts and bot ids only. Observe-only: nothing is reserved on a gateway.",
+        "operationId": "getAdminLlmGatewayAliveRuns",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/gatewayAliveRunsView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          },
+          "500": {
+            "description": "The alive runs or the key rows could not be read"
+          },
+          "501": {
+            "description": "run_store_without_alive_capacity_listing or api_key_store_without_gateway_key_lookup: the instance does not host the reading"
+          }
+        },
+        "summary": "GET /api/admin/llm/gateway-alive-runs",
         "tags": [
           "admin"
         ]

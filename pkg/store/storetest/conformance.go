@@ -113,6 +113,8 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapacitySubjectHolder", func(t *testing.T) { testCapacitySubjectHolder(t, factory(t)) })
 	t.Run("CapacitySubjectIsNotAFingerprint", func(t *testing.T) { testCapacitySubjectIsNotAFingerprint(t, factory(t)) })
 	t.Run("CapacitySubjectStampRoundTrip", func(t *testing.T) { testCapacitySubjectStampRoundTrip(t, factory(t)) })
+	t.Run("AliveCapacityListing", func(t *testing.T) { testAliveCapacityListing(t, factory(t)) })
+	t.Run("AliveCapacityListingMirrorsTheCount", func(t *testing.T) { testAliveCapacityListingMirrorsTheCount(t, factory(t)) })
 	t.Run("SetRunBudgetOverrides", func(t *testing.T) { testSetRunBudgetOverrides(t, factory(t)) })
 	t.Run("SetRunnerVersion", func(t *testing.T) { testSetRunnerVersion(t, factory(t)) })
 	t.Run("SetRunBudgetSnapshot", func(t *testing.T) { testSetRunBudgetSnapshot(t, factory(t)) })
@@ -655,8 +657,8 @@ func testQueuedFlipRevert(t *testing.T, s store.RunStore) {
 		if changed, err := fl.RevertQueuedFlip(ctx, runID, later, "refused"); err != nil || !changed {
 			t.Fatalf("revert = (%t, %v), want (true, nil)", changed, err)
 		}
-		if r, err = s.LoadRun(ctx, runID); err != nil || r.QueuedAt == nil || !r.QueuedAt.Equal(previous.At) {
-			t.Fatalf("after the revert: queued_at %v (%v), want the previous attempt's %v", r.QueuedAt, err, previous.At)
+		if r = loadRunOrFatal(ctx, t, s, runID); r.QueuedAt == nil || !r.QueuedAt.Equal(previous.At) {
+			t.Fatalf("after the revert: queued_at %v, want the previous attempt's %v", r.QueuedAt, previous.At)
 		}
 	})
 
@@ -791,15 +793,15 @@ func testQueuedAttemptClaim(t *testing.T, s store.RunStore) {
 	if err != nil || changed {
 		t.Fatalf("claim by a delivery published before the attempt = (%t, %v), want (false, nil)", changed, err)
 	}
-	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusQueued {
-		t.Fatalf("after the stale claim: %v (%v), want still queued", got.Status, err)
+	if got := loadRunOrFatal(ctx, t, s, runID); got.Status != store.RunStatusQueued {
+		t.Fatalf("after the stale claim: %v, want still queued", got.Status)
 	}
 	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
 	if err != nil || !changed {
 		t.Fatalf("claim by the attempt's delivery = (%t, %v), want (true, nil)", changed, err)
 	}
-	if got, err := s.LoadRun(ctx, runID); err != nil || got.Status != store.RunStatusRunning {
-		t.Fatalf("after the claim: %v (%v), want running", got.Status, err)
+	if got := loadRunOrFatal(ctx, t, s, runID); got.Status != store.RunStatusRunning {
+		t.Fatalf("after the claim: %v, want running", got.Status)
 	}
 	changed, err = claimer.ClaimQueuedRunIfAttempt(ctx, runID, r.QueuedAt.Add(time.Second))
 	if err != nil || changed {
@@ -3546,8 +3548,8 @@ func testSaveRunHostileValues(t *testing.T, s store.RunStore) {
 	if err := s.SaveRun(ctx, &born); err != nil {
 		t.Fatalf("SaveRun upsert-create: %v", err)
 	}
-	if b, err := s.LoadRun(ctx, "run-born-terminal"); err != nil || b.OutcomeSeq != 0 {
-		t.Fatalf("born-terminal = (seq %d, %v), want (0, nil)", b.OutcomeSeq, err)
+	if b := loadRunOrFatal(ctx, t, s, "run-born-terminal"); b.OutcomeSeq != 0 {
+		t.Fatalf("born-terminal = seq %d, want 0", b.OutcomeSeq)
 	}
 }
 
@@ -4366,8 +4368,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
 		t.Fatalf("re-stamp without reopens_at: %v", err)
 	}
-	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.SkippedCredReopensAt != nil {
-		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v (%v)", got.SkippedCredReopensAt, err)
+	if got = loadRunOrFatal(ctx, t, s, "fp_run1"); got.SkippedCredReopensAt != nil {
+		t.Fatalf("a re-stamp that skipped nothing must clear SkippedCredReopensAt, got %v", got.SkippedCredReopensAt)
 	}
 
 	// Which TIERS funded the run ride the same stamp, and are replaced
@@ -4406,8 +4408,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
 		t.Fatalf("re-stamp with no tier: %v", err)
 	}
-	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || len(got.CredentialTiers) != 0 {
-		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v (%v)", got.CredentialTiers, err)
+	if got = loadRunOrFatal(ctx, t, s, "fp_run1"); len(got.CredentialTiers) != 0 {
+		t.Fatalf("a resolution that sealed nothing must clear CredentialTiers, got %v", got.CredentialTiers)
 	}
 
 	// The model-idle marker is observability: a running run executing no
@@ -4422,8 +4424,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", &idle); err != nil {
 		t.Fatalf("SetRunLLMIdle: %v", err)
 	}
-	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
-		t.Fatalf("LLMIdleSince = %v (%v), want %v", got.LLMIdleSince, err, idle)
+	if got = loadRunOrFatal(ctx, t, s, "fp_run1"); got.LLMIdleSince == nil || !got.LLMIdleSince.Equal(idle) {
+		t.Fatalf("LLMIdleSince = %v, want %v", got.LLMIdleSince, idle)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) with fp_run1 idle = %d/%v, want 1 — an idle run keeps its slot; the marker is not a release", n, err)
@@ -4432,8 +4434,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if err := s.SetRunLLMIdle(ctx, "fp_run1", nil); err != nil {
 		t.Fatalf("SetRunLLMIdle(nil): %v", err)
 	}
-	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
-		t.Fatalf("SetRunLLMIdle(nil) must clear the marker, got %v (%v)", got.LLMIdleSince, err)
+	if got = loadRunOrFatal(ctx, t, s, "fp_run1"); got.LLMIdleSince != nil {
+		t.Fatalf("SetRunLLMIdle(nil) must clear the marker, got %v", got.LLMIdleSince)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) after the marker cleared = %d/%v, want 1", n, err)
@@ -4446,8 +4448,8 @@ func testCredFingerprintMeter(t *testing.T, s store.RunStore) {
 	if err := s.SetRunCredStamp(ctx, "fp_run1", store.RunCredStamp{Fingerprints: []string{"fp-zai"}}); err != nil {
 		t.Fatalf("re-stamp: %v", err)
 	}
-	if got, err = s.LoadRun(ctx, "fp_run1"); err != nil || got.LLMIdleSince != nil {
-		t.Fatalf("a re-stamp must clear LLMIdleSince, got %v (%v)", got.LLMIdleSince, err)
+	if got = loadRunOrFatal(ctx, t, s, "fp_run1"); got.LLMIdleSince != nil {
+		t.Fatalf("a re-stamp must clear LLMIdleSince, got %v", got.LLMIdleSince)
 	}
 	if n, err = s.CountAliveRunsWithCredFingerprint(ctx, "fp-zai", ""); err != nil || n != 1 {
 		t.Fatalf("alive(fp-zai) after re-stamp = %d/%v, want 1", n, err)
@@ -5476,15 +5478,15 @@ func testCapacitySubjectStampRoundTrip(t *testing.T, s store.RunStore) {
 	if err := s.SaveRun(ctx, r); err != nil {
 		t.Fatalf("SaveRun %s: %v", id, err)
 	}
-	if got, err := s.LoadRun(ctx, id); err != nil || !slices.Equal(got.CapacitySubjects, []string{first, second}) {
-		t.Fatalf("after the launch's write: CapacitySubjects = %v (%v), want [%s %s]", got.CapacitySubjects, err, first, second)
+	if got := loadRunOrFatal(ctx, t, s, id); !slices.Equal(got.CapacitySubjects, []string{first, second}) {
+		t.Fatalf("after the launch's write: CapacitySubjects = %v, want [%s %s]", got.CapacitySubjects, first, second)
 	}
 
 	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}, CapacitySubjects: []string{moved}}); err != nil {
 		t.Fatalf("SetRunCredStamp %s: %v", id, err)
 	}
-	if got, err := s.LoadRun(ctx, id); err != nil || !slices.Equal(got.CapacitySubjects, []string{moved}) {
-		t.Fatalf("after the resume's re-stamp: CapacitySubjects = %v (%v), want [%s] alone — a re-stamp replaces, never appends", got.CapacitySubjects, err, moved)
+	if got := loadRunOrFatal(ctx, t, s, id); !slices.Equal(got.CapacitySubjects, []string{moved}) {
+		t.Fatalf("after the resume's re-stamp: CapacitySubjects = %v, want [%s] alone — a re-stamp replaces, never appends", got.CapacitySubjects, moved)
 	}
 	for name, want := range map[string]int{first: 0, second: 0, moved: 1} {
 		if n, err := s.CountAliveRunsWithCredFingerprint(ctx, name, ""); err != nil || n != want {
@@ -5495,10 +5497,69 @@ func testCapacitySubjectStampRoundTrip(t *testing.T, s store.RunStore) {
 	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}}); err != nil {
 		t.Fatalf("SetRunCredStamp %s: %v", id, err)
 	}
-	if got, err := s.LoadRun(ctx, id); err != nil || len(got.CapacitySubjects) != 0 {
-		t.Fatalf("after a re-stamp that sealed no gateway key: CapacitySubjects = %v (%v), want none", got.CapacitySubjects, err)
+	if got := loadRunOrFatal(ctx, t, s, id); len(got.CapacitySubjects) != 0 {
+		t.Fatalf("after a re-stamp that sealed no gateway key: CapacitySubjects = %v, want none", got.CapacitySubjects)
 	}
 	if n, err := s.CountAliveRunsWithCredFingerprint(ctx, moved, ""); err != nil || n != 0 {
 		t.Fatalf("alive(%s) after the subjects were cleared = %d/%v, want 0", moved, n, err)
 	}
+
+	// The marker that a stamp read its subjects (CapacityStampedFor) rides
+	// the unit: written by the launch's whole-document write and by a
+	// re-stamp, and replaced — cleared included — by every re-stamp, so it
+	// always qualifies the lists it was written with.
+	if r, err = s.LoadRun(ctx, id); err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	store.RunCredStamp{Fingerprints: []string{"fp-launch"}, CapacitySubjects: []string{first}, CapacityStamped: true}.Apply(r)
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun %s: %v", id, err)
+	}
+	if got := loadRunOrFatal(ctx, t, s, id); !got.CapacitySubjectsRead() {
+		t.Fatalf("after the launch's write: CapacitySubjectsRead() = false (marker %q), want true", got.CapacityStampedFor)
+	}
+	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}}); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+	if got := loadRunOrFatal(ctx, t, s, id); got.CapacityStampedFor != "" {
+		t.Fatalf("after a re-stamp written without the subjects: marker %q, want cleared — a stamp that did not read them must not say it did", got.CapacityStampedFor)
+	}
+	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-key"}, CapacityStamped: true}); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+	if got := loadRunOrFatal(ctx, t, s, id); !got.CapacitySubjectsRead() || len(got.CapacitySubjects) != 0 {
+		t.Fatalf("after a re-stamp that read the subjects and sealed no gateway key: CapacitySubjectsRead() = %v (marker %q), CapacitySubjects = %v, want true and none", got.CapacitySubjectsRead(), got.CapacityStampedFor, got.CapacitySubjects)
+	}
+
+	// A writer that does not know the marker rewrites the lists around it —
+	// a T1 replica's resume during a rolling deploy clears the subjects, a
+	// pre-T1 one rewrites the fingerprints alone. The store keeps the marker
+	// as written, never recomputes it; the run then no longer reads as one
+	// whose subjects were read, and its empty list says nothing.
+	if err := s.SetRunCredStamp(ctx, id, store.RunCredStamp{Fingerprints: []string{"fp-gw"}, CapacitySubjects: []string{first}, CapacityStamped: true}); err != nil {
+		t.Fatalf("SetRunCredStamp %s: %v", id, err)
+	}
+	r = loadRunOrFatal(ctx, t, s, id)
+	marker := r.CapacityStampedFor
+	r.CapacitySubjects = nil
+	if err := s.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun %s: %v", id, err)
+	}
+	if got := loadRunOrFatal(ctx, t, s, id); got.CapacityStampedFor != marker || got.CapacitySubjectsRead() {
+		t.Fatalf("after a writer unaware of the marker cleared the subjects: marker %q (written %q), CapacitySubjectsRead() = %v, want the marker kept and not read — a cleared list it was not written for must not read as read", got.CapacityStampedFor, marker, got.CapacitySubjectsRead())
+	}
+}
+
+// loadRunOrFatal loads id or fails the test. A row whose failure message
+// reads the loaded run must not dereference the nil a failed load returns:
+// the panic would abort the conformance binary, every later row unreported.
+func loadRunOrFatal(ctx context.Context, t *testing.T, s interface {
+	LoadRun(context.Context, string) (*store.Run, error)
+}, id string) *store.Run {
+	t.Helper()
+	r, err := s.LoadRun(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadRun %s: %v", id, err)
+	}
+	return r
 }

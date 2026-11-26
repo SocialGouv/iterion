@@ -512,6 +512,37 @@ type ApiKeyStore interface {
 	ClearDefault(ctx context.Context, teamID, userID string, provider Provider, exceptID string) error
 }
 
+// GatewayKeyLookup is the optional capability that joins a run's stamped
+// fingerprints back to the gateways their keys dial: for each fingerprint in
+// fps that a stored openai_compatible row carries, the row's base URL — "" when
+// the row stores none. A fingerprint no gateway row carries is absent from the
+// answer: a vendor key, a rotated or deleted key, a row that predates
+// fingerprint stamping. An optional interface rather than a method of
+// ApiKeyStore, so a store that does not host it says so (a type assertion)
+// instead of every test double growing a method.
+//
+// Tenant-blind by contract, whatever ctx carries: the shared gateway a team
+// key, an org key and a platform key dial is one host for every tenant, and
+// the reading that asks (the gateway status route) is a platform one. Unlike
+// MarkFingerprintUsed, which narrows to the context's tenant.
+//
+// One URL per fingerprint: a gateway fingerprint folds the base URL in
+// (APIKeyFingerprint), so rows that share one share their URL; rows that
+// disagree are an error, never one of them picked.
+type GatewayKeyLookup interface {
+	GatewayBaseURLsByFingerprint(ctx context.Context, fps []string) (map[string]string, error)
+}
+
+// gatewayURLsInto records one gateway row in a lookup answer, refusing a
+// fingerprint two rows give different URLs.
+func gatewayURLsInto(out map[string]string, fingerprint, baseURL string) error {
+	if prev, seen := out[fingerprint]; seen && prev != baseURL {
+		return fmt.Errorf("secrets: gateway key lookup: fingerprint %s is carried by rows with different base URLs (%q, %q)", fingerprint, prev, baseURL)
+	}
+	out[fingerprint] = baseURL
+	return nil
+}
+
 // Sentinel errors raised by Store implementations.
 var (
 	ErrApiKeyNotFound = errors.New("secrets: api key not found")
@@ -1202,6 +1233,31 @@ func (m *MemoryApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint
 	return nil
 }
 
+var _ GatewayKeyLookup = (*MemoryApiKeyStore)(nil)
+
+// GatewayBaseURLsByFingerprint is the memory twin (see GatewayKeyLookup): a
+// scan of every row, whatever tenant ctx carries.
+func (m *MemoryApiKeyStore) GatewayBaseURLsByFingerprint(_ context.Context, fps []string) (map[string]string, error) {
+	want := map[string]bool{}
+	for _, fp := range fps {
+		if fp != "" {
+			want[fp] = true
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]string{}
+	for _, k := range m.keys {
+		if k.Provider != ProviderOpenAICompatible || k.Fingerprint == "" || !want[k.Fingerprint] {
+			continue
+		}
+		if err := gatewayURLsInto(out, k.Fingerprint, k.BaseURL); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func (m *MemoryApiKeyStore) ClearDefault(_ context.Context, teamID, userID string, provider Provider, exceptID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1470,6 +1526,47 @@ func (s *MongoApiKeyStore) MarkFingerprintUsed(ctx context.Context, fingerprint 
 		return fmt.Errorf("secrets: mark fingerprint used: %w", err)
 	}
 	return nil
+}
+
+var _ GatewayKeyLookup = (*MongoApiKeyStore)(nil)
+
+// GatewayBaseURLsByFingerprint is the Mongo twin (see GatewayKeyLookup): one
+// read on the sparse fingerprint index, projected to the two fields it
+// answers with. Deliberately NO tenant filter, whatever ctx carries.
+func (s *MongoApiKeyStore) GatewayBaseURLsByFingerprint(ctx context.Context, fps []string) (map[string]string, error) {
+	want := make([]string, 0, len(fps))
+	for _, fp := range fps {
+		if fp != "" {
+			want = append(want, fp)
+		}
+	}
+	out := map[string]string{}
+	if len(want) == 0 {
+		return out, nil
+	}
+	cur, err := s.coll.Find(ctx,
+		bson.M{"fingerprint": bson.M{"$in": want}, "provider": ProviderOpenAICompatible},
+		options.Find().SetProjection(bson.M{"fingerprint": 1, "base_url": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("secrets: gateway key lookup: %w", err)
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var row struct {
+			Fingerprint string `bson:"fingerprint"`
+			BaseURL     string `bson:"base_url"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return nil, fmt.Errorf("secrets: gateway key lookup: decode: %w", err)
+		}
+		if err := gatewayURLsInto(out, row.Fingerprint, row.BaseURL); err != nil {
+			return nil, err
+		}
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("secrets: gateway key lookup: cursor: %w", err)
+	}
+	return out, nil
 }
 
 func (s *MongoApiKeyStore) ClearDefault(ctx context.Context, teamID, userID string, provider Provider, exceptID string) error {

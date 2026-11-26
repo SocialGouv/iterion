@@ -179,6 +179,25 @@ func TestGatewayCapacitySubject(t *testing.T) {
 	}
 }
 
+// stampDest names the Run field each RunCredStamp field lands in.
+var stampDest = map[string]string{
+	"Fingerprints":     "CredFingerprints",
+	"CapacitySubjects": "CapacitySubjects",
+	"CapacityStamped":  "CapacityStampedFor",
+	"Tiers":            "CredentialTiers",
+	"SkippedReopensAt": "SkippedCredReopensAt",
+}
+
+// stampLands is the value a stamp's field must leave in its destination:
+// the field itself, except CapacityStamped, which lands as the marker of the
+// stamp's two lists.
+func stampLands(stamp RunCredStamp, field string, v reflect.Value) any {
+	if field == "CapacityStamped" {
+		return stamp.CapacityStampedFor()
+	}
+	return v.Interface()
+}
+
 // Every field of RunCredStamp reaches the run document through Apply, the
 // writer the launch path and the filesystem twin of SetRunCredStamp share: a
 // field added to the stamp and forgotten there would stamp resumes on Mongo
@@ -188,12 +207,7 @@ func TestGatewayCapacitySubject(t *testing.T) {
 // and two crossed fields fail both rows.
 func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0).UTC()
-	dest := map[string]string{
-		"Fingerprints":     "CredFingerprints",
-		"CapacitySubjects": "CapacitySubjects",
-		"Tiers":            "CredentialTiers",
-		"SkippedReopensAt": "SkippedCredReopensAt",
-	}
+	dest := stampDest
 	var base Run
 	RunCredStamp{}.Apply(&base)
 	typ := reflect.TypeOf(RunCredStamp{})
@@ -209,6 +223,8 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 			switch v.Interface().(type) {
 			case []string:
 				v.Set(reflect.ValueOf([]string{"value-" + f.Name}))
+			case bool:
+				v.SetBool(true)
 			case *time.Time:
 				v.Set(reflect.ValueOf(&at))
 			default:
@@ -220,8 +236,11 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 			if !got.IsValid() {
 				t.Fatalf("RunCredStamp.%s: this guard names Run.%s, which does not exist — fix the destination", f.Name, to)
 			}
-			if !reflect.DeepEqual(got.Interface(), v.Interface()) {
-				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, want %v", f.Name, to, got.Interface(), v.Interface())
+			if want := stampLands(stamp, f.Name, v); !reflect.DeepEqual(got.Interface(), want) {
+				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, want %v", f.Name, to, got.Interface(), want)
+			}
+			if reflect.DeepEqual(got.Interface(), reflect.ValueOf(&base).Elem().FieldByName(to).Interface()) {
+				t.Fatalf("RunCredStamp.%s: Run.%s = %v after Apply, what the empty stamp writes — the field never reached it", f.Name, to, got.Interface())
 			}
 			// Put the destination back to the empty stamp's value: anything
 			// left differing is a write the field should not have made.
@@ -247,21 +266,18 @@ func TestRunCredStampApplyWritesEveryField(t *testing.T) {
 func TestRunCredStampApplyReplacesAndClearsTheWholeUnit(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0).UTC()
 	old := time.Unix(1_600_000_000, 0).UTC()
-	dest := map[string]string{
-		"Fingerprints":     "CredFingerprints",
-		"CapacitySubjects": "CapacitySubjects",
-		"Tiers":            "CredentialTiers",
-		"SkippedReopensAt": "SkippedCredReopensAt",
-	}
+	dest := stampDest
 	full := RunCredStamp{
 		Fingerprints:     []string{"fp-a", "fp-b"},
 		CapacitySubjects: []string{"gw:a.example", "gw:b.example"},
+		CapacityStamped:  true,
 		Tiers:            []string{"tier-a", "tier-b"},
 		SkippedReopensAt: &at,
 	}
 	prev := Run{
 		CredFingerprints:     []string{"fp-old"},
 		CapacitySubjects:     []string{"gw:old.example"},
+		CapacityStampedFor:   CapacityStampDigest([]string{"fp-old"}, []string{"gw:old.example"}),
 		CredentialTiers:      []string{"tier-old"},
 		SkippedCredReopensAt: &old,
 		LLMIdleSince:         &old,
@@ -285,8 +301,8 @@ func TestRunCredStampApplyReplacesAndClearsTheWholeUnit(t *testing.T) {
 			if !got.IsValid() {
 				t.Fatalf("this guard names Run.%s, which does not exist", to)
 			}
-			if !reflect.DeepEqual(got.Interface(), sv.Field(i).Interface()) {
-				t.Errorf("%s, whole stamp: Run.%s = %v, want %v", start.name, to, got.Interface(), sv.Field(i).Interface())
+			if want := stampLands(full, f.Name, sv.Field(i)); !reflect.DeepEqual(got.Interface(), want) {
+				t.Errorf("%s, whole stamp: Run.%s = %v, want %v", start.name, to, got.Interface(), want)
 			}
 		}
 		if r.LLMIdleSince != nil {
@@ -296,5 +312,82 @@ func TestRunCredStampApplyReplacesAndClearsTheWholeUnit(t *testing.T) {
 		if !reflect.DeepEqual(r, empty) {
 			t.Errorf("%s: an empty stamp over a stamped run left %+v, want every destination cleared", start.name, r)
 		}
+	}
+}
+
+// The marker that a stamp read its capacity subjects qualifies the two lists
+// it was written with. A writer that does not know it — a T1 replica's
+// SetRunCredStamp, which writes the fingerprints and clears the subjects, or
+// a pre-T1 one, which writes the fingerprints and keeps the subjects — leaves
+// it on the document beside lists it no longer describes, and the run must
+// then read as one whose stamp did not read its subjects: otherwise an empty
+// list a T1 resume cleared reads "seals no gateway key" while the run dials
+// one, and the gateway status route counts it nowhere once its key row is gone.
+func TestCapacitySubjectsReadFollowsTheListsItWasStampedFor(t *testing.T) {
+	gw := GatewayCapacitySubject("a.example")
+	stamped := func(fps, subjects []string) Run {
+		var r Run
+		RunCredStamp{Fingerprints: fps, CapacitySubjects: subjects, CapacityStamped: true}.Apply(&r)
+		return r
+	}
+	for _, c := range []struct {
+		name  string
+		run   func() Run
+		want  bool
+		story string
+	}{
+		{"a stamp that read a gateway subject", func() Run { return stamped([]string{"fp-gw"}, []string{gw}) }, true, "the subjects are exact"},
+		{"a stamp that read none", func() Run { return stamped([]string{"fp-vendor"}, nil) }, true, "an empty list then says no gateway key"},
+		{"a stamp of nothing sealed", func() Run { return stamped(nil, nil) }, true, "a resolution that sealed nothing read its subjects too"},
+		{"the same lists in another order", func() Run {
+			r := stamped([]string{"fp-a", "fp-b"}, []string{gw, "gw:b.example"})
+			r.CredFingerprints = []string{"fp-b", "fp-a"}
+			r.CapacitySubjects = []string{"gw:b.example", gw}
+			return r
+		}, true, "the order a store keeps does not matter"},
+		{"a stamp written without the subjects", func() Run {
+			var r Run
+			RunCredStamp{Fingerprints: []string{"fp-gw"}}.Apply(&r)
+			return r
+		}, false, "nothing read them"},
+		{"a T1 re-stamp on the same key", func() Run {
+			r := stamped([]string{"fp-gw"}, []string{gw})
+			r.CapacitySubjects = nil // T1's $unset; the marker stays
+			return r
+		}, false, "the subject the marker was read with is gone"},
+		{"a T1 re-stamp on another key", func() Run {
+			r := stamped([]string{"fp-gw"}, []string{gw})
+			r.CredFingerprints, r.CapacitySubjects = []string{"fp-gw-v2"}, nil
+			return r
+		}, false, "neither list is the one the marker was read with"},
+		{"a T1 re-stamp onto a gateway after a stamp that read none", func() Run {
+			r := stamped([]string{"fp-vendor"}, nil)
+			r.CredFingerprints = []string{"fp-gw"}
+			return r
+		}, false, "an empty list read for other keys says nothing about these"},
+		{"a pre-T1 re-stamp on another key", func() Run {
+			r := stamped([]string{"fp-gw"}, []string{gw})
+			r.CredFingerprints = []string{"fp-gw-v2"} // subjects kept
+			return r
+		}, false, "the subjects were read for other keys"},
+		{"one list's value moved to the other", func() Run {
+			r := stamped([]string{"x"}, nil)
+			r.CredFingerprints, r.CapacitySubjects = nil, []string{"x"}
+			return r
+		}, false, "the two lists are told apart"},
+		{"values joined differently", func() Run {
+			r := stamped([]string{"ab"}, nil)
+			r.CredFingerprints = []string{"a", "b"}
+			return r
+		}, false, "each value is told apart from its neighbours"},
+	} {
+		r := c.run()
+		if got := r.CapacitySubjectsRead(); got != c.want {
+			t.Errorf("%s: CapacitySubjectsRead() = %v, want %v — %s (fps %v, subjects %v, marker %q)", c.name, got, c.want, c.story, r.CredFingerprints, r.CapacitySubjects, r.CapacityStampedFor)
+		}
+	}
+	var none *Run
+	if none.CapacitySubjectsRead() {
+		t.Error("a nil run reads as stamped")
 	}
 }

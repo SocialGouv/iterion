@@ -118,7 +118,8 @@ erDiagram
     string tenant_id FK "teams._id"
     string project_path "the forge slug"
     string[] cred_fingerprints "API-key AND OAuth fingerprints"
-    string[] capacity_subjects "shared capacities the sealed keys draw on - gw:host (ADR-167)"
+    string[] capacity_subjects "gw:host of every sealed gateway key, both channels - stamped at launch and every resume, observed only (ADR-167 T2)"
+    string capacity_stamped_for "digest of the cred_fingerprints and capacity_subjects a stamp that read its subjects wrote - while it matches, an empty list means no gateway key"
     string[] credential_tiers "byok|oauth-forfait|org|pool|platform - NOT credusage's four"
     object llm_route_policy
     object content_boundary "kind team_gateway|own_keys, key_id, gateway_host - frozen at launch"

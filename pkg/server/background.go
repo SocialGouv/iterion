@@ -271,3 +271,18 @@ func summariseOverrun(slow []string) string {
 	}
 	return b.String()
 }
+
+// samplerPassTimeout bounds one pass of a gauge sampler that polls every
+// interval: half of it. A read that hangs on an established connection — the
+// Mongo client carries no operation timeout of its own — then fails its pass,
+// which raises the sampler's unavailable gauge well before the next pass is
+// due, instead of freezing the published values behind a flag that still
+// reads available.
+func samplerPassTimeout(interval time.Duration) time.Duration { return interval / 2 }
+
+// samplePass runs one pass of a sampler under samplerPassTimeout(interval).
+func samplePass(ctx context.Context, interval time.Duration, pass func(context.Context)) {
+	passCtx, cancel := context.WithTimeout(ctx, samplerPassTimeout(interval))
+	defer cancel()
+	pass(passCtx)
+}
