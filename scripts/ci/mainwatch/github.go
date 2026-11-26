@@ -138,6 +138,8 @@ type GitHub interface {
 	AutoMergeHistory(ctx context.Context, number int) ([]AutoMergeEvent, error)
 	// SubIssues lists the sub-issues of an issue, in any state.
 	SubIssues(ctx context.Context, number int) ([]Issue, error)
+	// HasParent reports whether an issue is the sub-issue of any issue.
+	HasParent(ctx context.Context, number int) (bool, error)
 
 	RerunFailedJobs(ctx context.Context, id int64) error
 	EnsureLabel(ctx context.Context, name, color, description string) error
@@ -517,6 +519,19 @@ func (c *restClient) SubIssues(ctx context.Context, number int) ([]Issue, error)
 		err := json.Unmarshal(raw, &v)
 		return v, err
 	})
+}
+
+// HasParent reads the issue's parent: GitHub answers 404 for an issue
+// without one.
+func (c *restClient) HasParent(ctx context.Context, number int) (bool, error) {
+	err := c.get(ctx, c.repoPath("/issues/%d/parent", number), nil)
+	if err == nil {
+		return true, nil
+	}
+	if he := (*httpError)(nil); errors.As(err, &he) && he.Status == http.StatusNotFound {
+		return false, nil
+	}
+	return false, err
 }
 
 func (c *restClient) RerunFailedJobs(ctx context.Context, id int64) error {

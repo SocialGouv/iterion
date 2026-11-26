@@ -49,6 +49,14 @@ func (d *dryRun) AutoMergeHistory(ctx context.Context, number int) ([]AutoMergeE
 	return d.GitHub.AutoMergeHistory(ctx, number)
 }
 
+// HasParent of a placeholder issue is false: it was just "opened".
+func (d *dryRun) HasParent(ctx context.Context, number int) (bool, error) {
+	if d.placeholders[number] {
+		return false, nil
+	}
+	return d.GitHub.HasParent(ctx, number)
+}
+
 func (d *dryRun) would(format string, a ...any) {
 	fmt.Fprintf(d.out, "DRY RUN — would "+format+"\n", a...)
 }

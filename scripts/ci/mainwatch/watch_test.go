@@ -1242,8 +1242,26 @@ func TestAFailedSubIssueFilingIsRetriedByTheNextPass(t *testing.T) {
 	}
 }
 
+// A ticket a person filed under another issue is left there: GitHub refuses
+// a second parent, so filing it would fail every later pass.
+func TestAFlakeTicketUnderAnotherEpicIsLeftThere(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	f.parents[7001] = 3000
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return nil }
+	for pass := 1; pass <= 2; pass++ {
+		if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+	if got := f.subs[flakeEpic]; !slices.Equal(got, []int64{70020}) {
+		t.Fatalf("sub-issues of #%d = %v, want #7002 only: #7001 is under #3000", flakeEpic, got)
+	}
+}
+
 // A flake pass that keeps failing (here every sub-issue filing: the epic is
-// full, or a person moved the ticket under another epic) still lets a green
+// full) still lets a green
 // rerun close the red episode and its armed revert.
 func TestAFlakePassThatKeepsFailingStillClosesTheRedEpisode(t *testing.T) {
 	f, w := openedRevert(t)
@@ -1317,6 +1335,7 @@ func TestTheDryRunReplacesEveryWrite(t *testing.T) {
 		"Run": true, "Attempt": true, "Jobs": true, "JobLog": true, "MainRuns": true, "Compare": true,
 		"PullRequest": true, "OpenIssues": true, "Comments": true, "MainSHA": true, "File": true,
 		"BranchExists": true, "PullRequestFrom": true, "AutoMergeHistory": true, "SubIssues": true,
+		"HasParent": true,
 	}
 	f := newFixture(t)
 	out := &bytes.Buffer{}
