@@ -9,6 +9,6 @@
 // pkg/backend/model exports, so it lives outside that package: a test
 // selector then selects pkg/backend/model's behaviour tests only on what
 // they import, and selects these sweeps on any Go change. The package
-// imports only pkg/dsl/ir and pkg/backend/backendcaps; the setters and
-// seams are matched by name in the parsed source.
+// imports only internal/sweepwalk, pkg/dsl/ir and pkg/backend/backendcaps;
+// the setters and seams are matched by name in the parsed source.
 package modelseams

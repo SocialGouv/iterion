@@ -15,7 +15,8 @@ surface may hide a bot for what they say.
 
 **`category` is a CLOSED, versioned set** — one of six slugs
 ([pkg/bundle/vocab.go](../../../pkg/bundle/vocab.go), mirrored by
-`studio/src/lib/botTaxonomy.ts` under a Go parity test):
+`studio/src/lib/botTaxonomy.ts` under a Go parity test,
+`internal/sweep/catalogclaims/taxonomy_parity_test.go`):
 
 | slug | reads as | fleet examples |
 |---|---|---|

@@ -858,7 +858,7 @@ func checkPresets(diags *[]Diag, presets []PresetDoc, w *ir.Workflow) {
 // a `memory:` block on a backend that cannot serve it, and a permission mode
 // no gate can parse, are ir's own diagnostics, and a warning speaking over
 // them would name the wrong fix.
-// bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne is the corpus
+// catalogcorpus.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne is the corpus
 // twin, which asks THIS package's capability predicate (NodeDurableWriter)
 // for the same node, so the two readers of the question cannot drift apart
 // again (iterion#2881: the twin's dispatch-posture route reading against
@@ -920,7 +920,7 @@ func checkDurableMemoryPromises(diags *[]Diag, skills []SkillDoc, w *ir.Workflow
 // something that is NOT a tool. A store builtin is a tool identifier and
 // nothing else, which is what makes a reference check precise here;
 // TestAPageNamingAWorkspaceWriterPromisesNoDurableMemory and the catalogue
-// gate (bots.TestCatalogBotsBundleConsistencyClean) are what keep it so.
+// gate (catalogcorpus.TestCatalogBotsBundleConsistencyClean) are what keep it so.
 func durableMemoryWriteTools() []string {
 	rows := toolcatalog.CanonicalRows()
 	var out []string
@@ -982,7 +982,7 @@ func anyNodeCanWriteDurably(w *ir.Workflow, ids []string) bool {
 //
 // It is THE asking of the durable-memory capability question, exported so the
 // warning (C274, through anyNodeCanWriteDurably) and its corpus twin
-// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read ONE answer
+// (catalogcorpus.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read ONE answer
 // by construction: the twin's own route reading was dispatch's posture while
 // this one is the walk's, and the two readers of the same question answered
 // one bundle oppositely (iterion#2881).
@@ -1151,7 +1151,7 @@ func readonlySurvivors(llm ir.LLMNode, route string, names []string) []string {
 // bounds what runs, independently of what exists, so every reader asking
 // "can this node reach a writer" must ask it — bundlelint's durable-memory
 // check and its corpus twin
-// (bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read the
+// (catalogcorpus.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne) read the
 // predicates of this family, exported so the two cannot drift.
 //
 // The spellings are the UNION of every route's (gateSpellings): the right

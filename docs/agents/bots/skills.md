@@ -97,7 +97,7 @@ agent later following stale guidance. Concrete examples:
   generator answers for both — it escapes an opener a field never closes
   (`internal/mdcode.EscapeDanglingFence`) and collapses a value spliced
   inside a line (`internal/mdcode.Inline`) — and
-  `bots.TestBotManifestProseLeavesNoFenceOpen` reddens on a field this
+  `internal/sweep/catalogcorpus.TestBotManifestProseLeavesNoFenceOpen` reddens on a field this
   tree's own reader sees leaving a block open, so a manifest here does not
   lean on either repair. That reader's limits are stated and measured on
   `EscapeDanglingFence`, and the gate shares them: a field of one of those

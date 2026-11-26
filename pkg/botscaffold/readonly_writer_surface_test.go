@@ -92,7 +92,7 @@ func scaffoldedWorkflows(t *testing.T, spec Spec) map[string]*ir.Workflow {
 // `iterion new` copies from — the templates carry `readonly:` today and a
 // shape that grew a `tools:` list around it would reach every new bot with
 // nothing red. The bundle-side guard is
-// bots.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool; the two share
+// catalogcorpus.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool; the two share
 // the predicate, not the corpus.
 //
 // Read over EVERY workflow each shape writes (scaffoldedWorkflows), not its

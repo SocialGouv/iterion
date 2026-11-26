@@ -29,8 +29,8 @@ var unmanagedPins = map[string]string{
 	"sandbox/sec/Dockerfile:GOSEC_VERSION":       "`latest` by design: every sec image build installs the current scanner",
 	"sandbox/sec/Dockerfile:GOVULNCHECK_VERSION": "`latest` by design: every sec image build installs the current scanner",
 	"sandbox/sec/Dockerfile:JSXRAY_VERSION":      "an npm range (^15) that floats within the major js-x-ray's ESM shim is written for",
-	"Dockerfile.runner-devbox:ULTRA11Y_VERSION":  "moves only through bots/rgaa-audit/ultra11y.pin, which bots/rgaa_audit_engine_pin_test.go holds to this ARG",
-	"sandbox/rgaa/Dockerfile:ULTRA11Y_VERSION":   "moves only through bots/rgaa-audit/ultra11y.pin, which bots/rgaa_audit_sandbox_rgaa_image_test.go holds to this ARG",
+	"Dockerfile.runner-devbox:ULTRA11Y_VERSION":  "moves only through bots/rgaa-audit/ultra11y.pin, which internal/sweep/sandboximages/rgaa_audit_engine_pin_test.go holds to this ARG",
+	"sandbox/rgaa/Dockerfile:ULTRA11Y_VERSION":   "moves only through bots/rgaa-audit/ultra11y.pin, which internal/sweep/sandboximages/rgaa_audit_sandbox_rgaa_image_test.go holds to this ARG",
 }
 
 // goModAlignedPins name the pins that follow go.mod instead of Renovate;

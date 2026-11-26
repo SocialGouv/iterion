@@ -7,7 +7,18 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/pricingtest"
+	"github.com/SocialGouv/iterion/internal/testparallel"
 )
+
+// catalogcorpusParallelCap bounds how many of this package's tests run at
+// once, at the width bots holds its own to: the parallel tests here spawn
+// subprocesses (python harnesses, throwaway repositories) whose memory -race
+// multiplies, and they keep that bound outside bots.
+const catalogcorpusParallelCap = 8
+
+// ITERION_BOTS_PARALLEL overrides the cap, the same knob that sets bots'
+// width: these tests guard the bots catalogue from another package.
+const catalogcorpusParallelEnv = "ITERION_BOTS_PARALLEL"
 
 // TestMain runs every test of this package from <module root>/bots, the
 // directory these guards were written in. Their paths stay spelled from
@@ -21,7 +32,11 @@ import (
 // The operator's global and system git config must not reach the git calls
 // these guards make (check-ignore, a throwaway repository), so both point at
 // os.DevNull as they do in CI.
+//
+// -parallel is capped at catalogcorpusParallelCap, as bots caps its own
+// (testparallel.Cap: an explicit -parallel still wins).
 func TestMain(m *testing.M) {
+	testparallel.Cap(catalogcorpusParallelEnv, catalogcorpusParallelCap)
 	if err := chdirToBots(); err != nil {
 		fmt.Fprintln(os.Stderr, "catalogcorpus:", err)
 		os.Exit(2)

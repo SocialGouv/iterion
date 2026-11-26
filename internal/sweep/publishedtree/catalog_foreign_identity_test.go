@@ -264,6 +264,11 @@ func permittedHost(host string) bool {
 // `:(glob)*.md` is the ROOT markdown only: `*.md` as a plain pathspec would
 // sweep in `vendor/`, where several hundred third-party READMEs name several
 // hundred hosts nobody here chose.
+//
+// No file in the scope is exempt. This guard names every host by
+// construction (the allowlist, the bite test's fixtures), and it lies under
+// internal/sweep/, outside the scope: a file of the same name inside it is
+// judged like any other, because a fixture in a test is as public as a skill.
 var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "charts", "ci", ":(glob)*.md"}
 
 // catalogFiles is the set this guard judges: the tracked files of
@@ -313,13 +318,10 @@ func trackedFilesIn(t *testing.T, root string, subdirs ...string) []string {
 //
 // Each file lies under root, and its name is judged as the tree spells it —
 // relative to root — so the directory the checkout sits in is never content.
-func scanForeignHosts(t *testing.T, root string, files []string, skip func(path string) bool) []foreignHost {
+func scanForeignHosts(t *testing.T, root string, files []string) []foreignHost {
 	t.Helper()
 	var found []foreignHost
 	for _, full := range files {
-		if skip != nil && skip(full) {
-			continue
-		}
 		body, readErr := os.ReadFile(full)
 		if readErr != nil {
 			t.Fatalf("read %s: %v", full, readErr)
@@ -356,18 +358,9 @@ func scanForeignHosts(t *testing.T, root string, files []string, skip func(path 
 	return found
 }
 
-// skipTheGuardItself: this file carries the allowlist and the injected
-// examples of the bite test, so it names every host by construction. ONE
-// definition, used by every test here — a second copy would drift and exempt
-// something nobody meant to exempt. Nothing else is exempt: a fixture in a
-// test is as public as a skill.
-func skipTheGuardItself(path string) bool {
-	return filepath.Base(path) == "catalog_foreign_identity_test.go"
-}
-
 func TestCatalogNamesNoForeignInfrastructure(t *testing.T) {
 	root, files := catalogFiles(t)
-	for _, hit := range scanForeignHosts(t, root, files, skipTheGuardItself) {
+	for _, hit := range scanForeignHosts(t, root, files) {
 		t.Errorf("%s:%d names the host %q, which is neither a reserved documentation name nor "+
 			"on the catalog allowlist. A shipped bot must not carry a third party's "+
 			"infrastructure: if this host is public and the reference is deliberate, add it to "+
@@ -402,7 +395,7 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 	for name := range fixtures {
 		injected = append(injected, filepath.Join(dir, name))
 	}
-	found := scanForeignHosts(t, dir, injected, nil)
+	found := scanForeignHosts(t, dir, injected)
 	caught := map[string]bool{}
 	for _, hit := range found {
 		caught[hit.host] = true
@@ -491,9 +484,6 @@ func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 	seen := map[string]bool{}
 	_, files := catalogFiles(t)
 	for _, path := range files {
-		if skipTheGuardItself(path) {
-			continue
-		}
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -560,13 +550,13 @@ func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
 
 	// And the consequence, both ways round: an untracked file can neither
 	// excuse an allowlist entry nor hide a leak.
-	if found := scanForeignHosts(t, root, files, nil); len(found) != 0 {
+	if found := scanForeignHosts(t, root, files); len(found) != 0 {
 		t.Fatalf("the committed file names a foreign host it should not: %v", found)
 	}
 	walked := []string{
 		filepath.Join(root, "bots", "sample", "__pycache__", "x.pyc"),
 	}
-	if found := scanForeignHosts(t, root, walked, nil); len(found) == 0 {
+	if found := scanForeignHosts(t, root, walked); len(found) == 0 {
 		t.Fatal("the scanner does not see the private forge in the untracked artefact — " +
 			"then the guard is blind, not merely scoped")
 	}
