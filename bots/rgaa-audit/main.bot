@@ -879,13 +879,18 @@ agent adjudicate:
   ## rounds of reads a criterion, the protocol's own pace (#3746).
   tool_max_steps: 48
   reasoning_effort: "${ITERION_RGAA_EFFORT_ADJUDICATE:-high}"
-  timeout: "25m"
+  ## A claw gateway step re-sends the conversation; at 25m a slow gateway
+  ## cut whole batches mid-turn and their spend bought nothing (#3746).
+  timeout: "45m"
   readonly: true
 
 ## The second reader: a judge per batch of claims, same read-only posture.
 ## Opus by default, like the adjudicator; a cross-family reader is one env
 ## dial away (ITERION_RGAA_BACKEND_REFUTE=claw ITERION_RGAA_MODEL_REFUTE=…).
-## No MCP server either.
+## No MCP server either. Effort `high`, a level every backend and gateway
+## model takes: deepseek-v4.1 refuses `medium` (low/high/xhigh/max only),
+## and on a gateway no table maps it, so `medium` failed every refute
+## batch at its first request (#3746).
 judge refute:
   mcp:
     inherit: false
@@ -897,8 +902,8 @@ judge refute:
   user: refute_user
   tools: [read_file, glob, grep]
   tool_max_steps: 48
-  reasoning_effort: "${ITERION_RGAA_EFFORT_REFUTE:-medium}"
-  timeout: "20m"
+  reasoning_effort: "${ITERION_RGAA_EFFORT_REFUTE:-high}"
+  timeout: "45m"
   readonly: true
 
 ## ─── Routers ──────────────────────────────────────────────────────────

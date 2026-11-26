@@ -4057,3 +4057,36 @@ func TestRgaaAuditAgentsSpellTheirPathsToolsAndMCPPosture(t *testing.T) {
 		}
 	}
 }
+
+// #3746: on a claw gateway route the agents' default effort must be one the
+// gateway model takes with no platform table — deepseek-v4.1 refuses
+// `medium` (low/high/xhigh/max), and no table maps it on a fresh deployment,
+// so a `medium` refute failed every batch at its first request. `high` is a
+// level claude_code, codex and that gateway all take. The timeout gives a
+// slow gateway's long turns room: at 25m whole batches were cut mid-turn.
+func TestRgaaAuditAgentDefaultsRunOnAGatewayRoute(t *testing.T) {
+	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	gatewayEfforts := map[string]bool{"low": true, "high": true, "xhigh": true, "max": true}
+	for _, name := range []string{"adjudicate", "refute"} {
+		var llm ir.LLMFields
+		switch n := wf.Nodes[name].(type) {
+		case *ir.AgentNode:
+			llm = n.LLMFields
+		case *ir.JudgeNode:
+			llm = n.LLMFields
+		default:
+			t.Fatalf("node %s is %T, want an agent or a judge", name, wf.Nodes[name])
+		}
+		effort := os.Expand(llm.ReasoningEffort, func(string) string { return "" })
+		if i := strings.Index(llm.ReasoningEffort, ":-"); i >= 0 {
+			effort = strings.TrimSuffix(llm.ReasoningEffort[i+2:], "}")
+		}
+		if !gatewayEfforts[effort] {
+			t.Errorf("%s defaults to reasoning_effort %q (%s), which deepseek-v4.1 refuses — want one of low/high/xhigh/max", name, effort, llm.ReasoningEffort)
+		}
+		d, err := time.ParseDuration(llm.Timeout)
+		if err != nil || d < 45*time.Minute {
+			t.Errorf("%s timeout %q: want at least 45m, a slow gateway's batch is cut mid-turn below it", name, llm.Timeout)
+		}
+	}
+}
