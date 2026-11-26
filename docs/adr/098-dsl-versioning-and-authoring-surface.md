@@ -139,7 +139,7 @@ the syntax that drifted apart are the defect this closes.
   surfaces agree before any profile or import work builds on them.
 - `dsl: 2` and `import` are additive to the catalogue: the 35 shipped bots
   stay v1 until migrated in a reviewed lot of their own, and
-  `catalog_parse_compile_test.go` stays the floor at every step.
+  `internal/sweep/catalogcorpus/catalog_parse_compile_test.go` stays the floor at every step.
   Wave 1 of that migration (#1344, 2026-09-17) moved the three bots
   production runs — `review-pr`, `whats-next`, `feature-dev` — by the
   migrator alone, each proven by the strict dry run and a live run

@@ -8,7 +8,7 @@ spell it a second way.
 
 The walk is every workflow this repository ships, and the package has ONE
 definition of that — `catalogWorkflowFiles`, the table of roots in
-`bots/catalog_parse_compile_test.go` the parse/compile gate already read —
+`internal/sweep/catalogcorpus/catalog_parse_compile_test.go` the parse/compile gate already read —
 with nothing the engine routes left outside it unnamed:
 
 - every `*.bot` of every bundle under `bots/`, not just each `main.bot`,

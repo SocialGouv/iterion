@@ -200,7 +200,7 @@ LLM the posture applies here.
 The rule is catalog-wide, not this bot's: the doctrine lives in
 `docs/agents/bots/untrusted-input.md` ("Prompts that can act carry the
 UNTRUSTED INPUT BOUNDARY") and
-`bots/catalog_untrusted_input_boundary_test.go` walks the compiled IR of
+`internal/sweep/catalogcorpus/catalog_untrusted_input_boundary_test.go` walks the compiled IR of
 every catalog bot and reddens on any acting prompt without the phrase.
 Adding a node to this bot that writes, files, patches or shells out means
 writing the paragraph; removing it in a refactor means the LLM no longer

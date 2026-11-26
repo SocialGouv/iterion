@@ -59,7 +59,7 @@ Both are settings of the engine's process, the operator's: `internal/envtrust/op
 - A **stored** bot — a team's row, a platform override — that prints beside its JSON under `output:` fails at that node after the upgrade, until its recipe is fixed or the operator writes the dial off. An override of one of the bundles above shows `shadows_newer_version` against the new bake; the operator reads stored overrides before a roll.
 - A run paused on an older engine whose producer's output is a wrapper is refused at the tool body that reads it on resume. The cure is the producer's: `iterion rewind --run-id <run> --node <producer>`, then resume.
 - A node that was green and wrong fails: an `exit 0` over an HTML error page under `output:`, a missing interpreter that leaves no JSON.
-- `bots/catalog_tool_stdout_test.go` reads the shipped recipes for the shapes that have cost a run (a `git commit` child that inherits stdout, a `print` that is not the object, a transfer whose body is the stdout). It is a lint: the refusal at the node is the guard.
+- `internal/sweep/catalogcorpus/catalog_tool_stdout_test.go` reads the shipped recipes for the shapes that have cost a run (a `git commit` child that inherits stdout, a `print` that is not the object, a transfer whose body is the stdout). It is a lint: the refusal at the node is the guard.
 
 ## Alternatives rejected
 

@@ -61,7 +61,8 @@ schema final_out:
 
 ## ask_user_async / await_answers are claw-native tools, so the async
 ## drafting agent runs on claw. Pinning backend+model also keeps the bot
-## in the CI compile floor (TestCatalogBotsParseAndCompileClean), which
+## in the CI compile floor (internal/sweep/catalogcorpus,
+## TestCatalogBotsParseAndCompileClean), which
 ## compiles with no credentials to auto-detect.
 agent draft:
   model: "anthropic/claude-sonnet-4-6"

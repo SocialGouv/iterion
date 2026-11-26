@@ -250,7 +250,7 @@ func toolSurfaceGridPairs(t *testing.T) []toolSurfaceGridPair {
 // described. A cell that leaves the class takes a system prompt's UNTRUSTED
 // INPUT BOUNDARY paragraph with it, and nothing in the catalogue guard can
 // report a prompt that quietly stopped owing one (the complement in
-// bots/catalog_untrusted_input_boundary_test.go names the one node that is out
+// internal/sweep/catalogcorpus/catalog_untrusted_input_boundary_test.go names the one node that is out
 // of the class on purpose).
 //
 // What it CANNOT say is which cell left the class since the freeze was taken:
@@ -320,7 +320,7 @@ func TestTheBoundaryClassOnlyWidens(t *testing.T) {
 // the walk without one (Engine.backendResolver answers a stand-in rather than
 // nil, and any name a resolver answers overrides the fold), so the cells
 // counted here are moves of the executor-less reading, whose one consumer is
-// the catalogue guard (bots/catalog_untrusted_input_boundary_test.go, through
+// the catalogue guard (internal/sweep/catalogcorpus/catalog_untrusted_input_boundary_test.go, through
 // ToolSurfaceWriteReason). A run's own admission already read the workflow
 // default's route through its executor: the fold brings the executor-less
 // reading onto the answer that reading already had, and changes no verdict a

@@ -159,7 +159,7 @@ const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 // ZAIDefaultModel is the GLM id iterion routes z.ai to by default: the model
 // detect suggests for a z.ai credential and the id every GLM route of the
 // shipped catalogue names. The catalogue spells it literally (a `.bot` reads
-// no Go constant); bots/catalog_zai_default_model_test.go holds every z.ai
+// no Go constant); internal/sweep/catalogcorpus/catalog_zai_default_model_test.go holds every z.ai
 // route of the catalogue to this value, so moving to a newer GLM is this line
 // plus the routes that test names.
 const ZAIDefaultModel = "glm-5.4"

@@ -84,7 +84,7 @@ notion of what the node can do, never by grepping tool names:
   only withholds the file-writing tools and runs under `bypassPermissions`
   with whatever else the tool list leaves visible — a shell included.
 
-**Enforcement:** `bots/catalog_untrusted_input_boundary_test.go` compiles
+**Enforcement:** `internal/sweep/catalogcorpus/catalog_untrusted_input_boundary_test.go` compiles
 every catalog bot, classifies every agent and judge with the rule above,
 and fails on any member whose system prompt lacks the phrase. The only
 exemption is a per-agent `deferred` entry naming the session that owns the

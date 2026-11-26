@@ -64,6 +64,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/sweep/authorcorpus` | holds the corpus benches of the author document (the YAML twin of a .bot): every .bot of the repository converted with `fmt --to yaml` and held to… | — |
 | `internal/sweep/authorreading` | guards that no pkg/server function reads an author document: the YAML decode of pkg/dsl/author is sized for the CLI, and the guard type-checks the… | — |
 | `internal/sweep/catalogclaims` | holds the guards that hold the bot catalogue to texts outside bots/: the doctrine pages its whole-tree staging must match, the pages that may not… | — |
+| `internal/sweep/catalogcorpus` | holds the guards over the shipped workflow corpus as a whole: every bot under bots/ and examples/, the dispatcher's default assignee, the operator… | — |
 | `internal/sweep/e2ematrix` | holds the guards over docs/e2e-coverage-matrix.md and the stabilisation plan derived from it: the e2e-coverage bot's own contract code, sliced out of… | — |
 | `internal/sweep/itertoken` | holds the zero-trace guard for the deprecated workflow extension that `.bot` replaced: TestNoIterExtensionAnywhere greps every tracked file of the… | — |
 | `internal/sweep/mintchokepoint` | guards the derivation chokepoint over team-token mints across the whole module: every mint primitive demands the gate's verdict, the verdict is… | — |

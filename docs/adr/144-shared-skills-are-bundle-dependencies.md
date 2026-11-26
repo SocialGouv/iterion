@@ -107,7 +107,7 @@ Four facts shape what the primitive can be:
 4. **A miss is a typed error at install, naming the bundle, the skill and
    every layer that was looked in** — never a silent empty skills
    directory. `ResolveExtraSkills` is the shape; the failure it refuses is
-   the one `bots/catalog_skill_refs_test.go` describes for in-bundle names
+   the one `internal/sweep/catalogcorpus/catalog_skill_refs_test.go` describes for in-bundle names
    ("the bot still answers — it just answers from the model's own priors",
    which reads as "the bot got dumber" rather than as a broken
    reference). The witness asserts on the EFFECT (the installed skills
@@ -120,7 +120,7 @@ Four facts shape what the primitive can be:
    appears. The consequence is a rule the catalogue already states for
    shipped skills and must now state for declared ones: a catalogue bot
    may not depend on a name the operator attaches — the allow-list at
-   [catalog_skill_refs_test.go:37](../../bots/catalog_skill_refs_test.go)
+   [catalog_skill_refs_test.go:35](../../internal/sweep/catalogcorpus/catalog_skill_refs_test.go)
    carries the reason per entry, and that deliberate choice ("a bot may
    reference a skill it does NOT ship, so the operator supplies it") must
    not turn into an install failure or a silent shadow.
@@ -158,7 +158,7 @@ Four facts shape what the primitive can be:
   not an operator choice: the bot cannot answer without it. Making it one
   turns "the bot works" into "the operator installed the right plugin",
   which is precisely the exception
-  [`operatorAttachedSkills`](../../bots/catalog_skill_refs_test.go) carves
+  [`operatorAttachedSkills`](../../internal/sweep/catalogcorpus/catalog_skill_refs_test.go) carves
   out per entry, with its reason, against the rule that catalog bots are
   repo-agnostic. It also loses the pin: a plugin's skills are not
   addressed by the consuming bundle's version and content hash, so "which

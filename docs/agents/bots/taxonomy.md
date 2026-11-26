@@ -44,7 +44,7 @@ chips narrow the gallery, and `?tag=…` on `/bots` is a shareable view.
 Governance is the label-vocabulary lesson: **reuse before inventing**.
 An unseeded tag stays declared (never a load error) and emits C271
 (warning) — but the shipped-catalog consistency gate
-(`bots/bundle_consistency_test.go`) holds the fleet to zero warnings, so
+(`internal/sweep/catalogcorpus/bundle_consistency_test.go`) holds the fleet to zero warnings, so
 a new tag on a catalog bot means seeding `vocab.go` in the same change.
 Third-party bundles feel only the soft lint.
 

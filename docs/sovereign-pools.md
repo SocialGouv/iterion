@@ -235,7 +235,7 @@ more ([ADR-169](adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles
 so neither a pool block nor the record routes those names. Review-pr,
 revi-converse, gitops-warden and modernize read no environment at all; the
 other bots that read them still read their own families
-(`bots/catalog_env_dial_floor_test.go` lists what each workflow still
+(`internal/sweep/catalogcorpus/catalog_env_dial_floor_test.go` lists what each workflow still
 reads), which a pool block keeps pinning. A pool re-targets a de-dialled
 route the way every tenant does, with `llmroute` override cells at the team
 or binding level naming the gateway route. For review-pr that is one cell

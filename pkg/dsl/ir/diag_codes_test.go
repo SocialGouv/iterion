@@ -23,7 +23,7 @@ import (
 // They scan source rather than reflect because Go consts are not enumerable at
 // runtime. The scan deliberately reads the package's own *.go files (relative
 // to the test's working dir, which `go test` sets to the package source dir),
-// mirroring the file-walking idiom in bots/catalog_universality_test.go.
+// mirroring the file-walking idiom in internal/sweep/catalogcorpus/catalog_universality_test.go.
 
 // diagConstRe matches a diagnostic-code const declaration in either the ir
 // package (`DiagFoo DiagCode = "C001"`) or pkg/bundlelint (`DiagFoo Code =

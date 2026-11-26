@@ -105,7 +105,7 @@ func reviewGateState(t *testing.T, exec NodeExecutor) (*Engine, *runState, *ir.H
 // a key the input carries that the system prompt does not render is on no
 // screen of that reader — which is why the catalogue prose guard keeps the
 // strict reading on this one surface
-// (bots/prompt_prose_input_refs_test.go, humanReaderGetsWholeInput), while
+// (internal/sweep/catalogcorpus/prompt_prose_input_refs_test.go, humanReaderGetsWholeInput), while
 // crediting the whole input on every other human surface.
 func TestAReviewCompanionReadsItsInputThroughItsSystemPromptAlone(t *testing.T) {
 	companion := &reviewCompanionExecutor{stubExecutor: newStubExecutor()}
@@ -144,7 +144,7 @@ func TestAReviewCompanionReadsItsInputThroughItsSystemPromptAlone(t *testing.T) 
 // serves. A model's prompt goes the other way — model.TemplateResolver
 // keeps the unresolvable reference as written — so the same authoring
 // mistake is loud there and silent here. Both readings are what the input
-// guards report (bots/catalog_input_mapping_test.go, absentReadDelivers).
+// guards report (internal/sweep/catalogcorpus/catalog_input_mapping_test.go, absentReadDelivers).
 func TestHumanInstructionsDropAnAbsentInputToTheEmptyString(t *testing.T) {
 	eng, rs, gate := reviewGateState(t, newStubExecutor())
 	questions := eng.buildNodeInputRS("gate", rs.scope())

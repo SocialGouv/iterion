@@ -80,7 +80,7 @@ one. The shipped hatches are the pattern to imitate:
   in-process is precedence that lies.
 - **A closed enum that fences out use cases is the smell.** Languages,
   providers, trackers, ecosystems: emit an open list. This is already enforced
-  for catalog bots by `bots/catalog_universality_test.go`; the same instinct
+  for catalog bots by `internal/sweep/catalogcorpus/catalog_universality_test.go`; the same instinct
   applies engine-side.
 - **Power is not permission to be unsafe by default.** The default can be the
   careful one (sandbox on, `auto_memory` off, mono review topology) — what

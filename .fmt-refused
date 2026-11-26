@@ -19,7 +19,7 @@
 # The list holds PATHS, not reasons: a file named here that later fails to
 # parse, or whose comments a rewrite would lose, is still merely "refused"
 # and the check stays green on it. The floor under that is elsewhere —
-# bots/catalog_parse_compile_test.go, inside the required `test` job, which
+# internal/sweep/catalogcorpus/catalog_parse_compile_test.go, inside the required `test` job, which
 # parses and compiles every catalogue bot.
 #
 # https://github.com/SocialGouv/iterion/issues/1612

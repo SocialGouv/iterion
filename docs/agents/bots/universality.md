@@ -42,7 +42,7 @@ capability tools, "iterion's expr / template substitution", `iterion
 report` for surfacing output, `.bot` DSL syntax. The bot is
 *written for* iterion; it must not be *scoped to* iterion.
 
-**Enforcement:** `bots/catalog_universality_test.go` greps every
+**Enforcement:** `internal/sweep/catalogcorpus/catalog_universality_test.go` greps every
 catalog bot's var-default block for the violation patterns above and
 fails CI on a regression. When a default legitimately needs an
 iterion path (rare), add it to the test's allowlist with a comment
@@ -109,7 +109,7 @@ security bot = drop `skills/lang-rust.md`; no `main.bot` or schema edit.
   an illustrative example — the agent picks its commands from the repo +
   skill; the example is just guidance.
 
-**Enforcement:** `bots/catalog_universality_test.go` greps every catalog
+**Enforcement:** `internal/sweep/catalogcorpus/catalog_universality_test.go` greps every catalog
 bot's `command:` bodies and `schema:` blocks (not only `vars:` defaults)
 for the stack-specific patterns above. When you touch a catalog bot,
 re-read this section and "Catalog bots are repo-agnostic" — iterion (Go)
