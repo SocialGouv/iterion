@@ -3,6 +3,42 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.39.0](https://github.com/SocialGouv/iterion/compare/v7.38.4...v7.39.0) (2026-11-26)
+
+### Features
+
+* **auth,server,cli,studio:** an invitation names its org role; a personal access token invites by email ([#3781](https://github.com/SocialGouv/iterion/issues/3781)) ([70d1aa0](https://github.com/SocialGouv/iterion/commit/70d1aa05449440358ee18cd26c238ae803b72cfd)), references [#3773](https://github.com/SocialGouv/iterion/issues/3773) [#3763](https://github.com/SocialGouv/iterion/issues/3763) [#3764](https://github.com/SocialGouv/iterion/issues/3764)
+
+    <details><summary>why</summary>
+
+    Accepting a team invitation at admin or owner wrote an org ADMIN membership (identity.OrgRoleForTeamRole), so inviting someone as admin of one team made them admin of its whole org. SSO grants went through the same mirror. The CLI could not invite at all: its stored personal access token was refused the team-token mint.
+
+    </details>
+* **ci:** train — land a lot of ready pull requests on one local gate, bisect a red lot ([#3736](https://github.com/SocialGouv/iterion/issues/3736)) ([#3766](https://github.com/SocialGouv/iterion/issues/3766)) ([b809377](https://github.com/SocialGouv/iterion/commit/b80937722a2eff044fe20d245deb7ec84c86b46b)), references [#3686](https://github.com/SocialGouv/iterion/issues/3686) [#2](https://github.com/SocialGouv/iterion/issues/2) [#2](https://github.com/SocialGouv/iterion/issues/2) [#2](https://github.com/SocialGouv/iterion/issues/2)
+
+    <details><summary>why</summary>
+
+    Measured over the last seven days, the merge queue built 293 groups for 106 pull requests (2.8 builds each, 29 % of the merge_group runner-hours lost to cancellations) and a pull request waited 550 min at p90. The extended train lane (#3686) lands bursts on a local gate instead; this is its tool.
+
+    </details>
+
+### Bug Fixes
+
+* **ir:** give C159 on a tool node its own hint and the command: position ([#3722](https://github.com/SocialGouv/iterion/issues/3722)) ([1931573](https://github.com/SocialGouv/iterion/commit/193157385276b1d2cc7eeeb33a3e38b9e30bf470)), closes [#3667](https://github.com/SocialGouv/iterion/issues/3667), references [#3667](https://github.com/SocialGouv/iterion/issues/3667)
+
+    <details><summary>why</summary>
+
+    The C159 tool-node arm printed the catalog fix "route the node to a backend", which cannot help: ClawExecutor runs a registry recipe on claw's registry whatever the backend. The arm now emits its own fix at the `command:` line (warnfAtPropertyWithHint). It also warns only when the command is written without surrounding whitespace, because dispatch resolves it exactly as written and a command padded with U+00A0, \v, \f or U+0085 fails as an unregistered tool before any refusal. The message,…
+
+    </details>
+* **mainwatch:** respect a disabled auto-merge, arm the revert before recording it, resumable epic filing ([#3720](https://github.com/SocialGouv/iterion/issues/3720)) ([6ba0af1](https://github.com/SocialGouv/iterion/commit/6ba0af1e6ce3b9c30d14d7b4daec2b1fed65bdc6)), closes [#3696](https://github.com/SocialGouv/iterion/issues/3696), references [#1410](https://github.com/SocialGouv/iterion/issues/1410) [#3702](https://github.com/SocialGouv/iterion/issues/3702)
+
+    <details><summary>why</summary>
+
+    Follow-ups of #3696. The flake pass reads the quarantine pull request before pushing: a merged or closed one gets nothing. Its auto-merge is never re-armed once its timeline shows a disable. The revert is armed before the ticket records it; an arming failure is recorded on the ticket, marker included, for a person. On main's green run every open revert of the episode closes, including one only its suspect's branch names. main-watch's own flake tickets are filed under epic #1410 on every pass…
+
+    </details>
+
 ## [7.38.4](https://github.com/SocialGouv/iterion/compare/v7.38.3...v7.38.4) (2026-11-26)
 
 ### Features
