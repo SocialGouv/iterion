@@ -963,9 +963,16 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 		if err != nil || pending.Name != approval.toolName || len(opts.Messages) == 0 {
 			return delegate.Result{}, fmt.Errorf("claw: exact approval has no matching pending conversation")
 		}
-		dispatcher, dispatchCtx := newToolDispatcher(WithoutExactClawApproval(ctx), buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
+		// The approved call's result joins the conversation the route
+		// receives: its images are shaped under the route's policy, like
+		// every call GenerateTextDirect dispatches.
+		imagesCtx, err := withRouteImagePolicy(WithoutExactClawApproval(ctx), &opts)
+		if err != nil {
+			return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
+		}
+		dispatcher, dispatchCtx := newToolDispatcher(imagesCtx, buildToolMap(opts.Tools), opts.OnToolStarted, opts.OnToolCall, opts.Hooks, opts.MaterializeSecrets, opts.Permission)
 		call := toolUseBlock{ID: task.ResumePendingToolUseID, Name: pending.Name, PartialJSON: string(pending.Input)}
-		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval)
+		block, err := dispatcher.dispatchWithApproval(dispatchCtx, call, approval, dispatcher.images)
 		if err != nil {
 			return delegate.Result{}, err
 		}
@@ -3289,6 +3296,13 @@ func forwardableProviderEnv(ctx context.Context, model, providerHint string) (ma
 	// after the host refused it. Empty reads as the fallback on both sides;
 	// the operator's own export crosses intact.
 	for _, name := range clawStreamTimeoutEnvVars {
+		env[name] = envtrust.Inherited(name)
+	}
+	// The route image bounds' escape hatches cross the same way: the
+	// generation that shapes tool images and builds requests runs in the
+	// container for a sandboxed node, which must bound them as the host
+	// reads them — planted-as-unset, an explicit empty included.
+	for _, name := range clawImageBoundEnvVars {
 		env[name] = envtrust.Inherited(name)
 	}
 	// The workspace-agent ceiling crosses ALWAYS, the routing pattern pushed

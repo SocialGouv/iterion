@@ -8,12 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/envtrust"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
@@ -896,5 +898,50 @@ func TestHostCodexForfait_AStampedRunIsRefusedTheHostLogin(t *testing.T) {
 	}
 	if refused == "" {
 		t.Fatal("the refusal is silent — the operator must learn why nothing crossed")
+	}
+}
+
+// The route image bounds' escape hatches cross into the container, every
+// one of tool.ImagePolicyEnvVars: the sandboxed generation shapes tool
+// images and bounds requests as the host does.
+func TestTheImageBoundEscapeHatchesCrossIntoTheSandbox(t *testing.T) {
+	envtrust.ResetForTest()
+	t.Cleanup(envtrust.ResetForTest)
+	t.Setenv(envtrust.EnvPlantedNames, "")
+	for i, name := range tool.ImagePolicyEnvVars {
+		t.Setenv(name, strconv.Itoa(1000+i))
+	}
+	env := envFor(t, context.Background())
+	for i, name := range tool.ImagePolicyEnvVars {
+		if want := strconv.Itoa(1000 + i); env[name] != want {
+			t.Errorf("%s crossed as %q, want the host's %q", name, env[name], want)
+		}
+	}
+}
+
+// A knob a project .env planted has no authority, on the host as in the
+// container — each of tool.ImagePolicyEnvVars: a malformed planted value
+// never fails a host generation, and the crossing carries the host's
+// planted-as-unset answer as an explicit empty, so the runner's workspace
+// .env cannot fill it in-container.
+func TestImageBoundKnobsReadAndCrossPlantedAsUnset(t *testing.T) {
+	for _, name := range tool.ImagePolicyEnvVars {
+		t.Run(name, func(t *testing.T) {
+			envtrust.ResetForTest()
+			t.Cleanup(envtrust.ResetForTest)
+			t.Setenv(envtrust.EnvPlantedNames, "")
+			t.Setenv(name, "lots")
+			envtrust.MarkPlanted(name)
+			opts := GenerationOptions{Model: "anthropic/claude-sonnet-4-6"}
+			if _, err := withRouteImagePolicy(context.Background(), &opts); err != nil {
+				t.Fatalf("a planted malformed %s failed the host generation: %v", name, err)
+			}
+			env := envFor(t, context.Background())
+			for _, other := range tool.ImagePolicyEnvVars {
+				if got, ok := env[other]; !ok || got != "" {
+					t.Errorf("%s crossed as %q (present=%v), want an explicit empty", other, got, ok)
+				}
+			}
+		})
 	}
 }

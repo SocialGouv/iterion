@@ -95,4 +95,45 @@ qwen3.5, qwen3.6, deepseek-v4.1-flash, 24/11/2026). `glm-5.3` is not
 multimodal: an image turn fails `400 … is not a multimodal model`. A tool
 emits images only when its registration attests `imageResult`
 (`tool.ImageResultContent` decodes its output); every other tool output
-stays text.
+stays text. The held images wait for the end of the run of tool results on
+both wires, and a user message they join keeps its own content under its own
+caption (`openaiwire.UserContentCaption`), so a user image never reads as
+the tool's.
+
+The bounds are the route's, one seam: `tool.ImagePolicy`, resolved from the
+spec once per generation (`tool.RouteImagePolicy`) and carried to the tool
+door and to `buildRequest`. The Anthropic family (anthropic, bedrock,
+vertex, or any route whose model id names a Claude model, a gateway's
+included) bounds an image at 5 MiB of base64 and 8000 pixels a side, a
+request's images at 24 MiB (its 32 MB cap, less the text) and 100 images,
+and every image of a request of more than 20 at 2000 pixels a side; every
+other route at 20 MiB per image and 40 MiB per request, nothing else.
+Escape hatches, `0` for no bound, read planted-as-unset like the watchdog
+knobs and crossed into the sandbox the same way (`tool.ImagePolicyEnvVars`):
+`ITERION_IMAGE_MAX_BASE64_BYTES`, `ITERION_IMAGE_MAX_SIDE`,
+`ITERION_REQUEST_IMAGE_MAX_BYTES`, `ITERION_REQUEST_IMAGE_MAX_COUNT`,
+`ITERION_REQUEST_MANY_IMAGES_THRESHOLD`, `ITERION_REQUEST_MANY_IMAGES_MAX_SIDE`,
+`ITERION_IMAGE_MAX_DECODE_PIXELS` (50 MP). An image is held to the smaller
+of the per-image and per-request byte bounds. Headers are read, never
+pixels (`tool.ImageHeader`: a PNG's IHDR, WebP's first chunk, a bounded
+JPEG stream, a GIF's screen and first frame); the header's format is the
+media type sent, and a known format of unreadable size counts as over any
+side bound. `read_image`
+bytes are never decoded: over a bound, a recoverable tool error advising to
+convert the file. Only a `screenshot` PNG is reduced (halved to the side,
+JPEG, halved to the bytes; transparency flattened onto white) with a note;
+`computer_use` is refused instead, naming `screenshot` (the model clicks
+in the capture's coordinates). Each request re-checks the per-image bounds and its budget:
+the oldest tool images are replaced, in that request only, by a marker
+(their reduction note dropped along); once over, down to 75% so the cut
+moves every few turns; a last-run image says calling again will not help
+only when it cannot fit beside the prompt's images, else to ask for fewer at
+a time. Over 20 images, the oldest tool images over 2000 px go first, then
+older ones whatever their side; the last run's go last, never promised a
+smaller image.
+Prompt images are never dropped — breaking a rule alone, the request is
+refused. Consecutive user messages join on the chat wire. A codemode
+program gets the description and the image-omitted marker, no bytes.
+`Acceptance` is where a route that takes no image refuses image tools
+(#3707). `claude_code` serves Anthropic models through its own CLI, which
+bounds its own images: none of this applies there.

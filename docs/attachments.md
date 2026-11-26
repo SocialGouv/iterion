@@ -385,7 +385,10 @@ For agent nodes whose backend is `claw`, the executor:
    a presigned-URL block for larger files.
 
 The blocks land on the Anthropic Messages API as native vision input —
-no tool call needed.
+no tool call needed. A request whose prompt images alone exceed the
+route's per-request image budget is refused with a typed error naming
+`ITERION_REQUEST_IMAGE_MAX_BYTES`; a prompt image is never dropped
+([gateway images](agents/backends/gateway.md#images)).
 
 ### CLI fallback (`claude_code`, Codex, `pi`, Kimi, Grok)
 

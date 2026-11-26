@@ -190,7 +190,10 @@ func TestEverySiteRunningAnExecuteNamesItsGate(t *testing.T) {
 var toolFunnelCallers = map[string]map[string]bool{
 	// Ordinary dispatch and the saved-call resume share the dispatcher pin,
 	// lifecycle hooks, command narrowing and permission checks.
-	"dispatchWithApproval":       {"dispatch": true, "Execute": true},
+	// dispatchTextOnly is dispatch with the image policy made text-only (a
+	// codemode program reads text): it holds the whole door, the pin, hooks,
+	// narrowing and permission included.
+	"dispatchWithApproval":       {"dispatch": true, "dispatchTextOnly": true, "Execute": true},
 	"executeOneTool":             {}, // Direct entry for isolated tests only.
 	"executeOneToolWithApproval": {"dispatchWithApproval": true, "executeOneTool": true},
 	"runToolExecution":           {"executeOneToolWithApproval": true},
