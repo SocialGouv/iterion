@@ -114,7 +114,7 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 		return map[string]any{
 			"docs_aligned": aligned, "commits_this_pass": 3, "drift_remaining": remaining,
 			"unread_sources": "", "is_product_bug": false, "needs_human": false,
-			"human_note": "", "summary": "hub + étapes rédigés", "_tokens": 10,
+			"human_note": "", "summary": "hub + étapes rédigés", "release_highlights": "", "_tokens": 10,
 		}, nil
 	})
 	exec.on("scope_check", func(in map[string]any) (map[string]any, error) {
@@ -159,6 +159,16 @@ func stubProductDocs(exec *scenarioExecutor, st *productDocsState) {
 			"paths_cited": 0, "chapters": 0, "chapters_unanchored_declared": 0,
 			"routes_declared": 0, "routes_degraded": false,
 			"oracle_dir_used": "", "log": "", "_tokens": 1,
+		}, nil
+	})
+	// The navigation gate sits between coverage_check and gate, whose
+	// fail_log reads its log: it must answer too. The baseline carries no
+	// table of contents, so the gate is inert.
+	exec.on("summary_check", func(in map[string]any) (map[string]any, error) {
+		st.gateInputs["summary_check"] = in
+		return map[string]any{
+			"summary_ok": true, "armed": false, "causes": []any{}, "cause_count": 0,
+			"pages": 0, "listed": 0, "log": "", "_tokens": 1,
 		}, nil
 	})
 	// available=true keeps the opt-in PR path reachable; the probe only runs

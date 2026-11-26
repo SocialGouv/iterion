@@ -1,0 +1,122 @@
+# Prody (product-docs) — keep a GitBook space and the docs branch in sync
+# through the GitBook API, for a GitLab instance that cannot send GitBook the
+# webhook GitBook Git Sync needs.
+#
+# Prefer GitBook Git Sync when it can be enabled: it carries both directions
+# by itself. Use this file only for a space where Git Sync is NOT configured —
+# the API refuses git/import and git/export on a space that has it (400). In
+# both cases GitBook must REACH this GitLab instance: it clones and pushes over
+# HTTPS with the token given below.
+#
+# WHERE IT LIVES. A push to the docs branch runs the docs branch's OWN
+# .gitlab-ci.yml, and a local include is read from that same branch: copy this
+# file onto the DOCS branch and include it from the docs branch's
+# .gitlab-ci.yml. The jobs use the `deploy` stage, one of GitLab's default
+# stages; if that file declares its own `stages:` without `deploy`, override
+# (`gitbook-import: {stage: <yours>}`). A pipeline made of `.pre`/`.post` jobs
+# only never runs, which is why these jobs are not in `.post`.
+#
+# Two jobs:
+#   gitbook-import  GitBook pulls the docs branch into the space (git/import).
+#                   On a push to the docs branch: AUTOMATIC when
+#                   GITBOOK_AUTO_IMPORT is "true", MANUAL otherwise.
+#   gitbook-export  GitBook pushes its own edits to GITBOOK_EDITS_BRANCH
+#                   (git/export): manual on the docs branch (Build > Pipelines >
+#                   Run pipeline), or from a pipeline schedule with
+#                   GITBOOK_EXPORT=true. Merge that branch into the docs branch
+#                   through a merge request once GitBook has pushed it.
+#
+# EDITS CAN BE LOST. An import REPLACES the space's content with the branch,
+# and an edit made in GitBook that was not exported yet is overwritten by it.
+# Both operations are queued by GitBook (204) and run after the job ends. The
+# safe order, every time: run gitbook-export, wait for GITBOOK_EDITS_BRANCH to
+# move, merge it, THEN import. Merging the edits MR is itself a push to the
+# docs branch: with GITBOOK_AUTO_IMPORT=true it imports at once, so anything
+# edited in GitBook after the export is lost. That is why the import is manual
+# unless you opt in.
+#
+# CI/CD variables (Settings > CI/CD > Variables):
+#   GITBOOK_API_TOKEN     GitBook token with space:write: masked, protected  (required)
+#   GITBOOK_SPACE_ID      the space id                                        (required)
+#   GITBOOK_GIT_TOKEN     GitLab token GitBook clones and pushes with: masked,
+#                         protected. A project access token, role Developer,
+#                         read_repository + write_repository — and keep the
+#                         code branches and the release tags PROTECTED, so the
+#                         third party holding it can push docs, not a release.
+#                         It travels to GitBook inside the url, as the API asks.
+#                                                                             (required)
+#   PRODY_DOCS_DIR        the product directory, GitBook's project root
+#                         (e.g. docs/fonctionnel)                             (required)
+#   PRODY_DOCS_BRANCH     the long-lived docs branch     (default docs-fonctionnelle)
+#   GITBOOK_EDITS_BRANCH  where GitBook pushes its edits (default gitbook/edits)
+#   GITBOOK_AUTO_IMPORT   "true" = import on every push to the docs branch
+#
+# Protected variables only reach protected refs: protect PRODY_DOCS_BRANCH
+# (and the schedule's ref). Unprotecting the branch instead would hand a
+# write token to every branch pipeline.
+
+variables:
+  PRODY_DOCS_BRANCH: docs-fonctionnelle
+  GITBOOK_EDITS_BRANCH: gitbook/edits
+
+.gitbook-api:
+  image: alpine:3.22
+  stage: deploy
+  before_script:
+    - apk add --no-cache curl jq >/dev/null
+    - |
+      : "${GITBOOK_API_TOKEN:?set the GITBOOK_API_TOKEN CI/CD variable (protected variables need a protected branch)}"
+      : "${GITBOOK_SPACE_ID:?set the GITBOOK_SPACE_ID CI/CD variable}"
+      : "${GITBOOK_GIT_TOKEN:?set the GITBOOK_GIT_TOKEN CI/CD variable (protected variables need a protected branch)}"
+      : "${PRODY_DOCS_DIR:?set the PRODY_DOCS_DIR CI/CD variable}"
+      # The url keeps the instance's port and relative root (CI_PROJECT_URL);
+      # it carries the token, so it reaches jq through ONE command's
+      # environment and lands in a private file — never on a command line,
+      # never exported.
+      repo_url="${CI_PROJECT_URL%%://*}://oauth2:${GITBOOK_GIT_TOKEN}@${CI_PROJECT_URL#*://}.git"
+      umask 077
+      work="$(mktemp -d)"
+      printf 'header = "Authorization: Bearer %s"\n' "$GITBOOK_API_TOKEN" > "$work/auth"
+      gitbook() {
+        curl --config "$work/auth" --fail-with-body -sS -X POST \
+          "https://api.gitbook.com/v1/spaces/${GITBOOK_SPACE_ID}/git/$1" \
+          -H 'Content-Type: application/json' --data @"$work/body"
+      }
+
+gitbook-import:
+  extends: .gitbook-api
+  rules:
+    - if: $CI_COMMIT_BRANCH == $PRODY_DOCS_BRANCH && $CI_PIPELINE_SOURCE == "push" && $GITBOOK_AUTO_IMPORT == "true"
+    - if: $CI_COMMIT_BRANCH == $PRODY_DOCS_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - |
+      set -eu
+      REPO_URL="$repo_url" jq -n --arg ref "refs/heads/${PRODY_DOCS_BRANCH}" \
+        --arg dir "$PRODY_DOCS_DIR" \
+        --arg tree "${CI_PROJECT_URL}/-/blob/${CI_COMMIT_SHA}/" \
+        --arg commit "${CI_PROJECT_URL}/-/commit/" \
+        --arg ts "$CI_COMMIT_TIMESTAMP" \
+        '{url: env.REPO_URL, ref: $ref, repoProjectDirectory: $dir, repoTreeURL: $tree, repoCommitURL: $commit, timestamp: $ts}' > "$work/body"
+      gitbook import
+      echo "import of ${PRODY_DOCS_BRANCH}@${CI_COMMIT_SHORT_SHA} queued on space ${GITBOOK_SPACE_ID} (GitBook runs it after this job)"
+
+gitbook-export:
+  extends: .gitbook-api
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $GITBOOK_EXPORT == "true"
+    - if: $CI_COMMIT_BRANCH == $PRODY_DOCS_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - |
+      set -eu
+      REPO_URL="$repo_url" jq -n --arg ref "refs/heads/${GITBOOK_EDITS_BRANCH}" \
+        --arg dir "$PRODY_DOCS_DIR" \
+        --arg msg "docs: GitBook edits (pipeline ${CI_PIPELINE_ID})" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{url: env.REPO_URL, ref: $ref, repoProjectDirectory: $dir, commitMessage: $msg, timestamp: $ts}' > "$work/body"
+      gitbook export
+      echo "export queued: GitBook pushes its edits to ${GITBOOK_EDITS_BRANCH} after this job."
+      echo "Once that branch has moved, merge it: ${CI_PROJECT_URL}/-/merge_requests/new?merge_request[source_branch]=${GITBOOK_EDITS_BRANCH}&merge_request[target_branch]=${PRODY_DOCS_BRANCH}"

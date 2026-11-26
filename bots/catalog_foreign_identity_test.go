@@ -84,6 +84,7 @@ var catalogHostAllowlist = map[string]string{
 	"json.schemastore.org":             "the public JSON schema store",
 	"dl.min.io":                        "a public download host for an object-store client",
 	"api.moonshot.ai":                  "Moonshot's public API, documented in the backends guide",
+	"api.gitbook.com":                  "GitBook's public API, which product-docs' GitBook sync include (ci/gitbook-api-sync.yml) calls by design",
 	// Public vulnerability and standards sources the security bots read.
 	"api.osv.dev":         "the public OSV vulnerability API",
 	"nvd.nist.gov":        "the public national vulnerability database",

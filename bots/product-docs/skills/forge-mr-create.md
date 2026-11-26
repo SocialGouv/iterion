@@ -80,6 +80,13 @@ git remote get-url origin
 - host contains `gitlab` → **GitLab**, use `glab`.
 - otherwise assume **Forgejo / Gitea** (self-hosted) → REST API via `curl`.
 
+**A forge override wins over the host.** When your prompt gives a forge
+override (`gitlab`, `github` or `forgejo`), use that forge and skip the
+detection above: a self-managed GitLab whose host name does not say
+`gitlab` (`git.example.org`) would otherwise be read as a Forgejo and the
+REST call would fail. The override names the forge, never the host — the
+host is still the origin's.
+
 If there is no `origin` remote (a local-only run), return `opened=false`
 with `skipped_reason="no origin remote to push to"`.
 
@@ -108,12 +115,13 @@ token file nor host auth is available, push/open nothing: return
 
 ## 3. Choose the branch and push
 
-Pick the branch name: use the `mr_branch` input if non-empty, else derive
-a stable one — `iterion/product-docs/<run-id-or-short-sha>`. Push the run's
-HEAD to it on origin:
+Pick the branch name: use the `mr_branch` input if non-empty; else, on a
+release run (a release label in your prompt), `docs/release-<label>`; else
+derive a stable one — `iterion/product-docs/<run-id-or-short-sha>`. Push the
+run's HEAD to it on origin:
 
 ```
-BRANCH="${mr_branch:-iterion/product-docs/$(git rev-parse --short HEAD)}"
+BRANCH="${mr_branch:-iterion/product-docs/$(git rev-parse --short HEAD)}"   # docs/release-<label> on a release run
 git push origin "HEAD:refs/heads/$BRANCH"
 ```
 
@@ -155,7 +163,11 @@ needed on those paths.
   `glab mr create --source-branch "$BRANCH" --target-branch "$BASE" --title "<title>" --description "$body" --yes`
   (with `$body` escaped by the quick-action guard above; prints the MR
   URL). Idempotent: if an MR already exists, fetch its URL
-  with `glab mr view "$BRANCH" -F json` and reuse it.
+  with `glab mr view "$BRANCH" -F json` and reuse it. When your prompt
+  asks to delete the source branch on merge, add `--remove-source-branch`
+  to the create command (an existing MR keeps the setting it has).
+  GitHub and Forgejo decide that per repository: say so in
+  `skipped_reason` rather than dropping the request in silence.
 - **Forgejo / Gitea (REST):** parse `<owner>/<repo>` from the origin URL,
   then `POST https://<host>/api/v1/repos/<owner>/<repo>/pulls` with body
   `{"head":"<BRANCH>","base":"<BASE>","title":"<title>","body":"<body>"}`

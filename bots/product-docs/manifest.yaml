@@ -1,7 +1,58 @@
 name: product-docs
 display_name: Prody
 icon: 🧭
-version: 1.6.0
+version: 1.7.0
+## 1.7.0 — RELEASE-SCOPED RUNS and THE PUBLISHED NAVIGATION. A product team
+## that documents each release wants the run bounded by it: the sources read
+## AT the released tag, the delta measured FROM the previous release, and a
+## pull request that says what the version brings. Three launch vars, all
+## empty by default (the bot as it was), judged by catalog_ingest before
+## anything is spent: `source_refs` (`id=ref,…`) replaces a catalog entry's
+## committed `ref:` for the run — the catalog cannot name a tag that does not
+## exist yet; `source_since` (`id=ref,…`) computes that source's
+## `changed_files` and the commit SUBJECTS of the window from an explicit
+## base instead of the `Product-Docs-Sources:` trailer, so a squash merge that
+## dropped the trailer no longer turns the next release into a full sweep
+## (such a source is cloned blobless, full commit graph, no depth guess; a
+## base it cannot reach is a NAMED unavailable delta, a base off the line of
+## history yields the tree delta and no subject); `release_label` asks the
+## campaign for `release_highlights` — what the version brings to the
+## product's users, sourced or `[à confirmer]` — which finalize_mr renders as
+## the opening section "Ce qu'apporte la version <label>", with
+## `docs/release-<label>` as the default branch and the version in the
+## default title. An override naming no catalog id, a ref git would read as
+## an option or a range, a label that is no version-like token: each stops
+## the run by name. `path: .` + a ref the disk does not hold now says how to
+## read it (by forge url) instead of a bare clone error.
+## A new deterministic gate, `summary_check`, makes a GitBook table of
+## contents (`<product_dir>/<summary_file>`, SUMMARY.md) a convergence term
+## when the product carries one: every page listed (SUMMARY_UNLISTED), every
+## entry a page of the product (SUMMARY_DEAD_ENTRY), and a table removed
+## during the run is refused (SUMMARY_REMOVED) rather than read as no table.
+## Without a table it is inert. The pull request tail also takes `mr_title`,
+## `mr_remove_source_branch` (GitLab `--remove-source-branch`) and
+## `forge_kind` (a self-managed GitLab whose host does not say "gitlab").
+## `ci/` ships the GitLab CI job that launches a release run on every tag
+## (previous release found with the trigger's own pattern, the token on
+## curl's stdin, the job red unless iterion accepted the run), and the
+## GitBook API sync for an instance that cannot send GitBook its webhook
+## (import manual unless opted in: an import overwrites unexported edits).
+## Around the new gate: coverage_check no longer reads the table of contents
+## as a page (a GitBook part title is not a chapter to anchor), scan_hints
+## decodes link destinations the way the table gate does (percent-encoding,
+## `<...>`, a leading `/` from the product directory), and a page under the
+## editorial charter or a dot file is no page. catalog_ingest always clones
+## afresh (a .git left in the scratch is never updated: its hooks would run
+## with the token, its fetch ignored the release ref), drops every clone's
+## history on exit, a crash included, decodes git output tolerantly (a
+## Latin-1 commit subject crashed it), says when changed_files is cut, and
+## stops when a source the release pins cannot be read. A LOCAL source whose
+## object store declares any delegation (a non-empty objects/info/alternates)
+## is now refused wherever it points: following one meant parsing git's
+## grammar for it, and each divergence (a quoted line, surrounding
+## whitespace, a non-UTF-8 path) was a store outside the workspace served to
+## the clone. The askpass guard keys on host:port for an https origin on a
+## non-default port.
 ## 1.6.0 — THE DELIVERY IS BOUNDED, not just the loop. `scope_check` is a
 ## loop condition: a pass that never reverted its out-of-scope write and then
 ## spent `max_passes` reached the PR tail anyway, and the push carried the

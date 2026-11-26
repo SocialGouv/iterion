@@ -79,6 +79,26 @@ exemple « depuis un ordinateur » / « depuis un mobile »).
 
 Si les onglets décrivent deux parcours différents, ce sont deux pages.
 
+## La table des matières (`SUMMARY.md`)
+
+Quand le répertoire du produit contient un `SUMMARY.md`, c'est la navigation
+publiée par GitBook : une page qu'il ne liste pas n'est atteignable par
+aucun lecteur, aussi bien écrite soit-elle.
+
+- Toute page ajoutée, déplacée ou supprimée y est reportée **dans le même
+  commit** que la page.
+- Une entrée par page : `* [Titre de la page](chemin/relatif.md)`, indentée de
+  deux espaces sous la page qui la regroupe. Un dossier se liste par son
+  `README.md`.
+- Les chemins sont relatifs au `SUMMARY.md` lui-même. Une entrée ne pointe
+  jamais hors du répertoire du produit.
+- L'ordre suit le parcours du lecteur : l'accueil d'abord, puis un rôle ou
+  un parcours par groupe, le glossaire en dernier.
+
+Une vérification automatique relit la table après chaque passe : une page
+absente de la table, une entrée qui ne mène à aucune page, ou une table
+supprimée renvoient la passe en correction.
+
 ## Les images
 
 Une capture d'écran n'est utile que si elle montre quelque chose que le texte
