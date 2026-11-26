@@ -45,11 +45,16 @@ type fakeGitHub struct {
 	seen    map[int]string
 	// failReadAfterMerge makes PullRequest fail once n merged.
 	failReadAfterMerge map[int]bool
+	// onRead runs at every PullRequest read (a push slipped in mid-landing).
+	onRead func(n int)
+	// errAfterMerge makes Merge squash, then report an error (a 502 after
+	// the mutation went through).
+	errAfterMerge map[int]bool
 }
 
 func newFakeGitHub(t *testing.T, f *fixture, prs []PR) *fakeGitHub {
 	g := &fakeGitHub{t: t, f: f, prs: map[int]PR{}, merged: map[int]string{}, bodies: map[int]string{}, comments: map[int]string{},
-		autoMerge: map[int]bool{}, queued: map[int]bool{}, headLag: map[int]int{}, seen: map[int]string{}, failReadAfterMerge: map[int]bool{}}
+		autoMerge: map[int]bool{}, queued: map[int]bool{}, headLag: map[int]int{}, seen: map[int]string{}, failReadAfterMerge: map[int]bool{}, errAfterMerge: map[int]bool{}}
 	for _, pr := range prs {
 		g.prs[pr.Number] = pr
 	}
@@ -65,6 +70,9 @@ func (g *fakeGitHub) PullRequest(_ context.Context, n int) (PR, error) {
 	pr, ok := g.prs[n]
 	if !ok {
 		return PR{}, fmt.Errorf("no pull request #%d", n)
+	}
+	if g.onRead != nil {
+		g.onRead(n)
 	}
 	if _, done := g.merged[n]; done && g.failReadAfterMerge[n] {
 		return PR{}, errors.New("HTTP 502")
@@ -160,6 +168,9 @@ func (g *fakeGitHub) Merge(ctx context.Context, n int, headSHA, subject, body st
 	g.bodies[n] = body
 	if g.afterMerge != nil {
 		g.afterMerge(n)
+	}
+	if g.errAfterMerge[n] {
+		return errors.New("HTTP 502: Bad Gateway")
 	}
 	return nil
 }
@@ -351,7 +362,7 @@ func TestLandStopsWhenGhMergesNothing(t *testing.T) {
 	gh := newFakeGitHub(t, f, prs)
 	gh.queued[2] = true
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "#2 is not merged") || !errors.Is(err, errPartial) {
+	if err == nil || !strings.Contains(err.Error(), "#2 reads not merged") || !strings.Contains(err.Error(), "nothing of it landed") || !errors.Is(err, errPartial) {
 		t.Fatalf("err %v, want #2 named as not merged, as a partial landing", err)
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || !rep.Landed[0].Verified || fmt.Sprint(gh.merges) != "[1]" {
@@ -415,6 +426,54 @@ func TestLandStopsWhenMainDoesNotCarryTheGatedTree(t *testing.T) {
 	}
 }
 
+// A push inside the window between the first look at main and the merge —
+// here while the merge's own re-read runs — must stop the lot before the
+// squash, for the first pull request as for the others.
+func TestLandChecksMainRightBeforeEachMerge(t *testing.T) {
+	for _, at := range []int{1, 2} {
+		f := newFixture(t, map[string]string{"a.txt": "a\n"})
+		prs := threePRs(f)
+		rep := greenLot(t, f, prs)
+		gh := newFakeGitHub(t, f, prs)
+		reads := map[int]int{}
+		gh.onRead = func(n int) {
+			reads[n]++
+			// Pre-flight reads each pull request once; the second read of
+			// #at is the re-read right before its merge.
+			if n == at && reads[n] == 2 {
+				gh.pushOnMain("chore: release v9.9.9")
+			}
+		}
+		err := lander(f, gh).Land(context.Background(), rep)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("stopped before #%d: main moved", at)) {
+			t.Fatalf("push before #%d's merge: err %v, want the lot stopped before #%d", at, err, at)
+		}
+		if len(gh.merges) != at-1 {
+			t.Fatalf("push before #%d's merge: merges %v — want only the %d before it", at, gh.merges, at-1)
+		}
+		if strings.Contains(err.Error(), "UNGATED") {
+			t.Fatalf("push before #%d's merge: an ungated tree landed: %v", at, err)
+		}
+	}
+}
+
+// gh can report a failure after the merge went through: main is read back,
+// and the landing is recorded, unverified, as a partial one.
+func TestLandRecordsAMergeThatWentThroughBehindAnError(t *testing.T) {
+	f := newFixture(t, map[string]string{"a.txt": "a\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"}), f.pr(2, map[string]string{"c.txt": "c\n"})}
+	rep := greenLot(t, f, prs)
+	gh := newFakeGitHub(t, f, prs)
+	gh.errAfterMerge[1] = true
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !errors.Is(err, errPartial) || !strings.Contains(err.Error(), "recorded as an unverified landing") {
+		t.Fatalf("err %v, want a partial landing that records #1", err)
+	}
+	if len(rep.Landed) != 1 || rep.Landed[0].PR != 1 || rep.Landed[0].Verified || rep.Landed[0].Merge != gh.merged[1] {
+		t.Fatalf("landed %+v — want #1 recorded unverified, as main's new tip %s", rep.Landed, short(gh.merged[1]))
+	}
+}
+
 func TestLandSucceedsWhenAReleaseFollowsTheLastLanding(t *testing.T) {
 	f := newFixture(t, map[string]string{"a.txt": "a\n"})
 	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"}), f.pr(2, map[string]string{"c.txt": "c\n"})}
@@ -475,7 +534,7 @@ func TestLandReportsAMergeRefusedByGitHub(t *testing.T) {
 	rep := greenLot(t, f, prs)
 	gh := &refusingMerge{fakeGitHub: newFakeGitHub(t, f, prs)}
 	err := lander(f, gh).Land(context.Background(), rep)
-	if err == nil || !strings.Contains(err.Error(), "the merge was refused") || errors.Is(err, errPartial) {
+	if err == nil || !strings.Contains(err.Error(), "gh reported the merge failed") || !strings.Contains(err.Error(), "nothing of it landed") || errors.Is(err, errPartial) {
 		t.Fatalf("err %v, want the refusal named, and not as a partial landing (nothing reached main)", err)
 	}
 }

@@ -109,6 +109,29 @@ func TestLandRefusesToPushADifferenceTheTrainDidNotRegenerate(t *testing.T) {
 	}
 }
 
+// A non-derived file moved onto a derived path: with rename detection the
+// diff would name only the derived path and the push would pass.
+func TestLandConfinementSeesThroughRenames(t *testing.T) {
+	wf := ".github/workflows/x.yml"
+	f := newFixture(t, map[string]string{"a.txt": "a\n", wf: "on: push\njobs: {}\n"})
+	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
+	rep := greenLot(t, f, prs)
+	mustGit(t, f.dir, "checkout", "--quiet", "--detach", rep.Steps[0].Commit)
+	if err := os.MkdirAll(filepath.Join(f.dir, "docs", "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, f.dir, "mv", wf, "docs/references/map-x.md")
+	tree := mustGit(t, f.dir, "write-tree")
+	forged := mustGit(t, f.dir, "commit-tree", tree, "-p", rep.Base, "-m", "forged")
+	rep.Steps[0].Commit, rep.Steps[0].Tree = forged, tree
+	rep.Steps[0].Regenerated = []string{"docs/references/map-x.md"}
+	gh := newFakeGitHub(t, f, prs)
+	err := lander(f, gh).Land(context.Background(), rep)
+	if err == nil || !strings.Contains(err.Error(), wf) || len(gh.merges) != 0 {
+		t.Fatalf("err %v, merges %v — want the moved workflow named and nothing pushed or merged", err, gh.merges)
+	}
+}
+
 func TestLandRefusesALotJSONThatDoesNotMatchItsCommits(t *testing.T) {
 	f := newFixture(t, map[string]string{"a.txt": "a\n"})
 	prs := []PR{f.pr(1, map[string]string{"b.txt": "b\n"})}
@@ -128,9 +151,11 @@ func TestPRCodeEnvDropsTheSecretsAndKeepsTheRest(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/fake.sock")
 	t.Setenv("GH_CONFIG_DIR", "/home/someone/.config/gh")
 	t.Setenv("KEEP_ME", "yes")
+	t.Setenv("GIT_DIR", "/operator/checkout/.git")
+	t.Setenv("GIT_WORK_TREE", "/operator/checkout")
 	env := prCodeEnv("/empty", "EXTRA=1")
 	for _, kv := range env {
-		for _, bad := range []string{"fake-gh", "fake-key", "fake-aws", "/tmp/fake.sock", "/home/someone/.config/gh"} {
+		for _, bad := range []string{"fake-gh", "fake-key", "fake-aws", "/tmp/fake.sock", "/home/someone/.config/gh", "/operator/checkout"} {
 			if strings.Contains(kv, bad) {
 				t.Errorf("a secret reached pull request code: %s", kv)
 			}

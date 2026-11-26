@@ -86,7 +86,9 @@ var (
 // login.
 func prCodeEnv(emptyDir string, extra ...string) []string {
 	var out []string
-	for _, kv := range os.Environ() {
+	// git.SanitizeEnv first: an inherited GIT_DIR or GIT_WORK_TREE would point
+	// the gate's own `git rev-parse --show-toplevel` at another checkout.
+	for _, kv := range git.SanitizeEnv(os.Environ()) {
 		name, _, _ := strings.Cut(kv, "=")
 		up := strings.ToUpper(name)
 		if slices.Contains(secretNames, up) || up == "GH_CONFIG_DIR" {
