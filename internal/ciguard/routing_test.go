@@ -374,19 +374,22 @@ var gatedJobs = map[string]bool{
 }
 
 // fullSuite is true wherever the heavy layer runs: on every event that is
-// neither a pull request nor a merge-queue build — push to main, the nightly
+// neither a pull request, a merge-queue build nor a push — the nightly
 // schedule, a dispatch, and any trigger added later, so a new trigger runs
-// the full suite by default — and on a pull request that carries the
-// `ci:full` opt-in label. A merge-queue build and an unlabelled pull request
-// are LIGHT runs: the heavy layer skips them (#3683 for the pull request,
-// #3691 for the queue, the experimental delivery mode). One literal, three
+// the full suite by default — on a push heavyGateJob did not decide light
+// (the debounced push, #3737: only the exact output `false` is light, so a
+// gate that failed or never answered runs the heavy layer), and on a pull
+// request that carries the `ci:full` opt-in label. A merge-queue build, an
+// unlabelled pull request and a push inside the heavy window are LIGHT runs:
+// the heavy layer skips them (#3683 for the pull request, #3691 for the
+// queue, the experimental delivery mode). One literal, three
 // readers, each pinned byte for byte below: the heavy legs' `if:`
 // (heavyLegIf), the heavy advisory jobs' `if:` (heavyAdvisoryIf) and the
 // aggregators' lightRunEnv. The legs run where it is true and the
 // aggregators forgive a `skipped` leg where its negation is true, so the two
 // sides cannot disagree about which runs are light; event_layers_test.go
 // evaluates all three, per event.
-const fullSuite = `((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full'))`
+const fullSuite = `((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full'))`
 
 // heavyLegs are the gated legs a light run skips: the -race shards and the
 // -race e2e shards, seven ARC pods of up to 50 minutes. Each still feeds its
@@ -397,8 +400,10 @@ var heavyLegs = map[string]bool{
 }
 
 // heavyLegIf is the one `if:` a heavy leg carries: the tap skip every gated
-// leg carries, combined with fullSuite.
-const heavyLegIf = fullSuite + " && " + tapSkip
+// leg carries, combined with fullSuite, behind `!cancelled()` — a heavy leg
+// `needs:` heavyGateJob to read its output, and without a status function a
+// job whose need skipped (every event but push) or failed is skipped too.
+const heavyLegIf = "${{ !cancelled() && " + fullSuite + " && " + tapSkip + " }}"
 
 // heavyAdvisoryJobs are the heavy jobs no aggregator speaks for: they skip
 // every light run, the merge queue included, and run with the heavy legs.
@@ -408,8 +413,21 @@ var heavyAdvisoryJobs = map[string]bool{
 }
 
 // heavyAdvisoryIf is the one `if:` a heavy advisory job carries: fullSuite
-// alone, which already keeps it out of the merge queue.
-const heavyAdvisoryIf = fullSuite
+// alone, which already keeps it out of the merge queue, behind the same
+// `!cancelled()` as heavyLegIf and for the same reason.
+const heavyAdvisoryIf = "${{ !cancelled() && " + fullSuite + " }}"
+
+// heavyGateJob is the decider of the debounced push (#3737): on a push to
+// main it answers `heavy=true` or `heavy=false` from the run history, and
+// fullSuite reads that output under `github.event_name == 'push'` only. It
+// runs on push and nowhere else (heavyGateIf), so the merge queue never
+// spends a slot on it. Every job whose `if:` or env reads fullSuite `needs:`
+// it; it is no leg — no aggregator re-verifies its result, because where it
+// fails its output is empty and the run is heavy.
+const (
+	heavyGateJob = "heavy-gate"
+	heavyGateIf  = "github.event_name == 'push'"
+)
 
 // lightRunEnv is the env key, and lightRunValue its exact value, through
 // which an aggregator learns whether the run is light: the negation of
@@ -432,6 +450,19 @@ const (
 // entries its legs skip and re-verifies every other one. Byte for byte: the
 // tap half is the same literal the heavy jobs and the verifier share.
 const aggregatorIf = "${{ !cancelled() && " + tapSkip + " }}"
+
+// aggregatedLegs returns the legs a job's `needs:` names, heavyGateJob left
+// out: the decider is needed for its output, never re-verified as a leg. A
+// job whose legs are empty is no aggregator, whatever else it needs.
+func aggregatedLegs[T any](needs []T) []string {
+	var legs []string
+	for _, n := range needs {
+		if leg := fmt.Sprint(n); leg != heavyGateJob {
+			legs = append(legs, leg)
+		}
+	}
+	return legs
+}
 
 // workflowJobs is the file PARSED, not scanned.
 //
@@ -528,7 +559,7 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// work: a Homebrew tap update skips the heavy jobs, and the
 			// verifier that makes it safe lives in a job that can never
 			// carry it.
-		case (requiredChecks[name] || heldChecks[name]) && len(job.Needs) > 0 && sameExpression(job.If, aggregatorIf):
+		case (requiredChecks[name] || heldChecks[name]) && len(aggregatedLegs(job.Needs)) > 0 && sameExpression(job.If, aggregatorIf):
 			// The one admitted condition on a required or held AGGREGATOR: the
 			// run-state spelling that keeps a failed leg from skipping it,
 			// combined with the same tap skip its legs carry — it skips
@@ -571,6 +602,10 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			t.Errorf("job %q is a heavy advisory job and carries `if:` %q, want exactly %q — out of every light run, the merge queue and an unlabelled pull request, like the heavy legs", name, job.If, heavyAdvisoryIf)
 		case heavyAdvisoryJobs[name]:
 			// The heavy literal keeps it out of the merge queue on its own.
+		case name == heavyGateJob && !sameExpression(job.If, heavyGateIf):
+			t.Errorf("job %q decides the debounced push and carries `if:` %q, want exactly %q — it decides a push and nothing else, and never holds a merge-queue slot", name, job.If, heavyGateIf)
+		case name == heavyGateJob:
+			// Push only: it skips the merge queue by never running there.
 		case heldChecks[name]:
 			t.Errorf("job %q is a held check and carries `if:` %q with needs %v: a held aggregator carries exactly %q, a held job of its own work is a heavy advisory job", name, job.If, job.Needs, aggregatorIf)
 		case !requiredChecks[name] && !gatedJobs[name] && !skips:
@@ -665,13 +700,20 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 		t.Fatalf("parse %s: %v", workflowPaths[0], err)
 	}
 	for name, job := range wf.Jobs {
-		if len(job.Needs) == 0 {
+		if len(aggregatedLegs(job.Needs)) == 0 {
+			// No need, or heavyGateJob alone: a heavy job reading the
+			// decider's output, not an aggregator.
 			continue
 		}
 		if strings.TrimSpace(job.If) != aggregatorIf {
 			t.Errorf("job %q needs %v but carries `if:` %q — with plain needs, a failed leg SKIPS this job and a skipped check reports SUCCESS. Carry exactly %s", name, job.Needs, job.If, aggregatorIf)
 		}
 		for _, leg := range job.Needs {
+			if leg == heavyGateJob {
+				// Needed for its output, which LIGHT_RUN reads; it is no
+				// leg, and TestHeavyLayerRunsOnTheDebouncedPush holds it.
+				continue
+			}
 			if !gatedJobs[leg] {
 				t.Errorf("job %q needs %q, which is not a gated leg — an advisory member reports `skipped` inside the merge queue and the aggregator would re-verify it into red", name, leg)
 			}
@@ -774,7 +816,7 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 			}
 			return true
 		}
-		if len(needs) == 0 {
+		if len(aggregatedLegs(needs)) == 0 {
 			continue
 		}
 		allHeavySkipped := map[string]string{}
@@ -790,6 +832,9 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 			}
 			for _, leg := range needs {
 				leg := fmt.Sprint(leg)
+				if leg == heavyGateJob {
+					continue
+				}
 				for _, r := range []string{"failure", "cancelled", "skipped"} {
 					forgiven := lightRun && heavyLegs[leg] && r == "skipped"
 					switch got := green(light, map[string]string{leg: r}); {

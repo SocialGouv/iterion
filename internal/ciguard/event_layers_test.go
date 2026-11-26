@@ -12,31 +12,47 @@ import (
 )
 
 // ciEvent is one trigger of tests.yml as a job condition sees it: the
-// `github` context the expressions read, and whether the experimental
-// delivery mode (docs/adr/173-experimental-delivery-mode.md) runs the heavy
-// layer there.
+// `github` context the expressions read, whether the experimental delivery
+// mode (docs/adr/173-experimental-delivery-mode.md) runs the heavy layer
+// there, and the `needs` context heavyGateJob leaves behind it.
 type ciEvent struct {
 	name   string
 	github map[string]any
 	full   bool
+	needs  map[string]any
 }
 
-// ciEvents are the runs tests.yml serves. The merge queue and an unlabelled
-// pull request are LIGHT; push to main, the nightly, a dispatch and a
-// `ci:full` pull request run the full suite.
+// gateNeeds is the `needs` context heavyGateJob leaves: its result and, when
+// it answered, its `heavy` output. GitHub renders a skipped or failed job's
+// outputs empty.
+func gateNeeds(result, heavy string) map[string]any {
+	outputs := map[string]any{}
+	if heavy != "" {
+		outputs["heavy"] = heavy
+	}
+	return map[string]any{heavyGateJob: map[string]any{"result": result, "outputs": outputs}}
+}
+
+// ciEvents are the runs tests.yml serves. The merge queue, an unlabelled
+// pull request and a push heavyGateJob decided light are LIGHT; the push the
+// gate decided heavy, a push whose gate failed (failing toward more testing),
+// the nightly, a dispatch and a `ci:full` pull request run the full suite.
+// The gate skips every event but push.
 var ciEvents = []ciEvent{
-	{"push to main", map[string]any{"event_name": "push", "event": map[string]any{}}, true},
-	{"nightly schedule", map[string]any{"event_name": "schedule", "event": map[string]any{}}, true},
-	{"workflow_dispatch", map[string]any{"event_name": "workflow_dispatch", "event": map[string]any{}}, true},
+	{"push to main, heavy window elapsed", map[string]any{"event_name": "push", "event": map[string]any{}}, true, gateNeeds("success", "true")},
+	{"push to main inside the heavy window", map[string]any{"event_name": "push", "event": map[string]any{}}, false, gateNeeds("success", "false")},
+	{"push to main, heavy-gate failed", map[string]any{"event_name": "push", "event": map[string]any{}}, true, gateNeeds("failure", "")},
+	{"nightly schedule", map[string]any{"event_name": "schedule", "event": map[string]any{}}, true, gateNeeds("skipped", "")},
+	{"workflow_dispatch", map[string]any{"event_name": "workflow_dispatch", "event": map[string]any{}}, true, gateNeeds("skipped", "")},
 	{"merge queue", map[string]any{"event_name": "merge_group", "event": map[string]any{
 		"merge_group": map[string]any{"head_commit": map[string]any{"message": "feat(x): a change (#1)"}},
-	}}, false},
+	}}, false, gateNeeds("skipped", "")},
 	{"unlabelled pull request", map[string]any{"event_name": "pull_request", "event": map[string]any{
 		"pull_request": map[string]any{"title": "feat(x): a change", "labels": []any{map[string]any{"name": "bug"}}},
-	}}, false},
+	}}, false, gateNeeds("skipped", "")},
 	{"ci:full pull request", map[string]any{"event_name": "pull_request", "event": map[string]any{
 		"pull_request": map[string]any{"title": "feat(x): a change", "labels": []any{map[string]any{"name": "bug"}, map[string]any{"name": "ci:full"}}},
-	}}, true},
+	}}, true, gateNeeds("skipped", "")},
 }
 
 // TestEachEventRunsItsLayer EVALUATES the workflow's own conditions for each
@@ -46,6 +62,7 @@ var ciEvents = []ciEvent{
 //
 //   - every heavy job (heavyLegs, heavyAdvisoryJobs) runs exactly where the
 //     event is full — the merge queue runs only the light layer;
+//   - heavyGateJob runs on push and nowhere else;
 //   - every other gated leg and every required job runs on every event;
 //   - every aggregator is green with the heavy legs at the result the event
 //     gives them (`success` where they run, `skipped` where they skip), and
@@ -64,7 +81,7 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 			if strings.TrimSpace(cond) == "" {
 				return true
 			}
-			v, err := evalExpression(cond, ev.github)
+			v, err := evalContexts(cond, ev.github, ev.needs)
 			if err != nil {
 				t.Fatalf("job %q `if:` %q: %v", job, cond, err)
 			}
@@ -74,14 +91,16 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 			heavy := heavyLegs[name] || heavyAdvisoryJobs[name]
 			switch got := runs(name); {
 			case heavy && got != ev.full:
-				t.Errorf("%s: heavy job %q runs=%v, want %v — the heavy layer runs on push, the nightly, a dispatch and `ci:full`, and nowhere else", ev.name, name, got, ev.full)
+				t.Errorf("%s: heavy job %q runs=%v, want %v — the heavy layer runs on the debounced push, the nightly, a dispatch and `ci:full`, and nowhere else", ev.name, name, got, ev.full)
+			case name == heavyGateJob && got != (ev.github["event_name"] == "push"):
+				t.Errorf("%s: %q runs=%v, want it on push and nowhere else", ev.name, name, got)
 			case !heavy && (gatedJobs[name] || requiredChecks[name] || heldChecks[name]) && !got:
 				t.Errorf("%s: light-layer job %q does not run — the light layer runs on every event", ev.name, name)
 			}
 		}
 		for name, job := range wf.Jobs {
 			needs, _ := job["needs"].([]any)
-			if len(needs) == 0 {
+			if len(aggregatedLegs(needs)) == 0 {
 				continue
 			}
 			if ev.name == ciEvents[0].name {
@@ -107,7 +126,7 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 						vars = append(vars, k+"="+result)
 						continue
 					}
-					rendered, err := renderValue(value, ev.github)
+					rendered, err := renderValue(value, ev.github, ev.needs)
 					if err != nil {
 						t.Fatalf("aggregator %q env %s=%q: %v", name, k, value, err)
 					}
@@ -183,11 +202,11 @@ func TestTheExpressionEvaluatorReadsGitHubsRules(t *testing.T) {
 // renderValue renders an env value the way GitHub does: a value that is
 // exactly one `${{ }}` becomes its result, a boolean as `true` / `false`;
 // anything else is refused, since the aggregator's env carries no other shape.
-func renderValue(value string, github map[string]any) (string, error) {
+func renderValue(value string, github, needs map[string]any) (string, error) {
 	if !strings.HasPrefix(value, "${{") || !strings.HasSuffix(value, "}}") {
 		return "", fmt.Errorf("not a single expression")
 	}
-	v, err := evalExpression(value, github)
+	v, err := evalContexts(value, github, needs)
 	if err != nil {
 		return "", err
 	}
@@ -221,8 +240,15 @@ var exprToken = regexp.MustCompile(`^\s*(\|\||&&|==|!=|!|\(|\)|,|'(?:[^']|'')*'|
 // workflow's job conditions use: string literals, true/false/null, context
 // paths under `github` (with `*` over arrays), `!`, `==`, `!=`, `&&`, `||`,
 // parentheses and the functions cancelled(), startsWith() and contains().
-// Anything else is an error, never a guess.
+// Anything else is an error, never a guess. A `needs` path is refused: it
+// reads through evalContexts, which models that context.
 func evalExpression(expr string, github map[string]any) (any, error) {
+	return evalContexts(expr, github, nil)
+}
+
+// evalContexts is evalExpression with the `needs` context modelled too; a
+// nil needs refuses every `needs` path rather than reading it as null.
+func evalContexts(expr string, github, needs map[string]any) (any, error) {
 	expr = strings.TrimSpace(expr)
 	if strings.HasPrefix(expr, "${{") && strings.HasSuffix(expr, "}}") {
 		expr = strings.TrimSpace(expr[3 : len(expr)-2])
@@ -236,7 +262,7 @@ func evalExpression(expr string, github map[string]any) (any, error) {
 		toks = append(toks, m[1])
 		rest = rest[len(m[0]):]
 	}
-	p := &exprParser{toks: toks, github: github}
+	p := &exprParser{toks: toks, github: github, needs: needs}
 	v, err := p.or()
 	if err != nil {
 		return nil, err
@@ -251,6 +277,7 @@ type exprParser struct {
 	toks   []string
 	pos    int
 	github map[string]any
+	needs  map[string]any
 }
 
 func (p *exprParser) peek() string {
@@ -340,6 +367,11 @@ func (p *exprParser) primary() (any, error) {
 		return p.call(tok)
 	case tok == "github" || strings.HasPrefix(tok, "github."):
 		return resolvePath(p.github, strings.Split(tok, ".")[1:]), nil
+	case tok == "needs" || strings.HasPrefix(tok, "needs."):
+		if p.needs == nil {
+			return nil, fmt.Errorf("%s reads the needs context, which this evaluation does not model", tok)
+		}
+		return resolvePath(p.needs, strings.Split(tok, ".")[1:]), nil
 	}
 	return nil, fmt.Errorf("unsupported token %q", tok)
 }

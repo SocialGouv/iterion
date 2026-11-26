@@ -66,8 +66,9 @@ on:
   pull_request:
   merge_group:
     types: [checks_requested]
-  # The nightly full suite (ADR-173): the heavy layer the merge queue no
-  # longer runs, on `main` once a day even when no push gave it a witness.
+  # The nightly full suite (ADR-173), a BACKSTOP: GitHub delays this repo's
+  # crons by hours or drops them, so the debounced push (heavy-gate below)
+  # carries the heavy cadence, and a nightly that fires costs one heavy run.
   # 01:47 UTC — off the :00/:30 marks where every scheduled workflow in the
   # fleet lands, and away from test-quarantine's 03:17.
   schedule:
@@ -82,10 +83,11 @@ permissions:
 # nightly a merge's witness. Every push to `main` shares one group, and a push
 # never cancels the run in progress: GitHub keeps that run, holds at most one
 # pending run behind it and replaces the pending one with each newer push. So
-# the post-merge heavy layer runs one witness at a time, of the batch merged
-# since the last run started (ADR-173), whatever the merge rate; a release
-# push landing behind a merge displaces only a run still pending. No `queue:`
-# key: it would keep every pending run, one heavy run per merge. Every other
+# the post-merge witness runs one at a time, of the batch merged since the
+# last run started (ADR-173), whatever the merge rate, and the heavy-gate of a
+# pending run reads a history in which the run before it has completed; a
+# release push landing behind a merge displaces only a run still pending. No
+# `queue:` key: it would keep every pending run. Every other
 # event cancels in progress, so a newer commit of a pull request still cancels
 # the older run.
 concurrency:
@@ -96,18 +98,27 @@ concurrency:
 # #3691): while the project is experimental the merge queue gates on the
 # LIGHT layer — unit, studio, native exec, lint, vendor, brand, fmt and Revi —
 # and the HEAVY layer (`race-shard`, `test-e2e`, `mongo-conformance`,
-# `cloud-e2e`) runs after the merge instead: on push to `main` (the witness
-# of the merged batch), on the nightly schedule above, on a dispatch and on a
-# pull request labelled `ci:full`. ONE literal decides it, the heavy jobs' own
-# condition:
+# `cloud-e2e`) runs after the merge instead: on the DEBOUNCED PUSH — the
+# first push to `main` after CI_HEAVY_EVERY_HOURS hours (default 6) without a
+# completed heavy run on main, decided by the `heavy-gate` job (#3737) — on
+# the nightly schedule above, on a dispatch and on a pull request labelled
+# `ci:full`. Every other push to `main` is a LIGHT witness of its batch. ONE
+# literal decides it, the heavy jobs' own condition:
 #
-#   ((github.event_name != 'pull_request' && github.event_name != 'merge_group')
+#   ((github.event_name != 'pull_request' && github.event_name != 'merge_group'
+#       && (github.event_name != 'push'
+#           || needs.heavy-gate.outputs.heavy != 'false'))
 #     || contains(github.event.pull_request.labels.*.name, 'ci:full'))
 #
-# true on push, schedule and dispatch — any event that is neither a pull
-# request nor a queue build, so a trigger added later runs the full suite by
-# default — and on a labelled pull request; false in `merge_group` and on an
-# unlabelled pull request, the LIGHT runs.
+# true on schedule and dispatch — any event that is neither a pull request, a
+# queue build nor a push, so a trigger added later runs the full suite by
+# default — on a push the gate did not decide light (`false` is the only
+# light answer: a gate that failed or never answered leaves the output empty,
+# and the push runs heavy), and on a labelled pull request; false in
+# `merge_group`, on an unlabelled pull request and on a push inside the heavy
+# window, the LIGHT runs. Every job that reads it `needs:` heavy-gate, and
+# the heavy jobs prefix it with `!cancelled()`, so they still run where the
+# gate skips (every event but push) or fails.
 #
 # Jobs pick one of THREE sides of the merge queue, and internal/ciguard holds
 # each side to its contract:
@@ -133,11 +144,12 @@ concurrency:
 #      guarantee would die without any queue signal — which is why ciguard
 #      refuses any other `if:` on a leg outright, and refuses a leg without
 #      the skip (it would spend the heavy minutes the skip exists to save).
-#      The HEAVY legs, `race-shard` and `test-e2e`, carry one more clause,
-#      also byte for byte: the heavy literal above, so a LIGHT run skips them
-#      (#3683 for the pull request, #3691 for the queue). Their aggregators
-#      read LIGHT_RUN, the negation of that same literal evaluated by GitHub,
-#      and forgive a heavy leg's `skipped` only when it is `true`: on `push`,
+#      The HEAVY legs, `race-shard` and `test-e2e`, carry `!cancelled()`
+#      and the heavy literal above on top of it, byte for byte, so a LIGHT
+#      run skips them (#3683 for the pull request, #3691 for the queue, #3737
+#      for a push inside the heavy window). Their aggregators read LIGHT_RUN,
+#      the negation of that same literal evaluated by GitHub, and forgive a
+#      heavy leg's `skipped` only when it is `true`: on a heavy push,
 #      `schedule`, a dispatch and a `ci:full` pull request it is `false`, and
 #      a skipped heavy leg is red like a failed one. ciguard runs each
 #      aggregator under both. To run the heavy legs on a pull request, add
@@ -146,8 +158,10 @@ concurrency:
 #   3. ADVISORY — the jobs that cannot block a merge. Running one inside the
 #      queue buys a verdict nobody can act on while holding a runner slot the
 #      queue needs, so they run on the pull request and on main and skip in
-#      `merge_group`. `cloud-e2e` and `mongo-conformance`, heavy, carry the
-#      heavy literal alone: it skips the queue and a light pull request both.
+#      `merge_group`. `cloud-e2e` and `mongo-conformance`, heavy, carry
+#      `!cancelled()` and the heavy literal alone: it skips the queue, a light
+#      pull request and a light push. `heavy-gate`, the decider, runs on push
+#      alone, so it skips the queue too.
 
 # The trap the aggregator design answers, twice over: a job skipped by a
 # job-level `if:` reports SUCCESS, so a required check that never ran
@@ -186,7 +200,8 @@ concurrency:
 # ALLGREEN. Entries stack, so a skipped entry vouches for nothing ahead of it;
 # ALLGREEN is what makes every entry pass on its own checks. internal/ciguard
 # holds the expression, its copies and the verifier step together. `push` to
-# main evaluates the predicate false: main still runs everything.
+# main evaluates the predicate false: a push to main never skips on a tap
+# title, and heavy-gate alone decides its heavy layer.
 
 # WHERE these jobs run. The organisation shares 20 concurrent GitHub-hosted
 # jobs across every repository, which is what makes a cycle here take 40
@@ -270,6 +285,48 @@ concurrency:
 # another class's spelling or a self-hosted job it does not classify.
 
 jobs:
+  # ---- the heavy decider: does this push to main run the heavy layer? ----
+
+  heavy-gate:
+    # The DEBOUNCED PUSH (ADR-173, #3737): the first push to main after
+    # CI_HEAVY_EVERY_HOURS hours (default 6) without a completed heavy run on
+    # main runs the heavy layer; every other push stays light. GitHub's crons
+    # are delayed by hours or dropped on this repository, so the push itself
+    # carries the heavy cadence and the nightly stays a backstop.
+    # scripts/ci/heavy-gate.sh reads the run history: a run counts when one of
+    # its `race-shard` jobs concluded success or failure inside the window. On
+    # an unreadable history or window it warns and decides heavy — failing
+    # toward more testing. CI_HEAVY_EVERY_HOURS=0 runs the heavy layer on
+    # every push.
+    #
+    # Push only: every other event decides by itself (the heavy literal reads
+    # this job's output only under `github.event_name == 'push'`), and the
+    # merge queue never spends a slot here. The heavy jobs and the aggregators
+    # `needs:` it to read its output; the heavy jobs carry `!cancelled()`, so
+    # where it skips they still run, and where it FAILS its output is empty,
+    # which the heavy literal reads as heavy.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      heavy: ${{ steps.decide.outputs.heavy }}
+    steps:
+      - name: Checkout the decider
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci/heavy-gate.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Decide heavy or light
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAVY_EVERY_HOURS: ${{ vars.CI_HEAVY_EVERY_HOURS || '6' }}
+        run: scripts/ci/heavy-gate.sh
+
   # ---- gated legs: the real work, one side each, aggregated by `test` ----
 
   test-unit:
@@ -552,12 +609,14 @@ jobs:
     # third of the package). So each shard keeps race-shard's proven -race
     # bounds, 2400 s per package and a 50-minute job, until ARC -race shard
     # walls are measured.
-    # HEAVY (#3683, #3691): a light run — a merge-queue build or a pull
-    # request without `ci:full` — skips this leg; push to main, the nightly
-    # and a dispatch run it. `test` forgives that skip on a light run only.
+    # HEAVY (#3683, #3691, #3737): a light run — a merge-queue build, a pull
+    # request without `ci:full` or a push inside the heavy window — skips
+    # this leg; the debounced push, the nightly and a dispatch run it. `test`
+    # forgives that skip on a light run only.
     # A Homebrew tap update skips it too: the header says why, and `brand`
     # verifies it.
-    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    needs: [heavy-gate]
+    if: "${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_HEAVY_RUNNER || 'arc-runners' }}
     timeout-minutes: 50
     strategy:
@@ -775,14 +834,17 @@ jobs:
     # trusting the needs-graph, so a red leg can only ever produce a red
     # required check.
     #
-    # ONE forgiven result (#3683, #3691): on a LIGHT run — a merge-queue
-    # build, or a pull request without the `ci:full` label — test-e2e skips by
-    # design and runs after the merge instead, so `skipped` from it is
-    # accepted there and nowhere else. LIGHT_RUN is the negation of the very
-    # expression the heavy leg runs on, evaluated by GitHub: `false` on push,
+    # ONE forgiven result (#3683, #3691, #3737): on a LIGHT run — a
+    # merge-queue build, a pull request without the `ci:full` label, or a
+    # push heavy-gate decided light — test-e2e skips by design and runs on
+    # the debounced push instead, so `skipped` from it is accepted there and
+    # nowhere else. LIGHT_RUN is the negation of the very expression the
+    # heavy leg runs on, evaluated by GitHub: `false` on a heavy push,
     # schedule, dispatch and a `ci:full` pull request, where a skipped
-    # test-e2e is as red as a failed one.
-    needs: [test-unit, test-e2e, studio, test-native-exec]
+    # test-e2e is as red as a failed one. heavy-gate is needed for its output
+    # alone: it is no leg, and its result is not re-verified — where it fails
+    # its output is empty, the run is heavy, and every heavy leg must pass.
+    needs: [heavy-gate, test-unit, test-e2e, studio, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 5
@@ -791,7 +853,7 @@ jobs:
       TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
       STUDIO_RESULT: ${{ needs.studio.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
-      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
+      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every leg reported success
         shell: bash
@@ -802,7 +864,7 @@ jobs:
             leg="${pair%%:*}"
             result="${pair#*:}"
             if [ "$leg" = "test-e2e" ] && [ "$result" = "skipped" ] && [ "$LIGHT_RUN" = "true" ]; then
-              echo "::notice::leg ${leg} skipped on a light run (merge queue, or a pull request without ci:full) — push to main and the nightly run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
+              echo "::notice::leg ${leg} skipped on a light run (merge queue, a pull request without ci:full, or a push to main inside the heavy window) — the first push to main after CI_HEAVY_EVERY_HOURS without a heavy run, the nightly and a dispatch run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
               continue
             fi
             if [ "$result" != "success" ]; then
@@ -844,12 +906,14 @@ jobs:
     # `runs-on` stays at the JOB level, outside the matrix, where the
     # ciguard regex and the fork guard can read it (the desktop-vet-cross
     # lesson: a matrix over runs-on diverges from its id silently).
-    # HEAVY (#3683, #3691): a light run — a merge-queue build or a pull
-    # request without `ci:full` — skips this leg; push to main, the nightly
-    # and a dispatch run it. `race` forgives that skip on a light run only.
+    # HEAVY (#3683, #3691, #3737): a light run — a merge-queue build, a pull
+    # request without `ci:full` or a push inside the heavy window — skips
+    # this leg; the debounced push, the nightly and a dispatch run it. `race`
+    # forgives that skip on a light run only.
     # A Homebrew tap update skips it too: the header says why, and `brand`
     # verifies it.
-    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')"
+    needs: [heavy-gate]
+    if: "${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
     # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
     # excluded from the partition and proved by test-native-exec instead.
@@ -944,18 +1008,19 @@ jobs:
     # the shards carry, so this job skips exactly the entries they skip and
     # re-verifies every other one; ciguard pins the spelling byte for byte.
     #
-    # ONE forgiven result (#3683, #3691): on a light run race-shard skips by
-    # design, so `skipped` from it is accepted there and nowhere else — the
-    # `test` aggregator's rule, through the same LIGHT_RUN. test-native-exec
-    # is not heavy: it runs on every event.
-    needs: [race-shard, test-native-exec]
+    # ONE forgiven result (#3683, #3691, #3737): on a light run race-shard
+    # skips by design, so `skipped` from it is accepted there and nowhere
+    # else — the `test` aggregator's rule, through the same LIGHT_RUN, read
+    # from heavy-gate's output. test-native-exec is not heavy: it runs on
+    # every event.
+    needs: [heavy-gate, race-shard, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 5
     env:
       RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
-      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
+      LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every shard reported success
         shell: bash
@@ -966,7 +1031,7 @@ jobs:
             leg="${pair%%:*}"
             result="${pair#*:}"
             if [ "$leg" = "race-shard" ] && [ "$result" = "skipped" ] && [ "$LIGHT_RUN" = "true" ]; then
-              echo "::notice::leg ${leg} skipped on a light run (merge queue, or a pull request without ci:full) — push to main and the nightly run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
+              echo "::notice::leg ${leg} skipped on a light run (merge queue, a pull request without ci:full, or a push to main inside the heavy window) — the first push to main after CI_HEAVY_EVERY_HOURS without a heavy run, the nightly and a dispatch run it, so this green is not admin-mergeable; label the pull request ci:full and push to run it there."
               continue
             fi
             if [ "$result" != "success" ]; then
@@ -988,13 +1053,15 @@ jobs:
     # checkout + go build) and a compile error here surfaces the same
     # failure the `test` job would. Sequential `needs: test` cost 3-4
     # min of wall-clock without catching anything earlier.
-    # HEAVY (#3691): out of the merge queue and of a light pull request, it
-    # runs on push to main, the nightly, a dispatch and a `ci:full` pull
-    # request — the heavy literal, byte for byte, alone: no light run reaches
-    # it, so the tap skip has nothing left to skip. Out of ruleset 18857412
-    # while the experimental delivery mode lasts (ADR-173); a regression in
-    # the Mongo store lands on `main` and the push run is what reddens.
-    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full'))"
+    # HEAVY (#3691, #3737): out of the merge queue, of a light pull request
+    # and of a light push, it runs on the debounced push, the nightly, a
+    # dispatch and a `ci:full` pull request — `!cancelled()` and the heavy
+    # literal, byte for byte, alone: no light run reaches it, so the tap skip
+    # has nothing left to skip. Out of ruleset 18857412 while the
+    # experimental delivery mode lasts (ADR-173); a regression in the Mongo
+    # store lands on `main` and the next heavy push run is what reddens.
+    needs: [heavy-gate]
+    if: "${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_HEAVY_RUNNER || 'arc-runners' }}
     # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
     # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
@@ -1206,11 +1273,13 @@ jobs:
 
   cloud-e2e:
     # Advisory: not a required check, so it cannot block a merge — see the
-    # merge-queue note at the top of this file. Heavy too (#3683, #3691): the
-    # heavy literal alone keeps it out of the merge queue and of a light pull
-    # request, so it runs on push to main, the nightly, a dispatch and a pull
-    # request that carries the `ci:full` label.
-    if: "((github.event_name != 'pull_request' && github.event_name != 'merge_group') || contains(github.event.pull_request.labels.*.name, 'ci:full'))"
+    # merge-queue note at the top of this file. Heavy too (#3683, #3691,
+    # #3737): `!cancelled()` and the heavy literal alone keep it out of the
+    # merge queue, of a light pull request and of a light push, so it runs on
+    # the debounced push, the nightly, a dispatch and a pull request that
+    # carries the `ci:full` label.
+    needs: [heavy-gate]
+    if: "${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with its dev Mongo + NATS + SeaweedFS (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →

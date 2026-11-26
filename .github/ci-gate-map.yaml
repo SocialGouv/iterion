@@ -29,7 +29,7 @@
 # so no member after one compiles against a tree it rewrote mid-run.
 #
 # `checks` — how many check runs the job produces (its matrix). The ruleset
-# keys on CONTEXTS, not on jobs: 20 jobs, 26 check runs.
+# keys on CONTEXTS, not on jobs: 21 jobs, 27 check runs.
 #
 # `inlined` — the one-command Taskfile tasks that are a `run:` of this job
 # BYTE FOR BYTE. Declared here because a row that argues an identity in prose
@@ -59,10 +59,11 @@ jobs:
       test-native-exec's `result` from the workflow context and fails if any is
       not success. There is nothing to reproduce: what it aggregates is those
       four legs, whose own rows carry the members. Running their members IS
-      running this. On a light run — a merge-queue build, or a pull request
-      without the `ci:full` label — it accepts `skipped` from test-e2e, which
-      runs after the merge instead; on push, the nightly, a dispatch and a
-      `ci:full` pull request a skipped leg is red (#3683, #3691).
+      running this. On a light run — a merge-queue build, a pull request
+      without the `ci:full` label, or a push heavy-gate decided light — it
+      accepts `skipped` from test-e2e, which runs on the debounced push
+      instead; on a heavy push, the nightly, a dispatch and a `ci:full` pull
+      request a skipped leg is red (#3683, #3691, #3737).
     aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
@@ -71,10 +72,22 @@ jobs:
     disposition: unexpressible
     reason: >-
       the same shape, over race-shard and test-native-exec; on a light run it
-      accepts `skipped` from race-shard alone (#3683, #3691). Out of the
+      accepts `skipped` from race-shard alone (#3683, #3691, #3737). Out of the
       ruleset while the experimental delivery mode lasts, and back in it when
       the mode ends (docs/adr/173-experimental-delivery-mode.md).
     aggregates: [race-shard, test-native-exec]
+
+  # ---- the heavy decider of a push to main ----
+  heavy-gate:
+    required: no
+    checks: 1
+    disposition: unexpressible
+    reason: >-
+      it decides whether a push to main runs the heavy layer, from the run
+      history of tests.yml on main read through the Actions API
+      (scripts/ci/heavy-gate.sh, #3737). It tests nothing: a local gate runs
+      every member, heavy ones included, so there is no decision to
+      reproduce. internal/ciguard runs the script against canned histories.
 
   # ---- the gated legs behind `test` ----
   test-unit:
