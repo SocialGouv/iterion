@@ -18,7 +18,8 @@
   "prHourlyLimit": 4,
   "ignorePaths": [
     "e2e/fixtures/**",
-    "vendor/**"
+    "vendor/**",
+    "third_party/**"
   ],
   "postUpdateOptions": [
     "gomodTidy",
