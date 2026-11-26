@@ -747,14 +747,21 @@ producing successful runs:
   while the replica holds the schedule's lease, holds the slot too but
   writes `last_error` (the hold's stable text, so one outage is one
   episode) and alerts. Under an armed fence, a sweep that reads the fence
-  skips a "fence could not be read" verdict; a fence store that fails the
+  sets a "fence could not be read" verdict aside and judges the rest of the
+  row, so a failed run behind it still alerts; a fence store that fails the
   sweep's read too still raises one alert per episode it catches, and a
   store that flaps re-opens an episode at each failed read after an armed
-  tick. Only these holds keep a stable text: a refusal whose text embeds a
-  changing figure (a repository's monthly quota spend) opens a new episode
-  each time the figure changes. A replica whose run persistence is refused
-  because it lost the schedule's lease writes nothing: its successor owns
-  the slot;
+  tick. A launch-gate refusal writes its class, `launch gate: <reason
+  token>` (`concurrency_cap_exceeded`, `repo_quota_exceeded`, …), not its
+  detail: the detail carries a figure measured at the tick (the active-run
+  count, a repository's monthly spend) and stays in the tick-audit row, so
+  a refusal that lasts is one episode. A row that already holds that
+  refusal's whole text, as a release that records the detail writes it,
+  keeps it while the same class lasts, so a rolling deploy opens no new
+  episode. Any other refusal records its whole
+  text, and one whose text changes from tick to tick opens a new episode
+  at each change. A replica whose run persistence is refused because it
+  lost the schedule's lease writes nothing: its successor owns the slot;
 - **run failed** — `last_run_status` is `failed` or `failed_resumable`.
 
 The causes are checked in that order, so an older failed run does not hide

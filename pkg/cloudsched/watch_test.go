@@ -173,6 +173,80 @@ func TestTickerPersistenceHoldWritesStableLaunchVerdict(t *testing.T) {
 	}
 }
 
+// classedRefusal is a refusal that names its stable class apart from a text
+// carrying a figure measured at the tick.
+type classedRefusal struct{ active int }
+
+func (e classedRefusal) Error() string {
+	return fmt.Sprintf("launch gate: concurrency_cap_exceeded: org has %d active runs (cap 1)", e.active)
+}
+func (classedRefusal) LaunchVerdict() string { return "launch gate: concurrency_cap_exceeded" }
+
+var _ schedgate.LaunchVerdictError = classedRefusal{}
+
+// A refusal whose text changes with a measured figure records its stable
+// class: the row keeps the first refusal's last_error_at, so the watch sees
+// one episode while the refusal lasts.
+func TestTickerClassedRefusalWritesStableLaunchVerdict(t *testing.T) {
+	st, tick, launchErr := tickRig(t)
+	for i, active := range []int{1, 2, 3} {
+		*launchErr = fmt.Errorf("launch scheduled bot: %w", classedRefusal{active: active})
+		tick(i)
+	}
+	sb := getRow(t, st)
+	if want := "launch gate: concurrency_cap_exceeded"; sb.LastError != want {
+		t.Fatalf("last_error after a classed refusal = %q, want its class %q", sb.LastError, want)
+	}
+	if sb.LastErrorAt == nil || !sb.LastErrorAt.Equal(tickRigNow) {
+		t.Fatalf("last_error_at = %v, want the first refusal's tick %v: a changing active-run count re-opened the episode", sb.LastErrorAt, tickRigNow)
+	}
+}
+
+// A row that holds a classed refusal's whole text, as a scheduler that does
+// not read the class records it, keeps that text and its last_error_at when
+// a tick records the same class: the switch between the two texts is no new
+// episode for the watch.
+func TestTickerClassedRefusalKeepsWholeTextOfSameClass(t *testing.T) {
+	const whole = "launch gate: concurrency_cap_exceeded: org has 3 active runs (cap 1)"
+	sb := tickOnce(t, whole, fmt.Errorf("launch scheduled bot: %w", classedRefusal{active: 3}))
+	if sb.LastError != whole {
+		t.Fatalf("last_error = %q, want the same class's whole text kept (%q)", sb.LastError, whole)
+	}
+	if want := tickRigNow.Add(-time.Hour); sb.LastErrorAt == nil || !sb.LastErrorAt.Equal(want) {
+		t.Fatalf("last_error_at = %v, want the recorded episode's %v: the class re-opened the episode", sb.LastErrorAt, want)
+	}
+}
+
+// A refusal that names no class records its whole text whenever it changes,
+// even when the recorded text extends the new one.
+func TestTickerPlainRefusalPrefixOfRecordedTextWrites(t *testing.T) {
+	sb := tickOnce(t, "x: y", errors.New("x"))
+	if sb.LastError != "x" {
+		t.Fatalf("last_error = %q, want the plain refusal's whole text %q", sb.LastError, "x")
+	}
+	if sb.LastErrorAt == nil || !sb.LastErrorAt.Equal(tickRigNow) {
+		t.Fatalf("last_error_at = %v, want this tick's %v", sb.LastErrorAt, tickRigNow)
+	}
+}
+
+// emptyClassRefusal names an empty class, which means no class.
+type emptyClassRefusal struct{}
+
+func (emptyClassRefusal) Error() string         { return "refused: a real refusal" }
+func (emptyClassRefusal) LaunchVerdict() string { return "" }
+
+// A refusal whose class is empty records its whole text: it never reads as
+// a launch that clears the row.
+func TestTickerEmptyClassRecordsWholeText(t *testing.T) {
+	sb := tickOnce(t, "", emptyClassRefusal{})
+	if sb.LastError != "refused: a real refusal" {
+		t.Fatalf("last_error = %q, want the whole text of a refusal with an empty class", sb.LastError)
+	}
+	if sb.LastErrorAt == nil {
+		t.Fatal("last_error_at = nil: the refusal reads as a launch")
+	}
+}
+
 // An unreadable fence record is a verdict, but the armed fence that follows
 // it, once the record reads again, supersedes it: the ticks the operator's
 // fence holds clear the "could not be read" verdict instead of leaving it on
