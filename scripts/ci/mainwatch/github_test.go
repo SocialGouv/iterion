@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -70,5 +71,85 @@ func TestMainRunsClipsTheNightliesToAFullPushWindow(t *testing.T) {
 	has := func(id int64) bool { return slices.ContainsFunc(runs, func(r Run) bool { return r.ID == id }) }
 	if len(runs) != 101 || !has(7) || has(8) {
 		t.Fatalf("got %d runs (nightly 7 kept: %v, nightly 8 kept: %v), want the 100 push runs and nightly 7 only", len(runs), has(7), has(8))
+	}
+}
+
+// The auto-merge history is read from the pull request's timeline under the
+// job's token, an actor GitHub does not name kept as empty, and a timeline
+// longer than the page, an item of another type or a GraphQL error refused
+// rather than read as "never armed". totalCount counts the whole timeline,
+// whatever the itemTypes filter: only filteredCount counts the items asked.
+func TestAutoMergeHistoryReadsTheTimeline(t *testing.T) {
+	for name, tc := range map[string]struct {
+		answer string
+		want   []AutoMergeEvent
+		err    string
+	}{
+		"disabled twice": {
+			answer: `{"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":9,"filteredCount":2,"nodes":[{"__typename":"AutoMergeDisabledEvent","actor":{"login":"someone"},"reason":""},{"__typename":"AutoMergeDisabledEvent","actor":null,"reason":"merge conflict"}]}}}}}`,
+			want:   []AutoMergeEvent{{Kind: AutoMergeDisabled, Actor: "someone"}, {Kind: AutoMergeDisabled, Reason: "merge conflict"}},
+		},
+		// The answer GitHub gave for #3702, never armed.
+		"never armed": {
+			answer: `{"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":7,"filteredCount":0,"nodes":[]}}}}}`,
+		},
+		// The answer GitHub gave for #3680: armed, queued, dequeued by a
+		// person, armed again, then merged by the queue.
+		"queued and dequeued": {
+			answer: `{"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":17,"filteredCount":6,"nodes":[{"__typename":"AutoMergeEnabledEvent","actor":{"login":"devthejo"}},{"__typename":"AddedToMergeQueueEvent","actor":{"login":"devthejo"}},{"__typename":"RemovedFromMergeQueueEvent","actor":{"login":"devthejo"},"reason":"manual"},{"__typename":"AutoMergeEnabledEvent","actor":{"login":"devthejo"}},{"__typename":"AddedToMergeQueueEvent","actor":{"login":"devthejo"}},{"__typename":"RemovedFromMergeQueueEvent","actor":{"login":"github-merge-queue"},"reason":"merged"}]}}}}}`,
+			want: []AutoMergeEvent{
+				{Kind: AutoMergeEnabled, Actor: "devthejo"}, {Kind: AddedToQueue, Actor: "devthejo"}, {Kind: RemovedFromQueue, Actor: "devthejo", Reason: "manual"},
+				{Kind: AutoMergeEnabled, Actor: "devthejo"}, {Kind: AddedToQueue, Actor: "devthejo"}, {Kind: RemovedFromQueue, Actor: "github-merge-queue", Reason: "merged"},
+			},
+		},
+		"partial": {
+			answer: `{"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":140,"filteredCount":101,"nodes":[{"__typename":"AutoMergeDisabledEvent","actor":{"login":"someone"}}]}}}}}`,
+			err:    "refusing a partial timeline",
+		},
+		"another type": {
+			answer: `{"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":3,"filteredCount":1,"nodes":[{"__typename":"HeadRefForcePushedEvent"}]}}}}}`,
+			err:    `item 0 is a "HeadRefForcePushedEvent"`,
+		},
+		"graphql error": {
+			answer: `{"data":null,"errors":[{"message":"Resource not accessible by integration"}]}`,
+			err:    "Resource not accessible by integration",
+		},
+		"no pull request": {
+			answer: `{"data":{"repository":{"pullRequest":null}}}`,
+			err:    "no such pull request",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var auth, body string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth = r.Header.Get("Authorization")
+				raw, _ := io.ReadAll(r.Body)
+				body = string(raw)
+				_, _ = w.Write([]byte(tc.answer))
+			}))
+			defer srv.Close()
+			c := &restClient{api: srv.URL, graphql: srv.URL + "/graphql", repo: "SocialGouv/iterion", token: "job-token", botToken: "bot-token", http: srv.Client()}
+			got, err := c.AutoMergeHistory(context.Background(), 8001)
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("err = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("history = %+v, want %+v", got, tc.want)
+			}
+			if auth != "Bearer job-token" {
+				t.Errorf("Authorization = %q, want the job's token", auth)
+			}
+			for _, want := range []string{"filteredCount", "AUTO_MERGE_ENABLED_EVENT", "ADDED_TO_MERGE_QUEUE_EVENT", "REMOVED_FROM_MERGE_QUEUE_EVENT", "AUTO_MERGE_DISABLED_EVENT", `"owner":"SocialGouv"`, `"name":"iterion"`, `"number":8001`} {
+				if !strings.Contains(body, want) {
+					t.Errorf("the query lacks %s:\n%s", want, body)
+				}
+			}
+		})
 	}
 }
