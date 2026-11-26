@@ -201,6 +201,6 @@ them is an operator's call, not a migration's.
 The P3 per-team sub-caps were never built, and capacity (`MaxConcurrentRuns`,
 `LaunchRatePerMin`) has no org-level counterpart, so the team-keyed ceilings
 (capacity, webhook calls, memory) multiply with the org's team count.
-[ADR-174](174-the-org-is-the-envelope-of-budget-and-capacity.md) (Proposed)
-takes both up: the org as the envelope of budget and capacity, the team as an
-optional share of it, and a plan supplying the defaults.
+[ADR-174](174-the-org-is-the-envelope-of-budget-and-capacity.md) takes both
+up: the org as the envelope of budget and capacity, the team as an optional
+ceiling under it, and a plan supplying the defaults.

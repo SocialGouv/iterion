@@ -1,8 +1,14 @@
-# ADR-174 — The org is the envelope of budget and capacity; a team carries an optional share; a plan supplies the defaults
+# ADR-174 — The org is the envelope of budget and capacity; a team carries an optional ceiling; a plan supplies the defaults
 
-- **Status**: Proposed — drafted on 2026-11-26 from the inventory on [#3748](https://github.com/SocialGouv/iterion/issues/3748) and revised after an adversarial review. It awaits the operator's decision, and nothing below is built.
+- **Status**: Accepted — the operator decided it on 2026-11-26. The arbitrations are:
+  - team limits are ceilings, they may oversubscribe the org, and guarantees are floors;
+  - plans live in the database, with Helm defaults from a mounted file;
+  - the webhook counter resets at its re-key;
+  - #3254 is brought forward.
+
+  See [Operator decisions](#operator-decisions-2026-11-26). Nothing below is built yet.
 - **Date**: 2026-11-26
-- **Deciders**: jo (the decision, pending); Claude (the inventory, verified against the code; this draft; two adversarial review passes, one on facts and one on design)
+- **Deciders**: jo (the decision and its four arbitrations); Claude (the inventory, verified against the code; this draft; two adversarial review passes, one on facts and one on design)
 - **Amends**: [ADR-048](048-org-team-hierarchy.md). ADR-048 decision 2 said "Teams can optionally carry a sub-cap", and its P3 listed "per-team sub-caps". Its as-built section kept `MaxConcurrentRuns` and `LaunchRatePerMin` on `Team`, and no sub-cap was ever built.
 - **Relates to**:
   - [ADR-032](032-quota-optimistic-inc-with-detached-context-rollback.md) — the atomic monthly counter.
@@ -21,7 +27,7 @@ ADR-048 put "plan + quotas/cost-cap" on the org, and built the monthly half of i
 - **Memory.** Setting the org's `MemoryQuotaBytes` copies it onto the bucket of each team that exists at that moment, so every team carries the whole ceiling. A team created later starts on the platform default instead ([pkg/server/admin_orgs_routes.go](../../pkg/server/admin_orgs_routes.go), [pkg/store/mongo/memory.go](../../pkg/store/mongo/memory.go)).
 - **Team count.** Nothing bounds how many teams an org has. An org admin therefore multiplies every team-keyed ceiling by creating teams.
 
-The monthly budget has no per-team share: a team that loops spends the org's month, and every other team of the org is refused with a 402 until the first. The concurrency cap counts active runs and then compares the count, so two replicas can both admit into the last slot. Defaults come from `ITERION_ORG_DEFAULT_*`, which the chart ships as 0 (unlimited). There is no layer between a tenant's field and the deployment's env, and nothing ties limits to an offer.
+The monthly budget has no per-team ceiling: a team that loops spends the org's month, and every other team of the org is refused with a 402 until the first. The concurrency cap counts active runs and then compares the count, so two replicas can both admit into the last slot. Defaults come from `ITERION_ORG_DEFAULT_*`, which the chart ships as 0 (unlimited). There is no layer between a tenant's field and the deployment's env, and nothing ties limits to an offer.
 
 On requests, only auth, launches (when a launch rate is configured, and the chart ships 0), webhooks, connector ingress, legal documents and config-share are rate-limited. Authenticated API reads and writes, WebSocket connections, invitations and web-push have no bound per user, token or team.
 
@@ -37,7 +43,7 @@ The operator's posture bounds this record in two ways. First, nothing is built w
   - a **positive** value is the limit.
 
   This is the convention the fork-author org fields already ship (ADR-162), extended instead of adding a third family. A plan can never make a tenant unbounded by accident, and a tenant can be made unbounded on purpose, in a way that can be grepped.
-- **One resolver.** A single function, `Resolve(ctx, org, team, field)`, folds the layers in order: team, then org, then plan (D3), then `ITERION_ORG_DEFAULT_*`, then the built-in default. It is the only site behind:
+- **One resolver.** A single function, `Resolve(ctx, org, team, field)`, folds the layers in order: team, then org, then the plan (D3: the database record, then the Helm file), then `ITERION_ORG_DEFAULT_*`, then the built-in default. It is the only site behind:
   - `gateLaunch`;
   - the org-admin clamp on team caps, which clamps against the resolved org or plan value rather than the env;
   - the effective values the usage views show.
@@ -48,27 +54,28 @@ The operator's posture bounds this record in two ways. First, nothing is built w
 ### D1 — The org is the envelope of every countable limit, capacity included
 
 - **Capacity on the org.** `Org.MaxConcurrentRuns` and `Org.LaunchRatePerMin` join the org's monthly fields. A launch needs room in the team **and** in the org.
-- **Webhook calls on the org.** `Org.MonthlyWebhookCalls` replaces the constant, defaulting to 10 000 through D0. The counter is then keyed on the org. Re-keying shrinks an N-team org from N × 10 000 calls to its own value, so the field and its override land **before** the re-key.
-- **Memory on the org.** The memory quota is resolved from the org when a team's counter is created, instead of being copied at PATCH time. The target is one org counter, of which a team's value is a share (D2).
+- **Webhook calls on the org.** `Org.MonthlyWebhookCalls` replaces the constant, defaulting to 10 000 through D0. The counter is then keyed on the org. Re-keying shrinks an N-team org from N × 10 000 calls to its own value, so the field and its override land **before** the re-key. The org counter **starts at zero** at the cutover, with no carry-over of the team counters. The quota guards against abuse and is not a bill: carrying the counts over could refuse an org in mid-month, because its teams' sum may already exceed the new value, while a reset can only be generous, for one month at most.
+- **Memory on the org.** The memory quota is resolved from the org when a team's counter is created, instead of being copied at PATCH time. The target is one org counter, under which a team's value is a ceiling (D2).
 - **Team count.** `Org.MaxTeams` bounds team creation, so creating teams cannot multiply the envelope.
 
-### D2 — A team carries an optional share of each org limit
+### D2 — A team carries an optional ceiling under each org limit
 
-- **What a share is.** `Team.MonthlyRunQuota` and `Team.MonthlyCostCapUSD` define the team's share, charged on a new `orgusage.TeamSubject(orgID, teamID)`.
+- **What a team ceiling is.** `Team.MonthlyRunQuota` and `Team.MonthlyCostCapUSD` are the most this team may consume of the org's month, charged on a new `orgusage.TeamSubject(orgID, teamID)`. A ceiling contains a team; it promises it nothing.
 - **Spelling.** The subject is `team|<orgID>|<teamID>`, escaped like `ForkAuthorSubject`, so the org purge reaches it. `orgsweep`'s alternation gains `team`, and team deletion purges the row.
 - **Gate charge.** The gate charges the team subject, then the org subject. The admission handle carries the **ordered list** of subjects it charged, and one release helper gives all of them back. That helper is called by `rollback`, every deny branch (fork-author included) and every refusal that proves nothing started (`RunMayHaveStarted`, #1725). An org-metering error after a granted team charge returns a handle that still holds the team charge. A team-metering error refuses an untrusted subject, as ADR-162 decision 5 does for its own counter.
 - **Runner charge.** Dollars are charged after the fact by the runner, so a gate-only change would leave the team's cost document at 0 forever. The gate therefore stamps the team subject on the queue message, as it stamps `ForkAuthorSubject` (a wire-version bump). `recordOrgSpend` then makes a third `AddSpend`, on the team subject, beside the org's and the fork author's. A runner older than the bump does not charge the team, so the team's cost under-counts until the fleet rolls.
-- **What a share bounds.** A share stops **new** launches once the **reported** spend crosses it. It does not stop a run in flight. The overshoot is bounded by the runs in flight times their per-run spend, which `max_cost_usd` and `ITERION_CLOUD_MAX_*` bound.
-- **Oversubscription.** A share is a **ceiling, not an allocation**: the shares of one org may sum past the org's limit. That is the same reading as a budget floor ("a preference, not a guarantee"); a guaranteed share would need the durable allocation the 2026-11-24 arbitration declined to build.
-- **Denial tokens.** A refused share answers `team_monthly_run_quota_exceeded` or `team_monthly_cost_cap_exceeded` (402), so the operator knows to raise the team's share, not the org's.
-- **Budget floors.** A floor subtracts from the **org-level** axis only: dollars today, and slots once D1 builds the org cap. A team share is never lowered by a floor. Otherwise every team whose share sits at or below a reserve would be refused all unreserved work for the month, even a team that never runs the reserved bot. The denial detail names the ceiling that refused.
+- **What a ceiling bounds.** A ceiling stops **new** launches once the **reported** spend crosses it. It does not stop a run in flight. The overshoot is bounded by the runs in flight times their per-run spend, which `max_cost_usd` and `ITERION_CLOUD_MAX_*` bound.
+- **Oversubscription is allowed, by decision.** The ceilings of one org may sum past the org's limit, as card limits may sum past an account's balance. A rule that the ceilings must fit the org would promise a guarantee it cannot keep, because a team with no ceiling still draws freely on the same envelope. What **guarantees** capacity is a **floor**: the budget-floor reserves, keyed by bot today. When a whole team needs a guarantee, the trigger is that need, and the extension is a team key on the same reserve, not a second mechanism.
+- **Denial tokens.** A refused team ceiling answers `team_monthly_run_quota_exceeded` or `team_monthly_cost_cap_exceeded` (402), so the operator knows to raise the team's ceiling, not the org's.
+- **Budget floors.** A floor subtracts from the **org-level** axis only: dollars today, and slots once D1 builds the org cap. A team ceiling is never lowered by a floor. Otherwise every team whose ceiling sits at or below a reserve would be refused all unreserved work for the month, even a team that never runs the reserved bot. The denial detail names the ceiling that refused.
 
 ### D3 — A plan is a named set of defaults, between the tenant and the deployment
 
-- **What a plan is.** A record in the platform settings, runtime-mutable, super-admin only and audited (like `budget-floor` and `usage-caps`). It names defaults for every D1 and D2 field and for the D6 shapes.
-- **Assignment.** `Org.PlanID` names the org's plan. D0's resolver reads it as the layer between the org and the env.
-- **Reading a plan at launch.** The resolver reads it with a ctx, behind a TTL cache like `usagecap.Resolver`. A read that fails after a first success keeps the last known value. A plan never read since the replica started falls through to the env, and that fall-through is counted (D5).
-- **What a plan is not.** It carries no price, no billing and no entitlement. Tying a plan to an offer is a later decision, and nothing here presumes it.
+- **What a plan is.** A named set of defaults for every D1 and D2 field and for the D6 shapes. It carries no price, no billing and no entitlement. Tying a plan to an offer is a later decision, and nothing here presumes it.
+- **Where plans live.** In the **database**, for flexibility: runtime-mutable, super-admin only, audited, like `budget-floor` and `usage-caps`. `Org.PlanID` names an org's plan.
+- **Deployment defaults.** A deployment ships its plans from Helm values as a **mounted file** (a ConfigMap): a plan is structured (N plans × M fields), which environment variables express poorly. A database record overrides the file's plan of the same name; the file is never imported into the database, so a Helm change keeps reaching every plan the database does not override.
+- **Resolution.** D0's resolver reads, in order: the tenant field, then the database plan, then the file plan, then `ITERION_ORG_DEFAULT_*`, then the built-in default. The effective value and its source (`tenant`, `db`, `file`, `env`, `default`) are shown wherever an effective value is shown, as `/healthz` does for the usage caps.
+- **Reading a plan at launch.** The resolver reads it with a ctx, behind a TTL cache like `usagecap.Resolver`. A read that fails after a first success keeps the last known value. A plan never read since the replica started falls through to the file and the env, and that fall-through is counted (D5).
 
 ### D4 — The concurrency cap: the gate chooses, the publisher enforces
 
@@ -81,7 +88,7 @@ This follows the per-key cap's own split, and ADR-167's: one ledger, one acquire
 - **Stamping.** The tenant subjects are composed from `run.TenantID` and the run's org at stamp time, by **one** helper shared by the launch stamp and both `SetRunCredStamp` twins. They never come from the sealed bundle, because a re-resolution replaces `CapacitySubjects` wholesale.
   - **Blast radius.** ADR-167 makes a re-stamp fail closed whenever a stamp carries a subject. With a tenant subject on every run, every resume's re-stamp becomes fail-closed: a ledger outage then refuses resumes as well as launches.
 - **Sub-bots.** A tree is one place (ADR-167 §5): a sub-bot child runs under its live ancestor's place and asks for none. That is a change of meaning — the cap counts trees, where `CountActiveRunsByTenant` counts children too — and [quotas-and-limits.md](../quotas-and-limits.md) says so in the same change. The resumes a run's own machinery drives (answer-human, host-event, missions) are seen through adoption of the stamp; each gets a conformance row.
-- **Dependencies.** Enforcement is only atomic once ADR-167's stamping (T2) and its transit guard (T4a) exist. Without them, a NATS redelivery of a `failed_resumable` run executes with no admission. So D4 ships after them, and like ADR-167 it **observes first, then enforces behind the activation guard**. That guard refuses enforcement while alive runs are unstamped, because adoption cannot see runs that predate the deploy.
+- **Dependencies.** Enforcement is only atomic once ADR-167's stamping (T2) and its transit guard (T4a) exist. The operator brought #3254 forward on 2026-11-26 for that reason, and because T4a closes a hole the per-key cap already has. Without them, a NATS redelivery of a `failed_resumable` run executes with no admission. So D4 ships after them, and like ADR-167 it **observes first, then enforces behind the activation guard**. That guard refuses enforcement while alive runs are unstamped, because adoption cannot see runs that predate the deploy.
 
 ### D5 — A fail-open is counted
 
@@ -94,7 +101,7 @@ ADR-033's fail-open on a store error stays, but every arm that admits on an erro
 | `active_count` | the tenant's active runs cannot be counted | counted |
 | `allow_run` | the monthly counter errors | the launch proceeds unmetered; counted |
 | `repo_usage` | the per-repository quota read fails | counted |
-| `team_share` | the D2 team counter errors | counted |
+| `team_ceiling` | the D2 team counter errors | counted |
 | `plan_read` | the plan is unreadable, or never read since the replica started | the resolver falls through to the env; counted |
 | `rate_limiter` | the Valkey limiter errors | it swallows the error inside `allow()` today, with no log (a code comment in `valkey_stores.go`, not a decision of ADR-033). `authRateLimiterBackend.allow` must return the error — an interface change — so that the arm can be logged and counted. |
 
@@ -114,13 +121,14 @@ The 429s the auth limiter answers get their own counter, `iterion_ratelimit_deni
 |---|---|---|
 | D5 — fail-open counted | **now** ([#3752](https://github.com/SocialGouv/iterion/issues/3752)) | Operator priority (2026-11-26). Every other guard is observable only through it. The cost is an interface change on the limiter and a surfaced `orgForTeam` error. |
 | D0 — the hatch on team caps | **now** ([#3753](https://github.com/SocialGouv/iterion/issues/3753)) | A bound with no override is a defect (philosophy #1). |
-| D2 — the team share of the monthly budget | **now** | Operator priority (2026-11-26): one team must not be able to spend its org's month. The cost: the gate charge and the release helper, a queue wire bump, the runner's third charge, an `orgsweep` row. It bounds new launches, not a run in flight. |
+| D2 — the team ceiling of the monthly budget | **now** | Operator priority (2026-11-26): one team must not be able to spend its org's month. The cost: the gate charge and the release helper, a queue wire bump, the runner's third charge, an `orgsweep` row. It bounds new launches, not a run in flight. |
+| #3254 T2 and T4a — the stamp, the gauge, the transit guard | **now** | Operator decision (2026-11-26): a reliability gain on its own — T4a closes the redelivery hole through which a key at `max_concurrent_runs: 1` runs two — and the prerequisite of D4. |
 | D4 — the publisher enforces the concurrency cap | after #3254 T2 and T4a, on trigger | The first team or org with a concurrency cap above 0 in production. Until then the chart ships 0, and the gate's count is the cap. |
 | D1 — org capacity, `MaxTeams`, org-keyed webhook and memory counters | on trigger | An org whose teams compete for one runner fleet, or any tenant the operator does not control. |
 | D3 — plans and the full resolver | on trigger | A second class of tenant that needs other defaults than the deployment's. D0's resolver lands with D2, without the plan layer. |
 | D6 — API rate limiting | on trigger, at the latest before `ITERION_SIGNUP_MODE=open` | A tenant the operator does not control, or a public exposure. |
 
-The work items are tracked under [#3748](https://github.com/SocialGouv/iterion/issues/3748). Each is opened when this record is accepted.
+The work items are tracked under [#3748](https://github.com/SocialGouv/iterion/issues/3748), each with its trigger in its body.
 
 ## Consequences
 
@@ -147,9 +155,9 @@ The work items are tracked under [#3748](https://github.com/SocialGouv/iterion/i
 - **The `capacityledger` of ADR-155.** Declined on 2026-11-24: `CredSlotStore` already holds admissions in production, and a second ledger would duplicate it.
 - **Commercial plans with billing (Stripe or similar).** Out of scope: nothing in the code or on the board asks for it today. D3 leaves room for it without presuming it.
 
-## Open questions for the operator
+## Operator decisions (2026-11-26)
 
-1. **D2: may team shares oversubscribe?** As proposed they may. The alternative is that their sum must stay within the org's limit, refused at write.
-2. **D3: where do plans live?** As proposed, in the database (runtime-mutable). The alternative is Helm values, so that a deploy witnesses every change.
-3. **D1: how is the webhook counter re-keyed?** Either accept the reset of the current month, or carry the counts over at cutover.
-4. **D4: the sequencing.** You set atomic concurrency as a high priority on 2026-11-26. This record puts it behind #3254 T2 and T4a and behind a live cap, because before them it is not atomic. Should #3254 be brought forward, or do the gate's count and D5's counting suffice until a cap is live?
+1. **Team limits are ceilings, and they may oversubscribe the org.** The operator first leaned against oversubscription, for coherence. The record kept it after showing that a "sum within the org" rule guarantees nothing while unceilinged teams draw on the same envelope. It also showed that the coherent alternative, reserved envelopes, would idle budget for a need nobody has measured. Guarantees are floors (budget-floor), keyed by bot today and by team on a trigger.
+2. **Plans live in the database**, with Helm defaults from a mounted file (D3).
+3. **The webhook counter resets at its re-key** (D1): the operator left this to the record, and a reset can only be generous.
+4. **#3254 is brought forward.** T2 and T4a are a reliability gain on their own, and the prerequisite of D4.
