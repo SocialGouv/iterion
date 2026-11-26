@@ -1094,9 +1094,12 @@ type isolatedRecorder struct {
 	quiesceErr    error
 	quiesceExit   int
 	quiesceStderr string
-	// tarBlocks: the archive runs until its context ends, and its client is
-	// killed with it (exit -1) — a scratch too big for the budget.
-	tarBlocks bool
+	// endBudgetAtTar, when set, ends the banking's budget the moment the
+	// archive starts; the archive then runs until its context ends, and its
+	// client is killed with it (exit -1) — a scratch too big for the budget.
+	// The budget ends on this event, not on a clock: a timeout would also
+	// race the listing, a real fork/exec that a loaded host can outlast.
+	endBudgetAtTar context.CancelFunc
 	// resumeCtxErr: the context's error when the resume was delivered.
 	resumeCtxErr error
 }
@@ -1113,7 +1116,8 @@ func (r *isolatedRecorder) Exec(ctx context.Context, argv []string, opts sandbox
 		r.resumeCtxErr = ctx.Err()
 		return sandbox.ExecResult{}, nil
 	}
-	if r.tarBlocks && strings.Contains(cmd, "-czf") {
+	if r.endBudgetAtTar != nil && strings.Contains(cmd, "-czf") {
+		r.endBudgetAtTar()
 		<-ctx.Done()
 		return sandbox.ExecResult{ExitCode: -1}, nil
 	}
@@ -1212,9 +1216,9 @@ func TestBankScratch_quiescesTheSandboxBeforeTarReadsIt(t *testing.T) {
 		if _, err := s.CreateRun(context.Background(), "run-scratch-quiesce", "wf", nil); err != nil {
 			t.Fatal(err)
 		}
-		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, tarBlocks: true}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		run := &isolatedRecorder{podRun: &podRun{scratch: scratch(t)}, endBudgetAtTar: cancel}
 		got := bankScratch(ctx, run, sandboxScratchContainerPath, store.AsScratchBankStore(s), "run-scratch-quiesce", scratchBankMaxBytes)
 		if _, _, resume := order(run.cmds); got.banked || resume < 0 || run.resumeCtxErr != nil {
 			t.Fatalf("banked=%v resume ctx=%v: want the stopped processes resumed on a budget of their own (%q)", got.banked, run.resumeCtxErr, run.cmds)
