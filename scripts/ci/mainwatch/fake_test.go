@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -221,6 +222,17 @@ func (f *fixtureGitHub) PullRequestFrom(_ context.Context, b string) (PullReques
 	return f.pulls[n], true, nil
 }
 
+// OpenPullRequests lists the open pull requests of the fixture by number.
+func (f *fixtureGitHub) OpenPullRequests(context.Context) ([]PullRequest, error) {
+	var out []PullRequest
+	for _, n := range slices.Sorted(maps.Keys(f.pulls)) {
+		if pr := f.pulls[n]; pr.State == "open" {
+			out = append(out, pr)
+		}
+	}
+	return out, nil
+}
+
 func (f *fixtureGitHub) AutoMergeHistory(_ context.Context, n int) ([]AutoMergeEvent, error) {
 	if _, ok := f.pulls[n]; !ok {
 		return nil, fmt.Errorf("auto-merge history of #%d: no such pull request in the fixture", n)
@@ -321,6 +333,7 @@ func (f *fixtureGitHub) CreatePullRequest(_ context.Context, head, title, body s
 	}
 	pr := PullRequest{Number: 8001, NodeID: "PR_node", Title: title, State: "open", HTMLURL: "https://github.com/SocialGouv/iterion/pull/8001"}
 	pr.Head.Ref = head
+	pr.Head.Repo = &RepoRef{FullName: "SocialGouv/iterion"}
 	f.pulls[pr.Number] = pr
 	f.byHead[head] = pr.Number
 	// A pull request's head branch exists: Git.Revert pushed it, or

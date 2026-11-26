@@ -330,9 +330,9 @@ unproven, so `main`'s own runs are the witness, and a deterministic workflow,
 | what the run shows | what main-watch does |
 | --- | --- |
 | red on attempt 1 | reruns the failed jobs, once, only if it is `main`'s newest run (push or nightly): a rerun joins the concurrency group and could cancel a newer run, so an older red run is left to the newer one, which main-watch names |
-| green on the rerun: a **flake** | a `flaky:` ticket per failing test under epic #1410, or a comment on the open one (a person's `flaky:` ticket naming the package and the test counts), and one pull request adding the rows to `scripts/ci/test-quarantine.tsv`, auto-merge armed once — never again once it lost its arming: disabled by a person or GitHub, removed from the merge queue, or held by it |
+| green on the rerun: a **flake** | a `flaky:` ticket per failing test under epic #1410, or a comment on the open one (a person's `flaky:` ticket naming the package and the test counts), and one pull request adding the rows to `scripts/ci/test-quarantine.tsv`, auto-merge armed once — never again once it lost its arming (disabled by a person or GitHub, removed from the merge queue); a pull request the queue holds counts as armed |
 | red on the rerun: a **regression** | one `main red` ticket naming the failing tests and the pull requests merged since the last green run |
-| still red 4 h after the red run started | a pull request reverting the most recently merged suspect, auto-merge armed before the ticket records it, and a comment on the original; a revert that cannot be armed is recorded on the ticket for a person; a revert opened and armed whose record failed is recorded by the next pass, never armed again |
+| still red 4 h after the red run started | a pull request reverting the most recently merged suspect, auto-merge armed before the ticket records it, and a comment on the original; a revert that cannot be armed is recorded on the ticket for a person; a revert opened and armed whose record failed is recorded by the next pass as it stands — armed or held by the queue (the original told), merged (the step done, the original told), unarmed (for a person), closed unmerged (refused) — never armed again |
 | green (a flake pass that fails still lets it close the episode) | every revert pull request of the episode still open closes, armed or not (named on the ticket, or found by its suspect's `main-watch/revert-N` branch), then the `main red` ticket closes |
 
 Failing tests are read from the failed jobs' logs (`--- FAIL` lines, and the
@@ -358,7 +358,13 @@ A half-hour schedule runs the revert clock and judges `main`'s newest run, so
 a missed event is caught; markers in the tickets and branch names keyed by run
 and by pull request make a second judgement a no-op, and a flake pass that failed
 half-way is finished by the next, its sub-issue filing included; a quarantine
-pull request merged or closed gets nothing pushed. A marker counts only in an issue or comment
+pull request merged or closed gets nothing pushed. The schedule also reads
+every open `main-watch/quarantine-run-*` pull request of this repository: one
+never armed (its arming failed, and no later pass of its run comes) is armed.
+A quarantine pull request, or the open revert a still-red `main red` ticket
+records, that lost its arming afterwards — the queue drops a pull request on
+its own, for failed checks or a conflict — is told once per loss on the
+open tickets of the rows it adds — or, when it adds no row under an open ticket, on the pull request itself — or on the `main red` ticket, and never armed again. A marker counts only in an issue or comment
 written by `github-actions[bot]`, and a person's `flaky:` ticket only when its
 author is an owner, member or collaborator: anyone can open an issue here. The job's
 `GITHUB_TOKEN` reruns, writes the tickets and comments on the pull requests; the token-bureau App token

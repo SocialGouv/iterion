@@ -153,3 +153,26 @@ func TestAutoMergeHistoryReadsTheTimeline(t *testing.T) {
 		})
 	}
 }
+
+// The open pull requests are read with their head's branch and repository,
+// the two facts that make one main-watch's own; a deleted head repository is
+// nil, never this repository.
+func TestOpenPullRequestsReadsTheHeadRepository(t *testing.T) {
+	var queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Path+"?"+r.URL.Query().Encode())
+		_, _ = w.Write([]byte(`[{"number":8001,"state":"open","head":{"ref":"main-watch/quarantine-run-1","repo":{"full_name":"SocialGouv/iterion"}}},{"number":8002,"state":"open","head":{"ref":"main-watch/quarantine-run-2","repo":null}}]`))
+	}))
+	defer srv.Close()
+	c := &restClient{api: srv.URL, repo: "SocialGouv/iterion", http: srv.Client()}
+	prs, err := c.OpenPullRequests(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/repos/SocialGouv/iterion/pulls?page=1&per_page=100&state=open"}; !slices.Equal(queries, want) {
+		t.Fatalf("queries = %q, want %q", queries, want)
+	}
+	if len(prs) != 2 || prs[0].Head.Ref != "main-watch/quarantine-run-1" || prs[0].Head.Repo == nil || prs[0].Head.Repo.FullName != "SocialGouv/iterion" || prs[1].Head.Repo != nil {
+		t.Fatalf("pull requests = %+v", prs)
+	}
+}

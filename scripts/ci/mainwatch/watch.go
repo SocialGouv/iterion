@@ -262,9 +262,9 @@ type filed struct {
 // gets no commit), the branch's list is read before the rows are committed,
 // the pull request is armed only if it was never armed nor queued (a loss of
 // arming is a person's, GitHub's or the queue's, and main-watch does not
-// overrule it), a ticket
-// comment is skipped once its run marker is there, and main-watch's own
-// tickets missing from the CI-health epic are filed under it.
+// overrule it; the sweep tells the tickets of a loss that comes later), a
+// ticket comment is skipped once its run marker is there, and main-watch's
+// own tickets missing from the CI-health epic are filed under it.
 func (w *Watcher) flake(ctx context.Context, run Run) error {
 	branch := fmt.Sprintf("%squarantine-run-%d", branchPrefix, run.ID)
 	fails, err := w.failures(ctx, run, 1)
@@ -327,6 +327,9 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 	}
 	var pr *PullRequest
 	prNote := ""
+	// lostMarker, set when the quarantine pull request lost its arming,
+	// marks the ticket comments that say so: the sweep does not tell it again.
+	lostMarker := ""
 	if len(rows) > 0 {
 		opened, found, err := w.GH.PullRequestFrom(ctx, branch)
 		if err != nil {
@@ -350,8 +353,13 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 				return err
 			}
 			pr = &opened
-			if prNote, err = w.armQuarantine(ctx, run, opened); err != nil {
+			a, err := w.armQuarantine(ctx, run, opened)
+			if err != nil {
 				return err
+			}
+			prNote = a.note
+			if a.lost() {
+				lostMarker = unarmedMarker(opened.Number, a.events) + "\n"
 			}
 		}
 	}
@@ -385,6 +393,9 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 			}
 		}
 		fmt.Fprintf(&b, "\nmain-watch: %s\n%s\n", w.SelfURL, runMarker(run))
+		if slices.ContainsFunc(owned, func(fl filed) bool { return fl.row != "" }) {
+			b.WriteString(lostMarker)
+		}
 		if err := w.GH.Comment(ctx, n, b.String()); err != nil {
 			return err
 		}
@@ -475,25 +486,34 @@ func (w *Watcher) quarantinePR(ctx context.Context, run Run, branch, mainSHA str
 	return w.GH.CreatePullRequest(ctx, branch, msg, b.String())
 }
 
-// armQuarantine arms the open quarantine pull request's auto-merge and
-// returns what the tickets say of it. Only a pull request that was never
-// armed nor queued is armed: main-watch arms it once, so any later loss of
-// arming (a disable, a removal from the merge queue, the queue holding it) is
-// someone else's decision, or the queue's, and stands.
-func (w *Watcher) armQuarantine(ctx context.Context, run Run, pr PullRequest) (string, error) {
+// arming is where a pull request's auto-merge stands.
+type arming struct {
+	// live: auto-merge is armed, or the merge queue holds the pull request
+	// (GitHub clears auto_merge once the queue takes one).
+	live bool
+	// never: the timeline holds no arming, queue entry nor disable.
+	never bool
+	// note says where the arming stands, for a ticket.
+	note string
+	// says says it for the log, naming the pull request.
+	says string
+	// events counts the timeline items read: a loss of arming is keyed by
+	// it, so a loss after a person armed the pull request again is a new one.
+	events int
+}
+
+// armingOf reads where an open pull request's auto-merge stands: the pull
+// request's auto_merge, then the last step of its auto-merge timeline.
+func (w *Watcher) armingOf(ctx context.Context, pr PullRequest) (arming, error) {
 	if pr.AutoMerge != nil {
-		w.say("run %d: %s exists with auto-merge armed, its flakes are already filed", run.ID, pr.HTMLURL)
-		return "auto-merge armed", nil
+		return arming{live: true, note: "auto-merge armed", says: pr.HTMLURL + " has auto-merge armed"}, nil
 	}
 	history, err := w.GH.AutoMergeHistory(ctx, pr.Number)
 	if err != nil {
-		return "", err
+		return arming{}, err
 	}
 	if len(history) == 0 {
-		if err := w.GH.EnableAutoMerge(ctx, pr); err != nil {
-			return "", err
-		}
-		return "auto-merge armed", nil
+		return arming{never: true, note: "auto-merge never armed", says: pr.HTMLURL + " was never armed"}, nil
 	}
 	last := history[len(history)-1]
 	by := "GitHub or a person the timeline does not name"
@@ -503,23 +523,51 @@ func (w *Watcher) armQuarantine(ctx context.Context, run Run, pr PullRequest) (s
 	if last.Reason != "" {
 		by += " (" + last.Reason + ")"
 	}
-	var says, note string
+	a := arming{events: len(history)}
 	switch last.Kind {
-	case AutoMergeDisabled:
-		says = fmt.Sprintf("the auto-merge of %s was disabled by %s", pr.HTMLURL, by)
-		note = "auto-merge disabled by " + by + ", main-watch leaves it to a person"
-	case RemovedFromQueue:
-		says = fmt.Sprintf("%s was removed from the merge queue by %s", pr.HTMLURL, by)
-		note = "removed from the merge queue by " + by + ", main-watch leaves it to a person"
 	case AddedToQueue:
-		says = fmt.Sprintf("%s was added to the merge queue by %s", pr.HTMLURL, by)
-		note = "in the merge queue, added by " + by
+		a.live = true
+		a.says = fmt.Sprintf("%s was added to the merge queue by %s", pr.HTMLURL, by)
+		a.note = "in the merge queue, added by " + by
+	case AutoMergeDisabled:
+		a.says = fmt.Sprintf("the auto-merge of %s was disabled by %s", pr.HTMLURL, by)
+		a.note = "auto-merge disabled by " + by + ", main-watch leaves it to a person"
+	case RemovedFromQueue:
+		a.says = fmt.Sprintf("%s was removed from the merge queue by %s", pr.HTMLURL, by)
+		a.note = "removed from the merge queue by " + by + ", main-watch leaves it to a person"
 	default:
-		says = fmt.Sprintf("%s was armed once and is no longer, the timeline names no disable", pr.HTMLURL)
-		note = "auto-merge armed once and no longer armed, main-watch leaves it to a person"
+		a.says = fmt.Sprintf("%s was armed once and is no longer, the timeline names no disable", pr.HTMLURL)
+		a.note = "auto-merge armed once and no longer armed, main-watch leaves it to a person"
 	}
-	w.say("run %d: %s: main-watch does not re-arm it", run.ID, says)
-	return note, nil
+	return a, nil
+}
+
+// lost says whether a pull request was armed or queued once and is neither
+// any more.
+func (a arming) lost() bool { return !a.live && !a.never }
+
+// armQuarantine arms the open quarantine pull request's auto-merge and
+// returns where its arming stands. Only a pull request that was never armed
+// nor queued is armed: main-watch arms it once, so any later loss of arming
+// (a disable, a removal from the merge queue) is someone else's decision, or
+// the queue's, and stands.
+func (w *Watcher) armQuarantine(ctx context.Context, run Run, pr PullRequest) (arming, error) {
+	a, err := w.armingOf(ctx, pr)
+	if err != nil {
+		return arming{}, err
+	}
+	switch {
+	case a.never:
+		if err := w.GH.EnableAutoMerge(ctx, pr); err != nil {
+			return arming{}, err
+		}
+		return arming{live: true, note: "auto-merge armed"}, nil
+	case pr.AutoMerge != nil:
+		w.say("run %d: %s exists with auto-merge armed, its flakes are already filed", run.ID, pr.HTMLURL)
+	default:
+		w.say("run %d: %s: main-watch does not re-arm it", run.ID, a.says)
+	}
+	return a, nil
 }
 
 var flakeMarker = regexp.MustCompile(`<!-- main-watch:flake (\S+) (\S+) -->`)
@@ -912,11 +960,27 @@ func revertOpenedMarker(n int) string {
 	return fmt.Sprintf("<!-- main-watch:revert-opened #%d -->", n)
 }
 
+// unarmedMarker records, on a ticket or on the pull request itself, that
+// pull request n lost its arming when its auto-merge timeline held events
+// items: a later loss, after a person armed it again, lengthens the timeline
+// and is a new one.
+func unarmedMarker(n, events int) string {
+	return fmt.Sprintf("<!-- main-watch:unarmed #%d/%d -->", n, events)
+}
+
 // Sweep is the scheduled pass. It judges main's newest run (a workflow_run
 // event main-watch missed is caught here, and judging a run twice changes
 // nothing), then reads main's newest verdict — the newest run that completed
 // green or red: green closes the red episode, red past revertDelay reverts.
+// It then watches the open quarantine pull requests: a failure of either
+// part never skips the other.
 func (w *Watcher) Sweep(ctx context.Context) error {
+	return errors.Join(w.sweepMain(ctx), w.watchQuarantines(ctx))
+}
+
+// sweepMain judges main's newest run and verdict, and watches the arming of
+// the red episode's revert once the revert step ran.
+func (w *Watcher) sweepMain(ctx context.Context) error {
 	runs, err := w.mainRuns(ctx)
 	if err != nil {
 		return err
@@ -953,17 +1017,194 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, c := range ownComments(comments) {
-		if revertMarker.MatchString(c) {
-			w.say("#%d: the revert step already ran for this red episode", ticket.Number)
-			return nil
-		}
+	own := ownComments(comments)
+	if slices.ContainsFunc(own, revertMarker.MatchString) {
+		w.say("#%d: the revert step already ran for this red episode", ticket.Number)
+		return w.watchReverts(ctx, ticket, own)
 	}
 	if age := w.Now().Sub(st.Since); age < revertDelay {
 		w.say("#%d: main red for %s, the revert waits until %s", ticket.Number, age.Round(time.Minute), revertDelay)
 		return nil
 	}
 	return w.revert(ctx, ticket, st)
+}
+
+// watchReverts tells the red ticket, once per loss, that an open revert its
+// markers name lost its arming after the ticket recorded it: the merge
+// queue drops a pull request on its own (failed checks, a conflict), and
+// main-watch never arms a revert again.
+func (w *Watcher) watchReverts(ctx context.Context, ticket Issue, own []string) error {
+	for _, c := range own {
+		m := revertMarker.FindStringSubmatch(c)
+		if m == nil || m[1] == "" {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return fmt.Errorf("#%d: revert marker %q: %w", ticket.Number, m[0], err)
+		}
+		pr, err := w.GH.PullRequest(ctx, n)
+		if err != nil {
+			return err
+		}
+		if pr.State != "open" || pr.MergedAt != nil {
+			continue
+		}
+		a, err := w.armingOf(ctx, pr)
+		if err != nil {
+			return err
+		}
+		if !a.lost() {
+			continue
+		}
+		if err := w.tellLost(ctx, "The revert", pr, a, []int{ticket.Number}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// quarantinePrefix names the branches of main-watch's quarantine pull
+// requests.
+const quarantinePrefix = branchPrefix + "quarantine-run-"
+
+// watchQuarantines reads every open quarantine pull request main-watch
+// opened: one never armed (its flake pass failed to arm it, and no later
+// pass of its run comes) is armed; one that lost its arming is told, once
+// per loss, on the open tickets of its rows, and never armed again.
+func (w *Watcher) watchQuarantines(ctx context.Context) error {
+	prs, err := w.GH.OpenPullRequests(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, pr := range prs {
+		if !strings.HasPrefix(pr.Head.Ref, quarantinePrefix) || pr.Head.Repo == nil || pr.Head.Repo.FullName != w.Repo {
+			continue
+		}
+		errs = append(errs, w.watchQuarantine(ctx, pr))
+	}
+	return errors.Join(errs...)
+}
+
+func (w *Watcher) watchQuarantine(ctx context.Context, pr PullRequest) error {
+	a, err := w.armingOf(ctx, pr)
+	if err != nil {
+		return err
+	}
+	if a.never {
+		if err := w.GH.EnableAutoMerge(ctx, pr); err != nil {
+			return fmt.Errorf("arm the quarantine %s: %w", pr.HTMLURL, err)
+		}
+		w.say("%s was never armed: armed", pr.HTMLURL)
+		return nil
+	}
+	if !a.lost() {
+		return nil
+	}
+	tickets, err := w.quarantineTickets(ctx, pr)
+	if err != nil {
+		return err
+	}
+	if len(tickets) == 0 {
+		return w.tellLostOnItself(ctx, pr, a)
+	}
+	return w.tellLost(ctx, "The quarantine pull request", pr, a, tickets)
+}
+
+// tellLostOnItself tells a quarantine pull request that adds no row under an
+// open ticket (its tickets are closed, or main already lists its rows), once
+// per loss, that it lost its arming: no ticket is left to tell, and the
+// nightly quarantine witness reddens on a row whose ticket is closed, so it
+// asks for the pull request to be closed.
+func (w *Watcher) tellLostOnItself(ctx context.Context, pr PullRequest, a arming) error {
+	marker := unarmedMarker(pr.Number, a.events)
+	comments, err := w.GH.Comments(ctx, pr.Number)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(ownComments(comments), func(c string) bool { return strings.Contains(c, marker) }) {
+		return nil
+	}
+	body := fmt.Sprintf("This quarantine pull request is no longer armed: %s. It adds no row under an open ticket, so main-watch tells no ticket and does not arm it again: close it.\n\nmain-watch: %s\n%s\n", a.note, w.SelfURL, marker)
+	if err := w.GH.Comment(ctx, pr.Number, body); err != nil {
+		return err
+	}
+	w.say("%s: %s, and it adds no row under an open ticket: told the pull request", pr.HTMLURL, a.says)
+	return nil
+}
+
+// quarantineTickets lists the open tickets of the rows a quarantine pull
+// request adds: the rows on its branch that main's list lacks. A row main
+// dropped after the branch was cut is on the branch too, but its ticket is
+// closed (the list removes a row in the change that closes its ticket), so
+// keeping open tickets only leaves it out.
+func (w *Watcher) quarantineTickets(ctx context.Context, pr PullRequest) ([]int, error) {
+	mainSHA, err := w.GH.MainSHA(ctx)
+	if err != nil {
+		return nil, err
+	}
+	onMain, _, err := w.GH.File(ctx, quarantineFile, mainSHA)
+	if err != nil {
+		return nil, err
+	}
+	onBranch, _, err := w.GH.File(ctx, quarantineFile, pr.Head.Ref)
+	if err != nil {
+		return nil, err
+	}
+	issues, err := w.GH.OpenIssues(ctx)
+	if err != nil {
+		return nil, err
+	}
+	open := map[int]bool{}
+	for _, is := range issues {
+		open[is.Number] = true
+	}
+	listed := quarantinedRows(onMain)
+	var out []int
+	for _, line := range strings.Split(string(onBranch), "\n") {
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) < 2 || listed[f[0]+"\t"+f[1]] {
+			continue
+		}
+		if len(f) < 3 {
+			return nil, fmt.Errorf("%s on %s: row %q names no ticket", quarantineFile, pr.Head.Ref, line)
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(f[2]), "#"))
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%s on %s: row %q: ticket %q is not #N", quarantineFile, pr.Head.Ref, line, f[2])
+		}
+		if !open[n] {
+			continue
+		}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// tellLost tells each ticket, once per loss, that pr lost its arming as a
+// reads it.
+func (w *Watcher) tellLost(ctx context.Context, what string, pr PullRequest, a arming, tickets []int) error {
+	marker := unarmedMarker(pr.Number, a.events)
+	for _, n := range tickets {
+		comments, err := w.GH.Comments(ctx, n)
+		if err != nil {
+			return err
+		}
+		if slices.ContainsFunc(ownComments(comments), func(c string) bool { return strings.Contains(c, marker) }) {
+			continue
+		}
+		body := fmt.Sprintf("%s %s is no longer armed: %s. main-watch does not arm it again: merge it, arm it again, or close it.\n\nmain-watch: %s\n%s\n", what, pr.HTMLURL, a.note, w.SelfURL, marker)
+		if err := w.GH.Comment(ctx, n, body); err != nil {
+			return err
+		}
+		w.say("#%d: told %s lost its arming: %s", n, pr.HTMLURL, a.says)
+	}
+	return nil
 }
 
 func (w *Watcher) refuseRevert(ctx context.Context, ticket Issue, reason string) error {
@@ -1022,21 +1263,26 @@ func (w *Watcher) revert(ctx context.Context, ticket Issue, st redState) error {
 		return w.refuseRevert(ctx, ticket, fmt.Sprintf("the most recent suspect #%d is itself a revert or a main-watch change.", suspect.Number))
 	}
 	branch := revertBranch(suspect.Number)
+	// An earlier pass that opened and armed the revert, then failed to
+	// record it, left its pull request: the record is finished, as the pull
+	// request stands (open, or merged by the queue, its branch then deleted),
+	// and its arming is never redone, since a person may have stopped it. A
+	// revert closed unmerged was stopped by a person.
+	prev, found, err := w.GH.PullRequestFrom(ctx, branch)
+	if err != nil {
+		return err
+	}
+	switch {
+	case found && (prev.MergedAt != nil || prev.State == "open"):
+		return w.recordRevert(ctx, ticket, suspect, prev)
+	case found:
+		return w.refuseRevert(ctx, ticket, fmt.Sprintf("the earlier revert of #%d, %s, was closed unmerged.", suspect.Number, prev.HTMLURL))
+	}
 	exists, err := w.GH.BranchExists(ctx, branch)
 	if err != nil {
 		return err
 	}
 	if exists {
-		// An earlier pass that opened and armed the revert, then failed to
-		// record it, left an open pull request: the record is finished, and
-		// its arming is never redone, since a person may have stopped it.
-		pr, found, err := w.GH.PullRequestFrom(ctx, branch)
-		if err != nil {
-			return err
-		}
-		if found && pr.State == "open" && pr.MergedAt == nil {
-			return w.recordRevert(ctx, ticket, suspect, pr)
-		}
 		return w.refuseRevert(ctx, ticket, fmt.Sprintf("branch %s already exists: an earlier revert attempt of #%d did not finish.", branch, suspect.Number))
 	}
 	if err := w.Git.Revert(ctx, suspect.MergeCommitSHA, branch); err != nil {
@@ -1072,12 +1318,31 @@ func (w *Watcher) revert(ctx context.Context, ticket Issue, st redState) error {
 	return w.recordRevert(ctx, ticket, suspect, pr)
 }
 
-// recordRevert records an open revert on the ticket, with the marker that
-// ends the revert step, as pr's arming stands: armed, the suspect is told
-// too; unarmed, it is handed to a person.
+// recordRevert records a revert on the ticket, with the marker that ends
+// the revert step, as pr stands: merged, the suspect is told it is reverted;
+// armed or held by the merge queue, the suspect is told too; unarmed, it is
+// handed to a person.
 func (w *Watcher) recordRevert(ctx context.Context, ticket Issue, suspect, pr PullRequest) error {
-	if pr.AutoMerge == nil {
-		body := fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect, but its auto-merge is not armed, and main-watch does not arm it again. A person takes it from here: merge it, or close it and fix main. main-watch closes it on main's next green run.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))
+	if pr.MergedAt != nil {
+		if err := w.GH.Comment(ctx, ticket.Number, fmt.Sprintf("The revert %s of #%d, the most recently merged suspect, is merged.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))); err != nil {
+			return err
+		}
+		if err := w.GH.Comment(ctx, suspect.Number, fmt.Sprintf("main has been red for more than %s since this pull request landed (#%d): main-watch reverted it, and the revert %s is merged.\n\nmain-watch: %s\n", revertDelay, ticket.Number, pr.HTMLURL, w.SelfURL)); err != nil {
+			return err
+		}
+		w.say("#%d: recorded %s reverting #%d, merged", ticket.Number, pr.HTMLURL, suspect.Number)
+		return nil
+	}
+	a, err := w.armingOf(ctx, pr)
+	if err != nil {
+		return err
+	}
+	if !a.live {
+		lost := ""
+		if a.lost() {
+			lost = unarmedMarker(pr.Number, a.events) + "\n"
+		}
+		body := fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect, but its auto-merge is not armed (%s), and main-watch does not arm it again. A person takes it from here: merge it, or close it and fix main. main-watch closes it on main's next green run.\n\nmain-watch: %s\n%s\n%s", pr.HTMLURL, suspect.Number, a.note, w.SelfURL, revertOpenedMarker(pr.Number), lost)
 		if err := w.GH.Comment(ctx, ticket.Number, body); err != nil {
 			return err
 		}
@@ -1087,7 +1352,11 @@ func (w *Watcher) recordRevert(ctx context.Context, ticket Issue, suspect, pr Pu
 	if err := w.GH.Comment(ctx, ticket.Number, fmt.Sprintf("Opened %s, reverting #%d, the most recently merged suspect.\n\nmain-watch: %s\n%s\n", pr.HTMLURL, suspect.Number, w.SelfURL, revertOpenedMarker(pr.Number))); err != nil {
 		return err
 	}
-	if err := w.GH.Comment(ctx, suspect.Number, fmt.Sprintf("main has been red for more than %s since this pull request landed (#%d): main-watch opened its revert, %s, with auto-merge armed. If a fix turns main green first, main-watch closes the revert.\n\nmain-watch: %s\n", revertDelay, ticket.Number, pr.HTMLURL, w.SelfURL)); err != nil {
+	how := "with auto-merge armed"
+	if pr.AutoMerge == nil {
+		how = "now in the merge queue"
+	}
+	if err := w.GH.Comment(ctx, suspect.Number, fmt.Sprintf("main has been red for more than %s since this pull request landed (#%d): main-watch opened its revert, %s, %s. If a fix turns main green first, main-watch closes the revert.\n\nmain-watch: %s\n", revertDelay, ticket.Number, pr.HTMLURL, how, w.SelfURL)); err != nil {
 		return err
 	}
 	w.say("#%d: opened %s reverting #%d", ticket.Number, pr.HTMLURL, suspect.Number)
