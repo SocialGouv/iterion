@@ -60,6 +60,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
 | `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
+| `internal/sweep/modelseams` | holds the source sweeps that pin pkg/backend/model's seams across the whole module: no test discards the restore a global lookup install returns… | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |

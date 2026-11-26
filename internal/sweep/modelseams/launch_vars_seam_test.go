@@ -1,4 +1,4 @@
-package model
+package modelseams
 
 import (
 	"bytes"
@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // setVarsReaders are the only production callers of SetVars: they hand the
@@ -36,13 +38,7 @@ var setVarsReaders = []string{
 // pkg/cli/resume_helpers.go (the two resume builders) — each named here.
 func TestLaunchTextReachesTheExecutorOnlyThroughSetLaunchVars(t *testing.T) {
 	t.Parallel()
-	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		t.Fatalf("module root not found at %s: %v", root, err)
-	}
+	root := sweepwalk.ModuleRoot(t)
 	fset := token.NewFileSet()
 	var callers []string
 	for _, top := range []string{"pkg", "cmd", "internal"} {

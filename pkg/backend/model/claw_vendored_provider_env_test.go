@@ -308,8 +308,8 @@ func nonTestGoFilesIn(t *testing.T, dir string) []string {
 }
 
 // moduleRoot walks up from the test's working directory to the module root, so
-// a walk reads the tree it is built against (the vendored providers here, the
-// callers of this package's global lookups in registry_global_lookup_test.go).
+// a walk reads the tree it is built against (the vendored providers here, and
+// the tree the other sweeps of this package read).
 func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.Abs(".")

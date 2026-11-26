@@ -124,7 +124,8 @@ func TestTheExecutorRefusesOnlyWhatWasDeclared(t *testing.T) {
 // loop 1 it replaced.
 //
 // Neither loop catches a cell wrongly set to `shipped`, which is the silent
-// direction: TestTheShippedCellsAreExactlyTheLoopsThatInstallTheTool does.
+// direction: TestTheShippedCellsAreExactlyTheLoopsThatInstallTheTool
+// (internal/sweep/modelseams) does.
 func TestTheExecutorAndTheCompilerRefuseTheSameBackends(t *testing.T) {
 	t.Parallel()
 	var served, refused int

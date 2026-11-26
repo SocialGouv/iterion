@@ -1,4 +1,4 @@
-package model
+package modelseams
 
 import (
 	"go/ast"
@@ -9,12 +9,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
-// Its own file, and parallel: the walk below touches no process global, while
-// registry_global_lookup_test.go (the restore witnesses) installs one and is
-// therefore serial. One file, one answer — the partition rule of
-// parallel_campaign_test.go applies to its own guards too.
+// Parallel: the walk below touches no process global, while
+// pkg/backend/model/registry_global_lookup_test.go (the restore witnesses)
+// installs one and is therefore serial. The two live in different packages:
+// the witnesses exercise the setters, this sweep reads every Go file.
 
 // globalLookupSetters are the installs whose result is the only way back.
 var globalLookupSetters = map[string]bool{
@@ -40,7 +42,7 @@ var bootInstallers = map[string]bool{
 // reported a clean tree.
 func TestNoTestDiscardsAGlobalLookupRestore(t *testing.T) {
 	t.Parallel()
-	root := moduleRoot(t)
+	root := sweepwalk.ModuleRoot(t)
 	var offenders []string
 	seen := 0
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
