@@ -1933,7 +1933,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** DELETE /api/me/tokens/{token_id} */
+        /**
+         * DELETE /api/me/tokens/{token_id}
+         * @description Revoke a token. 204 when the revoke ended nothing; 200 naming the pending invitations the token had emailed (ADR-174), now revoked, with invitations_error when the sweep could not take every one out — re-issuing the revoke finishes it.
+         */
         delete: operations["deleteMeTokensByTokenId"];
         options?: never;
         head?: never;
@@ -9490,6 +9493,10 @@ export interface components {
             password: string;
             token: string;
         };
+        patRevokedView: {
+            invitations_error?: string;
+            invitations_revoked: components["schemas"]["revokedInvitationView"][];
+        };
         pipelineBoardReadyRequest: {
             ready: boolean;
         };
@@ -9790,6 +9797,12 @@ export interface components {
             force?: boolean;
             source?: string;
             timeout?: string;
+        };
+        revokedInvitationView: {
+            email: string;
+            id: string;
+            role: string;
+            team_id: string;
         };
         routingPolicyView: {
             origin: string;
@@ -13789,6 +13802,15 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["patRevokedView"];
+                };
+            };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
             401: {
                 headers: {

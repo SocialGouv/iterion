@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -259,11 +261,19 @@ func RemoteTokensCreate(ctx context.Context, c *RemoteClient, p *Printer, name, 
 	return nil
 }
 
+// RemoteTokensRevoke revokes a personal access token and names the pending
+// invitations it had emailed, which end with it (ADR-174).
 func RemoteTokensRevoke(ctx context.Context, c *RemoteClient, p *Printer, tokenID string) error {
-	if _, err := c.Call(ctx, "DELETE", "/api/me/tokens/"+tokenID, nil, nil); err != nil {
+	revoked, err := revokeRemotePAT(ctx, c, tokenID)
+	if err != nil {
 		return err
 	}
+	if p.Format == OutputJSON {
+		p.JSON(revoked.view(tokenID))
+		return nil
+	}
 	p.Line("Token %s revoked", tokenID)
+	printEndedInvitations(p, revoked)
 	return nil
 }
 
@@ -520,8 +530,8 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	}
 	for _, t := range toks.Tokens {
 		if t.Fingerprint != "" && t.Fingerprint == oldFingerprint && t.RevokedAt == nil {
-			var revoked patRevocation
-			if _, err := newClient.Call(ctx, "DELETE", "/api/me/tokens/"+t.ID, nil, &revoked); err != nil {
+			revoked, err := revokeRemotePAT(ctx, newClient, t.ID)
+			if err != nil {
 				return fmt.Errorf("switched, but revoking the previous CLI token %s failed: %w", t.ID, err)
 			}
 			p.Line("Previous CLI token %s revoked", t.ID)
@@ -680,16 +690,62 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 // ended invitations: the pending ones that token emailed (ADR-174), which
 // live no longer than it.
 type patRevocation struct {
-	InvitationsRevoked []struct {
-		Email  string `json:"email"`
-		TeamID string `json:"team_id"`
-		Role   string `json:"role"`
-	} `json:"invitations_revoked"`
-	InvitationsError string `json:"invitations_error"`
+	InvitationsRevoked []endedInvitation `json:"invitations_revoked"`
+	InvitationsError   string            `json:"invitations_error"`
+	// unreadable is why a revoke the server confirmed (2xx) answered a body
+	// this client could not read: the token is revoked all the same, and the
+	// invitations it ended are not known here.
+	unreadable error
+}
+
+type endedInvitation struct {
+	Email  string `json:"email"`
+	TeamID string `json:"team_id"`
+	Role   string `json:"role"`
+}
+
+// view is the revocation as `tokens revoke --output json` prints it.
+func (r patRevocation) view(tokenID string) map[string]any {
+	ended := r.InvitationsRevoked
+	if ended == nil {
+		ended = []endedInvitation{}
+	}
+	v := map[string]any{"revoked": tokenID, "invitations_revoked": ended}
+	if r.InvitationsError != "" {
+		v["invitations_error"] = r.InvitationsError
+	}
+	if r.unreadable != nil {
+		v["invitations_unreadable"] = r.unreadable.Error()
+	}
+	return v
+}
+
+// revokeRemotePAT revokes personal access token tokenID and reads what the
+// revoke ended. The revoke has landed once the server answers 2xx: a body
+// that cannot be read then is reported on the revocation, never as a failed
+// revoke — a caller told "revoke failed" would retry, or keep a token it
+// believes live.
+func revokeRemotePAT(ctx context.Context, c *RemoteClient, tokenID string) (patRevocation, error) {
+	path := "/api/me/tokens/" + tokenID
+	code, resp, err := c.API(ctx, "DELETE", path, nil)
+	if err != nil {
+		return patRevocation{}, err
+	}
+	if code/100 != 2 {
+		return patRevocation{}, c.refuseAPI(code, "DELETE", path, resp)
+	}
+	var r patRevocation
+	if len(bytes.TrimSpace(resp)) == 0 {
+		return r, nil
+	}
+	if err := json.Unmarshal(resp, &r); err != nil {
+		return patRevocation{unreadable: fmt.Errorf("decode DELETE %s response: %w", path, err)}, nil
+	}
+	return r, nil
 }
 
 // printEndedInvitations tells the operator which invitations a revoked token
-// took with it, so a rotation is never a silent end of them.
+// took with it, so a revoke is never a silent end of them.
 func printEndedInvitations(p *Printer, r patRevocation) {
 	if n := len(r.InvitationsRevoked); n > 0 {
 		p.Line("%d pending invitation(s) sent with that token ended with it — invite them again:", n)
@@ -699,5 +755,8 @@ func printEndedInvitations(p *Printer, r patRevocation) {
 	}
 	if r.InvitationsError != "" {
 		p.Line("Warning: %s", r.InvitationsError)
+	}
+	if r.unreadable != nil {
+		p.Line("Warning: the token is revoked, but the invitations it ended could not be read (%v) — the team audit log names them (invitation.deleted, reason minting_pat_revoked)", r.unreadable)
 	}
 }

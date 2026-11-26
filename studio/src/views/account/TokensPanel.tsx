@@ -6,6 +6,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
   type PersonalAccessToken,
+  type TokenRevocation,
   FeatureUnavailableError,
   createMyToken,
   listMyTokens,
@@ -45,6 +46,9 @@ export default function TokensPanel() {
   const [creating, setCreating] = useState(false);
   const [issued, setIssued] = useState<{ pat: PersonalAccessToken; token: string } | null>(null);
   const [deleting, setDeleting] = useState<PersonalAccessToken | null>(null);
+  // The last revoke that ended invitations, so the operator sees who to
+  // invite again: a revoke is never a silent end of them.
+  const [ended, setEnded] = useState<{ name: string; revocation: TokenRevocation } | null>(null);
 
   // Post-mutation refresh: clear the shared error slot and refetch the list.
   const reload = () => {
@@ -60,7 +64,12 @@ export default function TokensPanel() {
   const doDelete = async () => {
     if (!deleting) return;
     try {
-      await revokeMyToken(deleting.id);
+      const revocation = await revokeMyToken(deleting.id);
+      setEnded(
+        revocation.invitations_revoked.length > 0 || revocation.invitations_error
+          ? { name: deleting.name, revocation }
+          : null,
+      );
       setDeleting(null);
       reload();
     } catch (e) {
@@ -94,6 +103,29 @@ export default function TokensPanel() {
       {err && (
         <InlineBanner tone="danger" layout="inline">
           {err}
+        </InlineBanner>
+      )}
+
+      {ended && (
+        <InlineBanner
+          tone="warning"
+          layout="inline"
+          title={`Revoking ${ended.name} ended the invitations it sent`}
+          onDismiss={() => setEnded(null)}
+        >
+          {ended.revocation.invitations_revoked.length > 0 && (
+            <>
+              <p>Invite them again:</p>
+              <ul className="list-disc pl-5">
+                {ended.revocation.invitations_revoked.map((inv) => (
+                  <li key={inv.id}>
+                    {inv.email} — {teamNameByID.get(inv.team_id) ?? inv.team_id}, {inv.role}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {ended.revocation.invitations_error && <p>{ended.revocation.invitations_error}</p>}
         </InlineBanner>
       )}
 
@@ -185,7 +217,7 @@ export default function TokensPanel() {
       <ConfirmDialog
         open={deleting !== null}
         title={`Revoke ${deleting?.name ?? ""}?`}
-        message="Every connection that uses this token will fail immediately."
+        message="Every connection that uses this token will fail immediately, and the pending invitations it sent by email end with it."
         confirmLabel="Revoke"
         confirmVariant="danger"
         onConfirm={() => void doDelete()}

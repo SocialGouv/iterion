@@ -805,3 +805,78 @@ func TestRemoteTeamsSwitch_ListsTheInvitationsTheRevokedTokenEnded(t *testing.T)
 		}
 	}
 }
+
+// TestRemoteTokensRevoke_NamesTheInvitationsTheTokenEnded: revoking a token
+// outside a switch names the invitations it had emailed, which end with it
+// (ADR-174); a revoke that ended nothing answers 204 and says no more.
+func TestRemoteTokensRevoke_NamesTheInvitationsTheTokenEnded(t *testing.T) {
+	c := remoteTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/me/tokens/p-sent":
+			fmt.Fprint(w, `{"invitations_revoked":[{"id":"i1","email":"lucas@example.org","team_id":"team-a","role":"admin"}]}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/me/tokens/p-idle":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	p, buf := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteTokensRevoke(context.Background(), c, p, "p-sent"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	for _, want := range []string{"Token p-sent revoked", "1 pending invitation(s)", "lucas@example.org (team team-a, role admin)"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the revoke output does not name %q:\n%s", want, buf.String())
+		}
+	}
+	p, buf = remotePrinter(cli.OutputJSON)
+	if err := cli.RemoteTokensRevoke(context.Background(), c, p, "p-idle"); err != nil {
+		t.Fatalf("revoke an idle token: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); !strings.Contains(got, `"invitations_revoked": []`) || !strings.Contains(got, `"revoked": "p-idle"`) {
+		t.Errorf("the JSON of a revoke that ended nothing = %s, want the token and an empty list", got)
+	}
+}
+
+// TestRemoteTeamsSwitch_ARevokeWhoseAnswerCannotBeReadStillSwitches: the
+// server confirmed the revoke of the replaced token (200) but its body is not
+// JSON (a proxy page): the token is revoked, so the switch succeeds and says
+// the ended invitations could not be read, rather than failing the revoke.
+func TestRemoteTeamsSwitch_ARevokeWhoseAnswerCannotBeReadStillSwitches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ITERION_REMOTE_URL", "")
+
+	oldToken := remoteSessionToken
+	oldFP := secrets.FingerprintSHA256(oldToken)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/auth/me", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"user":{"id":"u1"},"orgs":[{"org_id":"o1","teams":[{"team_id":"team-b","team_name":"Team B","team_slug":"team-b"}]}]}`)
+	})
+	mux.HandleFunc("POST /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"pat":{"id":"p-new"},"token":"iap_new","org_id":"o1"}`)
+	})
+	mux.HandleFunc("GET /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q}]}`, oldFP)
+	})
+	mux.HandleFunc("DELETE /api/me/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><body>proxy</body></html>`)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	if err := cli.SaveRemoteConfig(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli.NewRemoteClientFor(cli.RemoteConfig{BaseURL: ts.URL, Token: oldToken})
+	p, buf := remotePrinter(cli.OutputHuman)
+	if err := cli.RemoteTeamsSwitch(context.Background(), c, p, "team-b", "cli", nil); err != nil {
+		t.Fatalf("switch whose revoke answered an unreadable 200: %v", err)
+	}
+	for _, want := range []string{"Previous CLI token p-old revoked", "the token is revoked, but the invitations it ended could not be read"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the switch output does not say %q:\n%s", want, buf.String())
+		}
+	}
+}

@@ -1293,7 +1293,7 @@ func (s *Server) handleCreateOrgInvitation(w http.ResponseWriter, r *http.Reques
 	// route.
 	if id.PinRefusesTeam(teamID) {
 		httpError(w, http.StatusForbidden,
-			"this credential is pinned to team %s, so it invites into that team only: name it as team_id, or invite from a session", id.TeamPin)
+			"this credential is pinned to team %s, so it invites into that team only: name it as team_id (--team from the CLI), or invite from a session", id.TeamPin)
 		return
 	}
 	ok, grantCapped := s.requireRankToInvite(w, r, id, t.OrgID, teamID, role, orgRole)

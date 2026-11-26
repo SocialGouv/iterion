@@ -242,16 +242,17 @@ type revokedInvitationView struct {
 func (s *Server) revokeInvitationsMintedWith(r *http.Request, tokenID string) ([]revokedInvitationView, string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), grantCompensationTimeout)
 	defer cancel()
+	// Never null on the wire: a client reads an empty list beside the error.
+	ended := []revokedInvitationView{}
 	invs, err := s.authStore().ListPendingInvitationsMintedWith(ctx, tokenID)
 	if err != nil {
-		return nil, fmt.Sprintf("listing the invitations this token sent failed (%v): they stand, and an accept refuses them since the token no longer stands", err)
+		return ended, fmt.Sprintf("listing the invitations this token sent failed (%v): they stand, an accept refuses them since the token no longer stands, and re-issuing this revoke takes them out", err)
 	}
-	var ended []revokedInvitationView
 	failure := ""
 	for _, inv := range invs {
 		if err := s.authStore().DeleteInvitation(ctx, inv.ID); err != nil && !errors.Is(err, identity.ErrNotFound) {
 			if failure == "" {
-				failure = fmt.Sprintf("revoking invitation %s failed (%v): it stands, and an accept refuses it since the token no longer stands", inv.ID, err)
+				failure = fmt.Sprintf("revoking invitation %s failed (%v): it stands, an accept refuses it since the token no longer stands, and re-issuing this revoke takes it out", inv.ID, err)
 			}
 			continue
 		}

@@ -7193,6 +7193,23 @@
         ],
         "type": "object"
       },
+      "patRevokedView": {
+        "properties": {
+          "invitations_error": {
+            "type": "string"
+          },
+          "invitations_revoked": {
+            "items": {
+              "$ref": "#/components/schemas/revokedInvitationView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "invitations_revoked"
+        ],
+        "type": "object"
+      },
       "pipelineBoardReadyRequest": {
         "properties": {
           "ready": {
@@ -8234,6 +8251,29 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "revokedInvitationView": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "team_id",
+          "role"
+        ],
         "type": "object"
       },
       "routingPolicyView": {
@@ -12261,8 +12301,19 @@
     },
     "/api/me/tokens/{token_id}": {
       "delete": {
+        "description": "Revoke a token. 204 when the revoke ended nothing; 200 naming the pending invitations the token had emailed (ADR-174), now revoked, with invitations_error when the sweep could not take every one out — re-issuing the revoke finishes it.",
         "operationId": "deleteMeTokensByTokenId",
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/patRevokedView"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "401": {
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
           },

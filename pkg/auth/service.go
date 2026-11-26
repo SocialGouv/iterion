@@ -2072,6 +2072,15 @@ func (s *Service) registerWithInvitation(ctx context.Context, email, password, n
 // the claim answers identity.ErrEmailAlreadyTaken. Either way the invitee
 // recovers by logging in with the password they just set and accepting an
 // invitation as an existing user, not by registering again.
+//
+// The standing of the personal access token that emailed inv is read again
+// once the claim has landed (mintingCredentialStands), for the same reason:
+// the check both accept paths make before it can be overtaken by a revoke
+// of that token, whose sweep (pkg/server revokeInvitationsMintedWith) lists
+// the pending rows only AFTER the revoke is written. A claim that lands
+// after the revoke reads it here and writes no access; one that lands
+// before it is an accept the revoke came too late for, and the sweep, which
+// lists pending rows only, neither takes nor reports it.
 func (s *Service) claimInvitation(ctx context.Context, inv identity.Invitation, userID string, at time.Time) error {
 	acceptedAt := at
 	inv.AcceptedAt = &acceptedAt
@@ -2082,7 +2091,7 @@ func (s *Service) claimInvitation(ctx context.Context, inv identity.Invitation, 
 		}
 		return err
 	}
-	return nil
+	return s.mintingCredentialStands(ctx, inv)
 }
 
 // grantOrgMembershipForTeam ensures the user holds an org membership in
@@ -2635,7 +2644,7 @@ var ErrInvitationNeedsEmail = errors.New("auth: this instance sends no email, so
 // minting personal access token no longer stands (Invitation.MintedWith):
 // revoked, expired, its row gone, or its account disabled, erased or pending
 // a password change. What a token sent ends with it.
-var ErrInvitationCredentialGone = errors.New("auth: the personal access token that sent this invitation does not stand (revoked or expired, or its owner's account is not active): ask for a new invitation")
+var ErrInvitationCredentialGone = errors.New("auth: the personal access token that sent this invitation does not stand (revoked or expired, or its owner's account is not active right now): ask the person who invited you for a new invitation, or to put their account back in order")
 
 // mintingCredentialStands answers whether the personal access token that
 // minted inv (Invitation.MintedWith) still stands, by the reading every
