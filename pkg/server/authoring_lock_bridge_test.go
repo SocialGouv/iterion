@@ -100,6 +100,7 @@ func TestTheServerAndTheBridgeFoldAnAliasToTheSameLock(t *testing.T) {
 // control directory with the wrong modes makes the server refuse EVERY save
 // of that file. A directory the bridge created serves the server's save.
 func TestAControlDirectoryTheBridgeCreatedServesTheServerSSave(t *testing.T) {
+	t.Parallel()
 	path := bridgeLockFile(t, "file.txt")
 	if err := authoringlock.Hold(t.Context(), path, func() error { return nil }); err != nil {
 		t.Fatal(err)

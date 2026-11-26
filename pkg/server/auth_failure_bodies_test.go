@@ -18,6 +18,7 @@ import (
 // public invitation lookup among them, reachable with any token string. Each
 // must answer 500 with the generic body and log the cause.
 func TestAuthRoutes_StoreFailuresAnswerTheGenericBody(t *testing.T) {
+	t.Parallel()
 	authed := func(f *authRouteFixture, r *http.Request) *http.Request {
 		return r.WithContext(auth.WithIdentity(context.Background(), auth.Identity{UserID: f.user.User.ID, TeamID: "ta", Role: identity.RoleAdmin, OrgID: "o1", OrgRole: identity.OrgRoleAdmin}))
 	}
@@ -80,6 +81,7 @@ func TestHandleDesktopExchange_AStoreFailureIsNotAnInvalidTicket(t *testing.T) {
 // 500, the cause logged — and the link still resets the password once the
 // store answers. An unknown link stays 401.
 func TestHandlePasswordResetConfirm_AStoreFailureLeavesTheLinkUsable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		arm  func(f *authRouteFixture)

@@ -217,6 +217,7 @@ func pinnedLaunch(botID, sha string) string {
 // the launch then stamps, and the digest of the bytes the launch then runs.
 // Each tier is read by the least-privileged caller its text is readable by.
 func TestTheLaunchSourceIsTheProgramTheLaunchRuns(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"local", "cloud"} {
 		for _, tc := range []struct {
 			name     string
@@ -567,6 +568,7 @@ func TestTheLaunchSourceOfABotInSeveralFilesIsItsUnit(t *testing.T) {
 // refuses the launch instead of applying values the form never showed
 // (rva round 1, S1: the registry listing is a session-old snapshot).
 func TestTheLaunchSourceAnswersThePresetsTheLaunchApplies(t *testing.T) {
+	t.Parallel()
 	main := "vars:\n  target: string = \"default\"\n  depth: string = \"shallow\"\n\npresets:\n  quick:\n    target: \"in-source-quick\"\n  prod:\n    target: \"in-source-prod\"\n\nschema probe_out:\n  ok: string\n\ntool noop:\n  command: `printf '{\"ok\":\"x\"}'`\n  output: probe_out\n\nworkflow preset_probe:\n  worktree: none\n  entry: noop\n  noop -> done\n"
 	filePreset := func(target string) string {
 		return "---\ndisplay_name: Production\nvars:\n  target: " + target + "\n  depth: deep\n---\nFocus on production.\n"
@@ -638,6 +640,7 @@ func TestTheLaunchSourceAnswersThePresetsTheLaunchApplies(t *testing.T) {
 // code, publishes nothing, and hands its admission back — the launch that
 // follows a fresh read is the one that runs, and counts once.
 func TestAStalePinRefusesTheLaunchAndHandsTheAdmissionBack(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"cloud"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newLaunchSourceFixture(t, mode)
@@ -854,6 +857,7 @@ func pinnedChild(v string) map[string]string {
 // The second half is as much the contract as the first: a pin that claimed a
 // child's program or a skill would be believed and not kept (rva round 2).
 func TestAPinCoversTheStatedPartsOfTheProgramAndNoOther(t *testing.T) {
+	t.Parallel()
 	edit := func(rel string) func(t *testing.T, f *launchSourceFixture, tier pinTier) {
 		return func(t *testing.T, f *launchSourceFixture, tier pinTier) {
 			files := pinnedBundle("V1")
@@ -987,6 +991,7 @@ func TestAPinCoversTheStatedPartsOfTheProgramAndNoOther(t *testing.T) {
 // local lanes — here every accepted launch compiled the pinned identity and
 // published one and the same frozen collection, the pinned one.
 func TestAPinnedCloudLaunchPublishesThePinnedFrozenProgram(t *testing.T) {
+	t.Parallel()
 	f := newLaunchSourceFixture(t, "cloud")
 	files := func(v string) map[string]string {
 		b := pinnedBundle("V1")

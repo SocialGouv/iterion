@@ -15,6 +15,7 @@ import (
 )
 
 func TestAdminResetPasswordDisabledAccount(t *testing.T) {
+	t.Parallel()
 	for _, passwordLogin := range []bool{false, true} {
 		name := "sso-only"
 		if passwordLogin {

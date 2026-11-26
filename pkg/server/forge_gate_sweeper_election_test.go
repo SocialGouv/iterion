@@ -59,6 +59,7 @@ func (c *scanCounter) ListNotifiableRuns(context.Context, time.Time, time.Time, 
 // only one replica holds the lease at a time is the store's contract, pinned
 // without a clock by the conformance suite in pkg/lease.
 func TestGateSweeper_OneReplicaSweepsAndASuccessorTakesOver(t *testing.T) {
+	t.Parallel()
 	shared := lease.NewMemoryStore()
 	type replica struct {
 		s     *Server
@@ -564,6 +565,7 @@ func assertNamesWiredNetsOnly(t *testing.T, s *Server, warning string) {
 // A holder that loses its lease — a successor took it after this one stalled
 // past the TTL — must stop sweeping, or two sweeps run from then on.
 func TestGateSweeper_ADeposedHolderStopsSweeping(t *testing.T) {
+	t.Parallel()
 	shared := lease.NewMemoryStore()
 	st, err := store.New(t.TempDir())
 	if err != nil {
@@ -746,6 +748,7 @@ func TestShutdown_TheFlushComesAfterTheJoin(t *testing.T) {
 // Every term opens deep, not only a process's first: a replica deposed and
 // later re-elected has missed what died meanwhile, like one that just started.
 func TestGateSweeper_EveryTermOpensWithADeepPass(t *testing.T) {
+	t.Parallel()
 	shared := lease.NewMemoryStore()
 	st, err := store.New(t.TempDir())
 	if err != nil {

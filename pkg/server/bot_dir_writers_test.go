@@ -36,6 +36,7 @@ func putManifest(s *Server, body string) int {
 // the authoring lock over what the other wrote — a disable among them is
 // never lost to an edit patched from the manifest read before it.
 func TestTwoManifestEditsAtOnceBothLand(t *testing.T) {
+	t.Parallel()
 	const rounds = 40
 	for i := 0; i < rounds; i++ {
 		work := t.TempDir()
@@ -81,6 +82,7 @@ func TestTwoManifestEditsAtOnceBothLand(t *testing.T) {
 // manifest reads with its defaults (enabled), an absent one makes the
 // bundle's main.bot a loose bot. The edit replaces the file in one rename.
 func TestAManifestEditNeverShowsAReaderAnEmptyOrAbsentManifest(t *testing.T) {
+	t.Parallel()
 	work := t.TempDir()
 	writeFiles(t, work, map[string]string{
 		"bots/meta-bot/main.bot":      metaBakedBot,

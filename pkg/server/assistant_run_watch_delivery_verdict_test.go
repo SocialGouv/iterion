@@ -86,6 +86,7 @@ func armIdleWatch(t *testing.T, f *armFixture) {
 // nothing reads unreachable, so the handover can move Copi's veilles to a
 // replica that delivers them.
 func TestAssistantWatchSweepPass_classifiesWhatItsDeliveriesReached(t *testing.T) {
+	t.Parallel()
 	queueDown := fmt.Errorf("resume: %w", &runview.QueueUnavailableError{Cause: errors.New("nats: timeout")})
 	for _, c := range []struct {
 		name        string
@@ -358,6 +359,7 @@ func runSimPasses(t *testing.T, f *armFixture, ws *simClockStore, health *lease.
 // build, and a create or claim of the episode that reaches nothing is a
 // delivery that never started.
 func TestAssistantWatchSweep_K3HandoverThroughRetryDeliveries(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		arm       func(t *testing.T, f *armFixture)

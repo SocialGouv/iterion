@@ -383,6 +383,7 @@ func TestEveryTeamTokenMintPrimitiveDemandsTheVerdict(t *testing.T) {
 // under — that is the design, not a trapdoor: no production caller can reach
 // a test's context.
 func TestEveryTeamTokenMintVerdictStamperIsTheGateOrATest(t *testing.T) {
+	t.Parallel()
 	var offenders []string
 	allowed := 0
 	fset := token.NewFileSet()
@@ -750,6 +751,7 @@ func TestTheForgeOrchestratorIsBuiltWithTheMintChokepoint(t *testing.T) {
 // through a third package is then either read or reported, never unseen —
 // held by a function or held by a var alike.
 func TestEveryMintPrimitiveCallerLivesInTheGuardsGraph(t *testing.T) {
+	t.Parallel()
 	covered := map[string]bool{}
 	for _, d := range mintGraphDirs {
 		covered[d] = true

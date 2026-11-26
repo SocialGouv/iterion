@@ -11,11 +11,11 @@ import (
 )
 
 // Campaign is the call graph of one package's own test files: who declares
-// what, and who calls what.
+// what, who calls what, and who assigns a global.
 //
-// Two packages of this tree partition their tests between parallel and serial
-// and need the same reading — which test, through which helper, reaches a call
-// that cannot run concurrently. The reading lives here so each package keeps
+// Several packages of this tree partition their tests between parallel and
+// serial and need the same reading — which test, through which helper, reaches
+// a call or a global write that cannot run concurrently. The reading lives here so each package keeps
 // only its own table and its own rule; the second copy of a graph walk is
 // where a recopied guard drifts.
 //
@@ -30,6 +30,7 @@ type Campaign struct {
 	declares map[string][]string // base name -> the functions it declares
 	owner    map[string]string   // function -> base name of the file declaring it
 	calls    map[string][]call   // function -> the calls in its body, in source order
+	writes   map[string][]string // function -> the globals its body assigns, sorted
 	tests    map[string][]*ast.FuncDecl
 }
 
@@ -49,7 +50,7 @@ func ReadCampaign(dir string, skip func(src string) bool) (*Campaign, error) {
 	}
 	c := &Campaign{
 		declares: map[string][]string{}, owner: map[string]string{},
-		calls: map[string][]call{}, tests: map[string][]*ast.FuncDecl{},
+		calls: map[string][]call{}, writes: map[string][]string{}, tests: map[string][]*ast.FuncDecl{},
 	}
 	fset := token.NewFileSet()
 	for _, e := range entries {
@@ -64,7 +65,9 @@ func ReadCampaign(dir string, skip func(src string) bool) (*Campaign, error) {
 		if skip != nil && skip(string(raw)) {
 			continue
 		}
-		f, perr := parser.ParseFile(fset, name, raw, parser.SkipObjectResolution)
+		// Object resolution stays on: it is what tells a local variable from
+		// a package-level one in globalWrites.
+		f, perr := parser.ParseFile(fset, name, raw, 0)
 		if perr != nil {
 			return nil, fmt.Errorf("parse %s: %w", name, perr)
 		}
@@ -82,6 +85,7 @@ func ReadCampaign(dir string, skip func(src string) bool) (*Campaign, error) {
 			if IsTopLevelTest(fn) {
 				c.tests[name] = append(c.tests[name], fn)
 			}
+			c.writes[key] = mergeSorted(c.writes[key], globalWrites(fn))
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				expr, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -128,6 +132,126 @@ func (c *Campaign) CallsDirectly(fn, name string) bool {
 		}
 	}
 	return false
+}
+
+// GlobalWrites returns the package-level or imported-package variables fn's
+// own body assigns (`serverBuild = …`, `hook = nil` in a t.Cleanup,
+// `http.DefaultClient = …`, `cache[k] = v`), sorted. A function writing one
+// shares that write with every test running beside it, whatever it restores
+// afterwards.
+func (c *Campaign) GlobalWrites(fn string) []string { return c.writes[fn] }
+
+// GlobalWriters returns every function of these test files whose own body
+// assigns a global: the seed set that makes Reach follow a swapped package
+// variable the way it follows a Setenv.
+func (c *Campaign) GlobalWriters() map[string]bool {
+	out := map[string]bool{}
+	for fn, globals := range c.writes {
+		if len(globals) > 0 {
+			out[fn] = true
+		}
+	}
+	return out
+}
+
+// globalWrites reads fn's assignments, range assignments (`for _, hook =
+// range hooks`) and increments whose target is rooted at an identifier the
+// file does not declare inside fn: a package-level variable (resolved to a
+// top-level declaration of this file, or unresolved because another file of
+// the package declares it) or an imported package. The root is what an
+// assignment walks down to through selectors, indexes, dereferences, type
+// assertions and parentheses, so `f.srv.cfg.Mode = …` on a local fixture is
+// local and `registry[k] = v` or `reg.(*T).m[k] = v` on a package variable is
+// global. Writes made through a method call (`registry.Store(k, v)`), through
+// a call result (`registryOf()[k] = v`) or through a pointer alias (`p :=
+// &hook; *p = nil`) are not seen.
+func globalWrites(fn *ast.FuncDecl) []string {
+	seen := map[string]bool{}
+	note := func(target ast.Expr) {
+		root := target
+		for {
+			switch x := root.(type) {
+			case *ast.SelectorExpr:
+				root = x.X
+				continue
+			case *ast.IndexExpr:
+				root = x.X
+				continue
+			case *ast.IndexListExpr:
+				root = x.X
+				continue
+			case *ast.StarExpr:
+				root = x.X
+				continue
+			case *ast.ParenExpr:
+				root = x.X
+				continue
+			case *ast.TypeAssertExpr:
+				root = x.X
+				continue
+			}
+			break
+		}
+		id, ok := root.(*ast.Ident)
+		if !ok || id.Name == "_" {
+			return
+		}
+		if id.Obj != nil {
+			decl, ok := id.Obj.Decl.(ast.Node)
+			if !ok || (decl.Pos() >= fn.Pos() && decl.Pos() < fn.End()) {
+				return
+			}
+		}
+		seen[id.Name] = true
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if s.Tok == token.DEFINE {
+				return true
+			}
+			for _, lhs := range s.Lhs {
+				note(lhs)
+			}
+		case *ast.IncDecStmt:
+			note(s.X)
+		case *ast.RangeStmt:
+			if s.Tok != token.ASSIGN {
+				return true
+			}
+			if s.Key != nil {
+				note(s.Key)
+			}
+			if s.Value != nil {
+				note(s.Value)
+			}
+		}
+		return true
+	})
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// mergeSorted unions two sorted name lists: two methods sharing a name are one
+// node of the graph, so their writes are one entry.
+func mergeSorted(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	set := map[string]bool{}
+	for _, s := range append(append([]string{}, a...), b...) {
+		set[s] = true
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Reach returns, for every function that reaches one of the seeds, the reason:

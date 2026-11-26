@@ -61,6 +61,7 @@ func TestAPersonalAccessTokenChangesNoPassword(t *testing.T) {
 // threshold, the CORRECT password is refused at /api/auth/login until the
 // lockout lifts, and the route itself throttles (429) like the login does.
 func TestTheCurrentPasswordProofFeedsTheLoginLockout(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	wrong := `{"current_password":"not-the-password","new_password":"new-password-forever-3"}`
 	for i := 0; i < auth.LockoutThreshold; i++ {

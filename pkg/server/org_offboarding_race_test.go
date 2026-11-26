@@ -1014,6 +1014,7 @@ func (g *slowConfirmGate) DeleteMembership(ctx context.Context, userID, teamID s
 // grantCompensationTimeout of wall clock: that budget being spent IS the
 // scenario, and an instant error cannot witness it.
 func TestOrgOffboarding_aReReadThatAnswersOnlyAtItsDeadlineStillTakesTheGrantBack(t *testing.T) {
+	t.Parallel()
 	s := newOrgCredsTestServer(t)
 	seedRacer(t, s)
 	logs := &lockedBuffer{}
@@ -2866,6 +2867,7 @@ func (g *subjectReadGate) DeleteMembership(ctx context.Context, userID, teamID s
 // there holds the request for a third full budget in series to buy the
 // account id the fallback already has.
 func TestOrgOffboarding_theRefusalNamesItsSubjectOnABudgetOfItsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		gone bool

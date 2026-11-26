@@ -201,6 +201,7 @@ var revocationsOf = []struct {
 // nothing in them — no switch, no personal access token, no WS ticket, no
 // SSO link — whichever revocation ended it.
 func TestCredentialDerivation_ARevokedSessionsAccessTokenMintsNothing(t *testing.T) {
+	t.Parallel()
 	for _, rv := range revocationsOf {
 		t.Run(rv.name, func(t *testing.T) {
 			f := newDerivationFixture(t)
@@ -230,6 +231,7 @@ func TestCredentialDerivation_ARevokedSessionsAccessTokenMintsNothing(t *testing
 // minting session ended, or whose minting token expired, opens no WebSocket;
 // expires_in never promises more than the minting token has left.
 func TestWSTicket_ATicketMintsNothingAndDiesWithTheCredentialThatMintedIt(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	mint := func(bearer string) (string, int) {
 		t.Helper()
@@ -446,6 +448,7 @@ func TestHandleLogout_ALineageNamesTheSessionItSignsOut(t *testing.T) {
 // is committed but whose session could not be written answer 409
 // password_changed_sign_in, clear the cookies, and the new password signs in.
 func TestCredentialChangeRoutes_APasswordCommittedWithoutItsSessionAnswers409(t *testing.T) {
+	t.Parallel()
 	for _, flow := range []string{"password change", "reset confirm", "forced rotation"} {
 		t.Run(flow, func(t *testing.T) {
 			f := newDerivationFixture(t)

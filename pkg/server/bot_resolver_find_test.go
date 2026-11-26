@@ -7,6 +7,7 @@ import "testing"
 // accepts the normalised spellings of a bot id, so the lookup must resolve
 // them too, after an exact pass — never a partial or fuzzy one.
 func TestEffectiveFindByName_ResolvesNormalisedSpellings(t *testing.T) {
+	t.Parallel()
 	s := newWebhookTestServer(t)
 	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
 	cases := []struct {

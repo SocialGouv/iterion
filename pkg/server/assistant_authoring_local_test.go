@@ -352,6 +352,7 @@ func TestAuthoringLocalInterruptedRecordsAreNotReplayed(t *testing.T) {
 	}
 }
 func TestAuthoringLocalCrossProcessLock(t *testing.T) {
+	t.Parallel()
 	if path := os.Getenv("ITERION_AUTHORING_LOCK_CHILD"); path != "" {
 		fmt.Println("ready")
 		// The two child budgets carry DIFFERENT properties:

@@ -808,6 +808,7 @@ func TestAuditLogin_TheLoginCSRFGuardFiringIsARefusal(t *testing.T) {
 // the account it changed: the refusal's target_id, and for a reset the
 // user.password_reset row the change owes.
 func TestAuditLogin_ACommittedChangeWithoutASessionIsAttributed(t *testing.T) {
+	t.Parallel()
 	t.Run("reset confirm", func(t *testing.T) {
 		f := newLoginAuditFixture(t)
 		now := time.Now().UTC()

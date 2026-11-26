@@ -73,6 +73,7 @@ func (c *clampingIssueClient) CommentIssue(context.Context, string, int, string)
 // completeness verdict must not rest on the page SIZE a provider chose to
 // serve, because nothing in the seam promises the size asked for.
 func TestSyncForgeIssuesToBoard_AClampedPageIsNotAnExhaustedWindow(t *testing.T) {
+	t.Parallel()
 	board := newTestBoard(t)
 	ic := &clampingIssueClient{issues: testIssues(250), limit: 50}
 
@@ -162,6 +163,7 @@ func seedForgejoSyncIntegration(t *testing.T, baseURL string, board native.Board
 // here writes off every issue past the first page, and `since` is the only way
 // back to them.
 func TestSyncOneIntegration_AForgejoPageClampDoesNotMoveTheMark(t *testing.T) {
+	t.Parallel()
 	fj := newFakeGitea(t, 250, 50)
 	mark := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	board := newTestBoard(t)
@@ -302,6 +304,7 @@ func TestSyncForgeIssuesToBoard_TheRefusalCountsIssuesWhereTheReadCountsEntries(
 // SyncIssuesEnabled). So the shared core states the budget, and the import
 // adds its own clause.
 func TestForgeIssueWindowTruncated_TheRemedyBelongsToTheCallerThatHasIt(t *testing.T) {
+	t.Parallel()
 	// The cloud reader, from its real entry point: the leased sweep's
 	// per-integration pass, whose window comes from the stored mark.
 	gh := newFakeGitHubIssues(t, 250, 0, 0)
@@ -506,6 +509,7 @@ func TestSyncForgeIssuesToBoard_AnUnchangedCardIsNotRewritten(t *testing.T) {
 // The integration this call is handed is a snapshot read before the window
 // was, and a paged pass is long enough for a patch to land inside it.
 func TestSyncOneIntegration_TheMarkStampKeepsAConcurrentPatch(t *testing.T) {
+	t.Parallel()
 	var s *Server
 	var ri forge.RepoIntegration
 	gh := newFakeGitHubIssuesHooked(t, 250, func(page int) {
@@ -614,6 +618,7 @@ func TestProjectForgeWebhookToBoard_BoundsItsRead(t *testing.T) {
 // the fast path, lands whole and advances the mark — which is what keeps a
 // live issue's card fresh within seconds.
 func TestProjectForgeWebhookToBoard_SyncsANormalWindowWhole(t *testing.T) {
+	t.Parallel()
 	gh := newFakeGitHubIssuesHooked(t, 250, nil)
 	mark := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	board := newTestBoard(t)
@@ -778,6 +783,7 @@ func (f *authoredGitHub) spent() (pages, perms int) {
 // it per entry instead turns a 250-entry window into 254 requests a sweep,
 // forever, for one repo, against an installation's 5 000/hour.
 func TestSyncOneIntegration_AMirroredWindowCostsNoTrustRequest(t *testing.T) {
+	t.Parallel()
 	gh := newAuthoredGitHub(t, 250)
 	mark := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	board := newTestBoard(t)
@@ -1012,6 +1018,7 @@ func TestForEachForgeIssuePage_TheRefusalPricesTheWindowInEntries(t *testing.T) 
 // budget that cut the window — rather than a success over a window it only
 // partly read.
 func TestHandleSyncForgeIntegration_CarriesTheSweepsPageBudget(t *testing.T) {
+	t.Parallel()
 	// A window that never ends: every page is full, so only the budget stops
 	// the read.
 	gh := newFakeGitHubIssues(t, forgeIssueSyncMaxPages*forgeIssueSyncPerPage+1, 0, 0)

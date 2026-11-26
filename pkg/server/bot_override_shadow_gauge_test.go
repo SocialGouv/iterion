@@ -493,6 +493,7 @@ func TestOverrideShadowObserver_AWarmCatalogFailureFlagsUnavailable(t *testing.T
 // `for: 1h` clock on a condition that never cleared. A ZERO, not a ratio: the
 // invariant is absolute, so this can only redden on a real window.
 func TestOverrideShadowObserver_NoScrapeEverSeesAnEmptyInventory(t *testing.T) {
+	t.Parallel()
 	s := newShadowObserverServer(t, "0.8.0", "0.7.0")
 	ctx := context.Background()
 	s.observePlatformOverrideShadows(ctx)

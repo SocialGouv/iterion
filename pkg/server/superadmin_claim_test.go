@@ -107,6 +107,7 @@ func testDemotedSuperAdmin(t *testing.T, f *derivationFixture, email string) aut
 // platform act — a revoked session's super-admin token places no one, a
 // demoted one neither, and a live super-admin still can.
 func TestPlatformAuthority_ARevokedSuperAdminsTokenPlacesNoOrgMember(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	ctx := context.Background()
 	seedOrg(t, f.s, "victim", "victim-org")
@@ -145,6 +146,7 @@ func TestPlatformAuthority_ARevokedSuperAdminsTokenPlacesNoOrgMember(t *testing.
 // names "a public or instance-wide entry", and both scopes ride the one
 // gate.
 func TestPlatformAuthority_ARevokedSuperAdminsTokenApprovesNoPublicMarketplaceEntry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		scope marketplace.Scope

@@ -258,6 +258,7 @@ func TestForgeConnectionReplaceToken_SameAccountKeepsEverythingWorking(t *testin
 // A token of ANOTHER account is refused 422 and nothing changes: the
 // connection's hooks and minted secrets hang off the first account.
 func TestForgeConnectionReplaceToken_DifferentAccountIsRefused(t *testing.T) {
+	t.Parallel()
 	gl := &patRotateGitLab{users: map[string]map[string]any{
 		"glpat-old":   {"id": 7, "username": "botuser"},
 		"glpat-other": {"id": 99, "username": "mallory"},

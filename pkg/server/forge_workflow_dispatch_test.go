@@ -508,6 +508,7 @@ func TestWorkflowDispatch_ARepositoryOutsideTheGrantIsRefused(t *testing.T) {
 // name reaches the mint (the client's own guard then refuses it with
 // another code) → red on both the code and the untouched forge.
 func TestWorkflowDispatch_AWorkflowThatIsNotAPlainYAMLFileNameIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"../renovate.yml", "dir/renovate.yml", "renovate.sh", ".yml", "renovate", "renovate.yml/", "renovate%2F.yml", "renovate.yml?ref=x", "re novate.yml", ".github.yml"} {
 		t.Run(name, func(t *testing.T) {
 			w := newDispatchWorld(t)

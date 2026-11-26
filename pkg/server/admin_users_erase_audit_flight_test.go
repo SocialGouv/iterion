@@ -41,6 +41,7 @@ func (g *gatedAudit) Insert(ctx context.Context, e audit.Event) error {
 // keyed by an invitation id and an address the account no longer carries,
 // where no later scrub finds it.
 func TestAdminEraseUser_AnAuditLineInFlightIsScrubbed(t *testing.T) {
+	t.Parallel()
 	f := newEraseFixture(t)
 	admin := f.superAdmin(t)
 	userID := f.user.User.ID

@@ -542,6 +542,7 @@ func cookieValue(w *httptest.ResponseRecorder, base string) string {
 // fact about the user: the answer is the failure, never a 200 whose empty
 // or partial tree claims "you belong to no organization".
 func TestHandleMe_StoreFailureIsNotAnEmptyTree(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, read string
 		call       int
@@ -686,6 +687,7 @@ func credentialRoutes() []credentialRoute {
 // registration retried into "email already taken", a reset link burnt by a
 // blip, a switch persisted under an error answer).
 func TestCredentialRoutes_DeliverTheSessionWithoutTheTree(t *testing.T) {
+	t.Parallel()
 	for _, rt := range credentialRoutes() {
 		t.Run(rt.name, func(t *testing.T) {
 			f := newAuthRouteFixture(t)
@@ -772,6 +774,7 @@ func TestHandleRefresh_DeadCredentialIs401AndClearsTheCookies(t *testing.T) {
 // token expired together, a desktop's concurrent 401s. Both are answered
 // with the same rotated token, and the account's other sessions survive.
 func TestHandleRefresh_ConcurrentRefreshesShareTheSuccessor(t *testing.T) {
+	t.Parallel()
 	for trial := 0; trial < 10; trial++ {
 		f := newAuthRouteFixture(t)
 		srv := httptest.NewServer(f.s.Handler())
@@ -849,6 +852,7 @@ func refreshWithHeader(s *Server, token string) *httptest.ResponseRecorder {
 // answered 500 with the generic body — the driver's text, which names the
 // cluster's hosts, goes to the log — and delivers no session.
 func TestHandleLogin_StoreFailureIsGeneric(t *testing.T) {
+	t.Parallel()
 	for _, read := range []string{"GetUserByEmail", "ListMembershipsByUser", "GetTeam"} {
 		t.Run(read, func(t *testing.T) {
 			f := newAuthRouteFixture(t)

@@ -135,6 +135,7 @@ func registeredAPIRoutes(t *testing.T) []RouteInfo {
 }
 
 func TestTheGeneratedRESTInventoryIsFresh(t *testing.T) {
+	t.Parallel()
 	rendered, err := GenerateRESTInventoryAnnex("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +150,7 @@ func TestTheGeneratedRESTInventoryIsFresh(t *testing.T) {
 }
 
 func TestTheAnnexMatchesTheRegisteredSurfaceBothWays(t *testing.T) {
+	t.Parallel()
 	committed, err := os.ReadFile(filepath.Join("..", "..", RESTInventoryAnnexPath))
 	if err != nil {
 		t.Fatalf("read the committed annex: %v — run `task restapi:gen` and commit", err)
@@ -236,6 +238,7 @@ func platformAdminRegistrations(t *testing.T) []RouteInfo {
 }
 
 func TestTheAdminRungCannotBeMislabeled(t *testing.T) {
+	t.Parallel()
 	committed, err := os.ReadFile(filepath.Join("..", "..", RESTInventoryAnnexPath))
 	if err != nil {
 		t.Fatalf("read the committed annex: %v — run `task restapi:gen` and commit", err)

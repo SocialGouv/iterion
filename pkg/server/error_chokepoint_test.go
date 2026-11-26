@@ -116,6 +116,7 @@ func (s oidcReadFailureStore) ListOIDCLinksByUser(context.Context, string) ([]id
 // Together with the helper/status matrix this covers both raw-error sites and
 // the auth helper that already hides its cause.
 func TestServerErrorRouteFamiliesNeverExposeStoreDetails(t *testing.T) {
+	t.Parallel()
 	type handler func(*Server, http.ResponseWriter, *http.Request)
 	for _, tc := range []struct {
 		family, method, body, id, read string
