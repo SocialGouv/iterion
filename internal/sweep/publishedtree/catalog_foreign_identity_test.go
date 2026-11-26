@@ -1,4 +1,4 @@
-package bots
+package publishedtree
 
 import (
 	"os"
@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
 // A catalog bot ships to a PUBLIC repository and is read by anyone. Nothing in
@@ -273,13 +275,14 @@ var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "ch
 // certify the checkout instead of the tree, and the allowlist grew two entries
 // justified by files that only existed on one machine. The CI run named both.
 // A guard whose verdict moves with the directory it runs in certifies nothing.
-func catalogFiles(t *testing.T) []string {
+func catalogFiles(t *testing.T) (root string, files []string) {
 	t.Helper()
-	return trackedFilesIn(t, "..", catalogScope...)
+	root = sweepwalk.ModuleRoot(t)
+	return root, trackedFilesIn(t, root, catalogScope...)
 }
 
 // trackedFilesIn lists the files git TRACKS under the named subdirectories of
-// root, as paths relative to the caller. Taking root as a parameter is what
+// root, as paths joined on root. Taking root as a parameter is what
 // lets the property below be proven on a throwaway repository: a test that
 // wrote an untracked file into THIS checkout to prove it would race every
 // other package's test that reads the tree — pkg/repomap's freshness gate
@@ -287,7 +290,7 @@ func catalogFiles(t *testing.T) []string {
 func trackedFilesIn(t *testing.T, root string, subdirs ...string) []string {
 	t.Helper()
 	args := append([]string{"ls-files", "-z", "--"}, subdirs...)
-	out, err := gittest.Cmd(root, args...).Output()
+	out, err := gittest.Cmd(root, gitlib.NoRunHooks(args...)...).Output()
 	if err != nil {
 		t.Fatalf("git ls-files in %s: %v", root, err)
 	}
@@ -307,16 +310,23 @@ func trackedFilesIn(t *testing.T, root string, subdirs ...string) []string {
 // neither reserved nor allowlisted. Factored out of the test so the guard can
 // be shown to BITE on injected examples — a bench that cannot go red is not a
 // bench.
-func scanForeignHosts(t *testing.T, files []string, skip func(path string) bool) []foreignHost {
+//
+// Each file lies under root, and its name is judged as the tree spells it —
+// relative to root — so the directory the checkout sits in is never content.
+func scanForeignHosts(t *testing.T, root string, files []string, skip func(path string) bool) []foreignHost {
 	t.Helper()
 	var found []foreignHost
-	for _, path := range files {
-		if skip != nil && skip(path) {
+	for _, full := range files {
+		if skip != nil && skip(full) {
 			continue
 		}
-		body, readErr := os.ReadFile(path)
+		body, readErr := os.ReadFile(full)
 		if readErr != nil {
-			t.Fatalf("read %s: %v", path, readErr)
+			t.Fatalf("read %s: %v", full, readErr)
+		}
+		path, relErr := filepath.Rel(root, full)
+		if relErr != nil || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+			t.Fatalf("%s does not lie under %s (%v)", full, root, relErr)
 		}
 		// THE NAME IS CONTENT TOO. A file called `forge.internal.acme.fr.json`
 		// carries the identity in the one place a scan of bodies never looks,
@@ -356,7 +366,8 @@ func skipTheGuardItself(path string) bool {
 }
 
 func TestCatalogNamesNoForeignInfrastructure(t *testing.T) {
-	for _, hit := range scanForeignHosts(t, catalogFiles(t), skipTheGuardItself) {
+	root, files := catalogFiles(t)
+	for _, hit := range scanForeignHosts(t, root, files, skipTheGuardItself) {
 		t.Errorf("%s:%d names the host %q, which is neither a reserved documentation name nor "+
 			"on the catalog allowlist. A shipped bot must not carry a third party's "+
 			"infrastructure: if this host is public and the reference is deliberate, add it to "+
@@ -391,7 +402,7 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 	for name := range fixtures {
 		injected = append(injected, filepath.Join(dir, name))
 	}
-	found := scanForeignHosts(t, injected, nil)
+	found := scanForeignHosts(t, dir, injected, nil)
 	caught := map[string]bool{}
 	for _, hit := range found {
 		caught[hit.host] = true
@@ -426,14 +437,24 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 // A scope that silently covered nothing would make every test here green, so
 // each declared directory is required to contribute a file.
 func TestCatalogIdentityScopeCoversEveryPublishedSurface(t *testing.T) {
-	files := catalogFiles(t)
+	root, files := catalogFiles(t)
+	rels := make([]string, 0, len(files))
+	for _, path := range files {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rels = append(rels, filepath.ToSlash(rel))
+	}
 	for _, want := range catalogScope {
 		if strings.HasPrefix(want, ":(glob)") {
 			continue
 		}
+		// A file counts for the directory it lies under, from the root: a
+		// nested scripts/ci/ or bots/x/skills/ is not ci/ or skills/.
 		found := false
-		for _, path := range files {
-			if strings.Contains(filepath.ToSlash(path), "/"+want+"/") {
+		for _, rel := range rels {
+			if strings.HasPrefix(rel, want+"/") {
 				found = true
 				break
 			}
@@ -446,8 +467,7 @@ func TestCatalogIdentityScopeCoversEveryPublishedSurface(t *testing.T) {
 	// The root markdown, which is the one entry the loop above skips: its
 	// pathspec exists precisely so `vendor/` does not come with it.
 	rootMarkdown, vendored := false, false
-	for _, path := range files {
-		rel := strings.TrimPrefix(filepath.ToSlash(path), "../")
+	for _, rel := range rels {
 		if !strings.Contains(rel, "/") && strings.HasSuffix(rel, ".md") {
 			rootMarkdown = true
 		}
@@ -469,7 +489,8 @@ func TestCatalogIdentityScopeCoversEveryPublishedSurface(t *testing.T) {
 // purpose. Drained the same way the universality exemptions are.
 func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 	seen := map[string]bool{}
-	for _, path := range catalogFiles(t) {
+	_, files := catalogFiles(t)
+	for _, path := range files {
 		if skipTheGuardItself(path) {
 			continue
 		}
@@ -505,10 +526,10 @@ func TestCatalogHostAllowlistCarriesNoDeadEntry(t *testing.T) {
 func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
 	requireAssessmentTools(t)
 	root := t.TempDir()
-	gittest.Run(t, root, "init", "-q", "-b", "main")
-	gittest.Run(t, root, "config", "user.email", "t@example.com")
-	gittest.Run(t, root, "config", "user.name", "t")
-	gittest.Run(t, root, "config", "commit.gpgsign", "false")
+	gittest.Run(t, root, gitlib.NoRunHooks("init", "-q", "-b", "main")...)
+	gittest.Run(t, root, gitlib.NoRunHooks("config", "user.email", "t@example.com")...)
+	gittest.Run(t, root, gitlib.NoRunHooks("config", "user.name", "t")...)
+	gittest.Run(t, root, gitlib.NoRunHooks("config", "commit.gpgsign", "false")...)
 	if err := os.MkdirAll(filepath.Join(root, "bots", "sample", "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -516,8 +537,8 @@ func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, committed), []byte("public: https://github.com/x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gittest.Run(t, root, "add", committed)
-	gittest.Run(t, root, "commit", "-qm", "one tracked file")
+	gittest.Run(t, root, gitlib.NoRunHooks("add", committed)...)
+	gittest.Run(t, root, gitlib.NoRunHooks("commit", "-qm", "one tracked file")...)
 
 	// The artefacts a working directory accumulates, none of them in the commit.
 	for rel, body := range map[string]string{
@@ -539,13 +560,13 @@ func TestCatalogIdentityGuardJudgesTheCommitNotTheCheckout(t *testing.T) {
 
 	// And the consequence, both ways round: an untracked file can neither
 	// excuse an allowlist entry nor hide a leak.
-	if found := scanForeignHosts(t, files, nil); len(found) != 0 {
+	if found := scanForeignHosts(t, root, files, nil); len(found) != 0 {
 		t.Fatalf("the committed file names a foreign host it should not: %v", found)
 	}
 	walked := []string{
 		filepath.Join(root, "bots", "sample", "__pycache__", "x.pyc"),
 	}
-	if found := scanForeignHosts(t, walked, nil); len(found) == 0 {
+	if found := scanForeignHosts(t, root, walked, nil); len(found) == 0 {
 		t.Fatal("the scanner does not see the private forge in the untracked artefact — " +
 			"then the guard is blind, not merely scoped")
 	}

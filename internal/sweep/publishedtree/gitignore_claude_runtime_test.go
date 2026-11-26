@@ -1,11 +1,12 @@
-package bots
+package publishedtree
 
 import (
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
 
@@ -26,12 +27,11 @@ import (
 // Nothing else checks this: an over-broad negation is invisible until a
 // run's mirrored skills land in a commit. This test asks git itself.
 func TestGitignoreKeepsClaudeRuntimeJunkIgnored(t *testing.T) {
-	git, err := exec.LookPath("git")
-	if err != nil {
+	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	root := filepath.Join("..") // bots/ -> repo root
-	if out, err := exec.Command(git, gitlib.NoAutoMaintenance("-C", root, "rev-parse", "--is-inside-work-tree")...).Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+	root := sweepwalk.ModuleRoot(t)
+	if out, err := gittest.Cmd(root, gitlib.NoRunHooks("rev-parse", "--is-inside-work-tree")...).Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
 		t.Skip("not a git work tree (vendored/exported checkout)")
 	}
 
@@ -51,7 +51,7 @@ func TestGitignoreKeepsClaudeRuntimeJunkIgnored(t *testing.T) {
 
 	for _, tc := range cases {
 		// `git check-ignore` matches patterns only — the path need not exist.
-		err := exec.Command(git, gitlib.NoAutoMaintenance("-C", root, "check-ignore", "-q", "--", tc.path)...).Run()
+		err := gittest.Cmd(root, gitlib.NoRunHooks("check-ignore", "-q", "--", tc.path)...).Run()
 		ignored := err == nil
 		if ignored != tc.wantIgnored {
 			t.Errorf("%s: ignored=%v want %v — %s", tc.path, ignored, tc.wantIgnored, tc.why)

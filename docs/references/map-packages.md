@@ -67,6 +67,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/sweep/itertoken` | holds the zero-trace guard for the deprecated workflow extension that `.bot` replaced: TestNoIterExtensionAnywhere greps every tracked file of the… | — |
 | `internal/sweep/mintchokepoint` | guards the derivation chokepoint over team-token mints across the whole module: every mint primitive demands the gate's verdict, the verdict is… | — |
 | `internal/sweep/modelseams` | holds the source sweeps that pin pkg/backend/model's seams across the whole module: no test discards the restore a global lookup install returns… | — |
+| `internal/sweep/publishedtree` | holds the guards over what this repository publishes as a whole: no tracked file under bots/, examples/, docs/, skills/, scripts/, charts/, ci/ or… | — |
 | `internal/sweep/runtimecatalog` | holds the pkg/runtime guards whose subject is the shipped bot catalogue under bots/: each compiles or runs a real .bot (or a bundle's presets/) under… | — |
 | `internal/sweep/runtimedocs` | holds the pkg/runtime guards whose subject is an operator page: docs/sandbox.md's bounded promise about the image-ENV screen, the residue it states… | — |
 | `internal/sweep/runtimeseams` | holds the pkg/runtime guards whose subject is the code AROUND the engine: they read or type-check the module's source to hold every caller of an… | — |
