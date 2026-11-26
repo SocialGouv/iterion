@@ -128,13 +128,9 @@ The claim concerns this lookup, not the complexity of every parser operation.
 
 `TestBrokenListSplicesStayLinear` counts too since #3731: its median
 wall-clock ratio read 8.1x on a linear splice. Its work ratio reads 4.0x; a
-recopy through `Lexer.splice`'s counted branch or a stack-reset mutant reads
-15.9x against the 6x bound. A splice that bypasses `Lexer.splice` (the #2880
-`slices.Insert` at the rescue) fails a chokepoint assertion: the stream gains
-tokens `splice` never counted. Not covered: a recopy written into `splice`'s
-uncounted branches, and a quadratic in the reads that index the token slice
-directly (`propertySpan`'s lookback, the list-property lookback, the
-close-point memo walk, the open-block replay's `readThrough`).
+recopy through `Lexer.splice` or a stack-reset mutant reads 15.9x against the
+6x bound. A splice that bypasses `Lexer.splice` fails a chokepoint assertion;
+the test's comment names what the count does not cover.
 
 
 ## React title publication
