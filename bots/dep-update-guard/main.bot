@@ -1429,56 +1429,81 @@ tool continuity:
     # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
     # (dep_update_guard_continuity_test.go pins the three copies). The check
     # rollup of the pull request's head, read with GraphQL — `gql(query,
-    # variables)` returns the data and raises on a failed read — as (required,
-    # optional, passing): the names of the contexts not passing on `pin`,
-    # split by whether the base requires them for this pull request, and the
-    # names of the required ones that pass. None when the rollup is about
-    # another commit than `pin`, runs past one page, or carries a context
-    # whose kind, requiredness or order it does not state: what cannot be read
-    # whole proves nothing. The variable sigil is written @ and swapped at run
-    # time.
+    # variables)` returns the data and raises on a failed read, a field the
+    # token may not read included — as (required, optional, passing): the
+    # names of the contexts not passing on `pin`, split by whether the base
+    # requires them for this pull request, and the names of the required ones
+    # that pass. None when the rollup cannot be read whole: a page about
+    # another commit than `pin` or than the first page (the head moved
+    # mid-read), a page that does not say whether another follows or names
+    # no next one, more than `pages` pages of 100 contexts, or a context whose
+    # kind, requiredness or order it does not state. What cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    #
+    # The query asks only what the run token reads: CheckRun, its checkSuite
+    # and the suite's app are Checks (read), StatusContext is Commit statuses
+    # (read). checkSuite.workflowRun would need Actions (read), which the run
+    # token never carries, and GitHub refuses the read on a private
+    # repository.
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each slot (app, workflow, name)
-    # is judged by its newest run alone. Only runs of one workflow supersede
-    # each other: a run of the same name from another app or another
-    # workflow is a check of its own and must pass too. A suite of an app
-    # other than Actions has no workflow run, so its workflow is None. Newest
+    # check to the newest run of its name, so each slot (app, name) is judged
+    # by its newest run alone; a run of the same name from another app is a
+    # check of its own and must pass too. Runs of one name from several
+    # workflows of one app share their slot: for a check the base requires,
+    # that is GitHub's own reading; for one it does not, it changes only the
+    # names the optional list carries, and that list decides nothing. Newest
     # is the greatest run databaseId: check run ids grow with creation across
-    # suites and attempts, whereas a rerun stays in its suite (whose
-    # createdAt is the first attempt's) and copies the startedAt of the jobs
-    # it does not rerun. A queued rerun already has its id, so it wins and
-    # reads as pending. A run alone in its slot needs no order; a slot of
-    # several runs where one has a missing or malformed app, workflow or id,
-    # or two share an id, makes the rollup unreadable.
+    # suites and attempts, whereas a rerun stays in its suite (whose createdAt
+    # is the first attempt's) and copies the startedAt of the jobs it does not
+    # rerun. A queued rerun already has its id, so it wins and reads as
+    # pending. A run alone in its slot needs no order; a slot of several runs
+    # where one has a missing or malformed app or id, or two share an id (a
+    # run served on two pages included), makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        pages = 20
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+        q = ("query(@owner: String!, @name: String!, @number: Int!, @after: String) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
-             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "statusCheckRollup { contexts(first: 100, after: @after) { pageInfo { hasNextPage endCursor } "
+             "nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
              "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
+             "checkSuite { app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
-        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
-        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
-        if len(nodes) != 1 or not isinstance(nodes[0], dict):
-            return None
-        commit = nodes[0].get("commit") or {}
         # The pin may be abbreviated (7 hex at least): the rollup's commit is
         # compared on the common prefix.
-        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
-        n = min(len(oid), len(want))
-        if n < 7 or oid[:n] != want[:n]:
-            return None
-        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
-        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+        want = text(pin).lower()
+        listed, first, after = [], None, None
+        for _ in range(pages):
+            data = gql(q, {"owner": owner, "name": repo, "number": int(num), "after": after})
+            nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+            if len(nodes) != 1 or not isinstance(nodes[0], dict) or not isinstance(nodes[0].get("commit"), dict):
+                return None
+            commit = nodes[0]["commit"]
+            oid = text(commit.get("oid")).lower()
+            n = min(len(oid), len(want))
+            if n < 7 or oid[:n] != want[:n] or (first is not None and oid != first):
+                return None
+            first = oid
+            rollup = commit.get("statusCheckRollup")
+            contexts = rollup.get("contexts") if isinstance(rollup, dict) else None
+            if not isinstance(contexts, dict) or not isinstance(contexts.get("nodes"), list):
+                return None
+            listed.extend(contexts["nodes"])
+            info = contexts.get("pageInfo") if isinstance(contexts.get("pageInfo"), dict) else {}
+            more, after = info.get("hasNextPage"), info.get("endCursor")
+            if more is False:
+                break
+            if more is not True or not text(after):
+                return None
+        else:
             return None
         judged, slots = [], {}
-        for c in contexts["nodes"]:
+        for c in listed:
             if not isinstance(c, dict):
                 return None
             if text(c.get("__typename")) != "CheckRun":
@@ -1486,11 +1511,8 @@ tool continuity:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            wrun = suite.get("workflowRun")
-            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
-            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
-            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
-            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), c.get("databaseId"))]
+            slots.setdefault((ids[0], text(c.get("name"))), []).append((None not in ids, ids[1], c))
         for runs in slots.values():
             if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None
@@ -2992,56 +3014,81 @@ tool post_feedback:
     # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
     # (dep_update_guard_continuity_test.go pins the three copies). The check
     # rollup of the pull request's head, read with GraphQL — `gql(query,
-    # variables)` returns the data and raises on a failed read — as (required,
-    # optional, passing): the names of the contexts not passing on `pin`,
-    # split by whether the base requires them for this pull request, and the
-    # names of the required ones that pass. None when the rollup is about
-    # another commit than `pin`, runs past one page, or carries a context
-    # whose kind, requiredness or order it does not state: what cannot be read
-    # whole proves nothing. The variable sigil is written @ and swapped at run
-    # time.
+    # variables)` returns the data and raises on a failed read, a field the
+    # token may not read included — as (required, optional, passing): the
+    # names of the contexts not passing on `pin`, split by whether the base
+    # requires them for this pull request, and the names of the required ones
+    # that pass. None when the rollup cannot be read whole: a page about
+    # another commit than `pin` or than the first page (the head moved
+    # mid-read), a page that does not say whether another follows or names
+    # no next one, more than `pages` pages of 100 contexts, or a context whose
+    # kind, requiredness or order it does not state. What cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    #
+    # The query asks only what the run token reads: CheckRun, its checkSuite
+    # and the suite's app are Checks (read), StatusContext is Commit statuses
+    # (read). checkSuite.workflowRun would need Actions (read), which the run
+    # token never carries, and GitHub refuses the read on a private
+    # repository.
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each slot (app, workflow, name)
-    # is judged by its newest run alone. Only runs of one workflow supersede
-    # each other: a run of the same name from another app or another
-    # workflow is a check of its own and must pass too. A suite of an app
-    # other than Actions has no workflow run, so its workflow is None. Newest
+    # check to the newest run of its name, so each slot (app, name) is judged
+    # by its newest run alone; a run of the same name from another app is a
+    # check of its own and must pass too. Runs of one name from several
+    # workflows of one app share their slot: for a check the base requires,
+    # that is GitHub's own reading; for one it does not, it changes only the
+    # names the optional list carries, and that list decides nothing. Newest
     # is the greatest run databaseId: check run ids grow with creation across
-    # suites and attempts, whereas a rerun stays in its suite (whose
-    # createdAt is the first attempt's) and copies the startedAt of the jobs
-    # it does not rerun. A queued rerun already has its id, so it wins and
-    # reads as pending. A run alone in its slot needs no order; a slot of
-    # several runs where one has a missing or malformed app, workflow or id,
-    # or two share an id, makes the rollup unreadable.
+    # suites and attempts, whereas a rerun stays in its suite (whose createdAt
+    # is the first attempt's) and copies the startedAt of the jobs it does not
+    # rerun. A queued rerun already has its id, so it wins and reads as
+    # pending. A run alone in its slot needs no order; a slot of several runs
+    # where one has a missing or malformed app or id, or two share an id (a
+    # run served on two pages included), makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        pages = 20
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+        q = ("query(@owner: String!, @name: String!, @number: Int!, @after: String) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
-             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "statusCheckRollup { contexts(first: 100, after: @after) { pageInfo { hasNextPage endCursor } "
+             "nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
              "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
+             "checkSuite { app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
-        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
-        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
-        if len(nodes) != 1 or not isinstance(nodes[0], dict):
-            return None
-        commit = nodes[0].get("commit") or {}
         # The pin may be abbreviated (7 hex at least): the rollup's commit is
         # compared on the common prefix.
-        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
-        n = min(len(oid), len(want))
-        if n < 7 or oid[:n] != want[:n]:
-            return None
-        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
-        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+        want = text(pin).lower()
+        listed, first, after = [], None, None
+        for _ in range(pages):
+            data = gql(q, {"owner": owner, "name": repo, "number": int(num), "after": after})
+            nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+            if len(nodes) != 1 or not isinstance(nodes[0], dict) or not isinstance(nodes[0].get("commit"), dict):
+                return None
+            commit = nodes[0]["commit"]
+            oid = text(commit.get("oid")).lower()
+            n = min(len(oid), len(want))
+            if n < 7 or oid[:n] != want[:n] or (first is not None and oid != first):
+                return None
+            first = oid
+            rollup = commit.get("statusCheckRollup")
+            contexts = rollup.get("contexts") if isinstance(rollup, dict) else None
+            if not isinstance(contexts, dict) or not isinstance(contexts.get("nodes"), list):
+                return None
+            listed.extend(contexts["nodes"])
+            info = contexts.get("pageInfo") if isinstance(contexts.get("pageInfo"), dict) else {}
+            more, after = info.get("hasNextPage"), info.get("endCursor")
+            if more is False:
+                break
+            if more is not True or not text(after):
+                return None
+        else:
             return None
         judged, slots = [], {}
-        for c in contexts["nodes"]:
+        for c in listed:
             if not isinstance(c, dict):
                 return None
             if text(c.get("__typename")) != "CheckRun":
@@ -3049,11 +3096,8 @@ tool post_feedback:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            wrun = suite.get("workflowRun")
-            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
-            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
-            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
-            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), c.get("databaseId"))]
+            slots.setdefault((ids[0], text(c.get("name"))), []).append((None not in ids, ids[1], c))
         for runs in slots.values():
             if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None
@@ -3810,56 +3854,81 @@ tool arm_automerge:
     # Byte-identical in `continuity`, `post_feedback` and `arm_automerge`
     # (dep_update_guard_continuity_test.go pins the three copies). The check
     # rollup of the pull request's head, read with GraphQL — `gql(query,
-    # variables)` returns the data and raises on a failed read — as (required,
-    # optional, passing): the names of the contexts not passing on `pin`,
-    # split by whether the base requires them for this pull request, and the
-    # names of the required ones that pass. None when the rollup is about
-    # another commit than `pin`, runs past one page, or carries a context
-    # whose kind, requiredness or order it does not state: what cannot be read
-    # whole proves nothing. The variable sigil is written @ and swapped at run
-    # time.
+    # variables)` returns the data and raises on a failed read, a field the
+    # token may not read included — as (required, optional, passing): the
+    # names of the contexts not passing on `pin`, split by whether the base
+    # requires them for this pull request, and the names of the required ones
+    # that pass. None when the rollup cannot be read whole: a page about
+    # another commit than `pin` or than the first page (the head moved
+    # mid-read), a page that does not say whether another follows or names
+    # no next one, more than `pages` pages of 100 contexts, or a context whose
+    # kind, requiredness or order it does not state. What cannot be read whole
+    # proves nothing. The variable sigil is written @ and swapped at run time.
+    #
+    # The query asks only what the run token reads: CheckRun, its checkSuite
+    # and the suite's app are Checks (read), StatusContext is Commit statuses
+    # (read). checkSuite.workflowRun would need Actions (read), which the run
+    # token never carries, and GitHub refuses the read on a private
+    # repository.
     #
     # A commit can carry several runs of one check: a rerun, or a suite
     # superseded by a later trigger and cancelled. GitHub holds a required
-    # check to the newest run of its name, so each slot (app, workflow, name)
-    # is judged by its newest run alone. Only runs of one workflow supersede
-    # each other: a run of the same name from another app or another
-    # workflow is a check of its own and must pass too. A suite of an app
-    # other than Actions has no workflow run, so its workflow is None. Newest
+    # check to the newest run of its name, so each slot (app, name) is judged
+    # by its newest run alone; a run of the same name from another app is a
+    # check of its own and must pass too. Runs of one name from several
+    # workflows of one app share their slot: for a check the base requires,
+    # that is GitHub's own reading; for one it does not, it changes only the
+    # names the optional list carries, and that list decides nothing. Newest
     # is the greatest run databaseId: check run ids grow with creation across
-    # suites and attempts, whereas a rerun stays in its suite (whose
-    # createdAt is the first attempt's) and copies the startedAt of the jobs
-    # it does not rerun. A queued rerun already has its id, so it wins and
-    # reads as pending. A run alone in its slot needs no order; a slot of
-    # several runs where one has a missing or malformed app, workflow or id,
-    # or two share an id, makes the rollup unreadable.
+    # suites and attempts, whereas a rerun stays in its suite (whose createdAt
+    # is the first attempt's) and copies the startedAt of the jobs it does not
+    # rerun. A queued rerun already has its id, so it wins and reads as
+    # pending. A run alone in its slot needs no order; a slot of several runs
+    # where one has a missing or malformed app or id, or two share an id (a
+    # run served on two pages included), makes the rollup unreadable.
     def check_rollup(gql, owner, repo, num, pin):
+        pages = 20
         def text(x):
             return x.strip() if isinstance(x, str) else ""
-        q = ("query(@owner: String!, @name: String!, @number: Int!) { "
+        q = ("query(@owner: String!, @name: String!, @number: Int!, @after: String) { "
              "repository(owner: @owner, name: @name) { "
              "pullRequest(number: @number) { commits(last: 1) { nodes { commit { oid "
-             "statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename "
+             "statusCheckRollup { contexts(first: 100, after: @after) { pageInfo { hasNextPage endCursor } "
+             "nodes { __typename "
              "... on StatusContext { context state isRequired(pullRequestNumber: @number) } "
              "... on CheckRun { name status conclusion databaseId isRequired(pullRequestNumber: @number) "
-             "checkSuite { app { databaseId } workflowRun { workflow { databaseId } } } } "
+             "checkSuite { app { databaseId } } } "
              "} } } } } } } } }").replace("@", chr(36))
-        data = gql(q, {"owner": owner, "name": repo, "number": int(num)})
-        nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
-        if len(nodes) != 1 or not isinstance(nodes[0], dict):
-            return None
-        commit = nodes[0].get("commit") or {}
         # The pin may be abbreviated (7 hex at least): the rollup's commit is
         # compared on the common prefix.
-        oid, want = text(commit.get("oid")).lower(), text(pin).lower()
-        n = min(len(oid), len(want))
-        if n < 7 or oid[:n] != want[:n]:
-            return None
-        contexts = (commit.get("statusCheckRollup") or {}).get("contexts") or {}
-        if (contexts.get("pageInfo") or {}).get("hasNextPage") or not isinstance(contexts.get("nodes"), list):
+        want = text(pin).lower()
+        listed, first, after = [], None, None
+        for _ in range(pages):
+            data = gql(q, {"owner": owner, "name": repo, "number": int(num), "after": after})
+            nodes = ((((data.get("repository") or {}).get("pullRequest") or {}).get("commits") or {}).get("nodes")) or []
+            if len(nodes) != 1 or not isinstance(nodes[0], dict) or not isinstance(nodes[0].get("commit"), dict):
+                return None
+            commit = nodes[0]["commit"]
+            oid = text(commit.get("oid")).lower()
+            n = min(len(oid), len(want))
+            if n < 7 or oid[:n] != want[:n] or (first is not None and oid != first):
+                return None
+            first = oid
+            rollup = commit.get("statusCheckRollup")
+            contexts = rollup.get("contexts") if isinstance(rollup, dict) else None
+            if not isinstance(contexts, dict) or not isinstance(contexts.get("nodes"), list):
+                return None
+            listed.extend(contexts["nodes"])
+            info = contexts.get("pageInfo") if isinstance(contexts.get("pageInfo"), dict) else {}
+            more, after = info.get("hasNextPage"), info.get("endCursor")
+            if more is False:
+                break
+            if more is not True or not text(after):
+                return None
+        else:
             return None
         judged, slots = [], {}
-        for c in contexts["nodes"]:
+        for c in listed:
             if not isinstance(c, dict):
                 return None
             if text(c.get("__typename")) != "CheckRun":
@@ -3867,11 +3936,8 @@ tool arm_automerge:
                 continue
             suite = c.get("checkSuite") if isinstance(c.get("checkSuite"), dict) else {}
             app = suite.get("app") if isinstance(suite.get("app"), dict) else {}
-            wrun = suite.get("workflowRun")
-            flow = wrun.get("workflow") if isinstance(wrun, dict) and isinstance(wrun.get("workflow"), dict) else {}
-            ids = [i if type(i) is int else None for i in (app.get("databaseId"), flow.get("databaseId"), c.get("databaseId"))]
-            placed = ids[0] is not None and ids[2] is not None and (wrun is None or ids[1] is not None)
-            slots.setdefault((ids[0], ids[1], text(c.get("name"))), []).append((placed, ids[2], c))
+            ids = [i if type(i) is int else None for i in (app.get("databaseId"), c.get("databaseId"))]
+            slots.setdefault((ids[0], text(c.get("name"))), []).append((None not in ids, ids[1], c))
         for runs in slots.values():
             if len(runs) > 1 and (not all(r[0] for r in runs) or len({r[1] for r in runs}) < len(runs)):
                 return None

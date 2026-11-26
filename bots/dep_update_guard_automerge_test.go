@@ -86,20 +86,23 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 	// rollup is what the stub answers to the check-rollup query: the contexts
 	// on the head commit (nil answers a null rollup, which reads as
 	// unreadable) and the commit they are about ("" = the served head).
-	// hasNext says the contexts run past the page; then, when set, is what
-	// every read after the first answers — a check flipping mid-settle.
+	// hasNext says the contexts run past the page (naming no next one);
+	// then, when set, is what every read after the first answers — a check
+	// flipping mid-settle; forbidden answers GitHub's FORBIDDEN error beside
+	// the data, as for a field the token may not read.
 	var rollup struct {
-		nodes   []map[string]any
-		oid     string
-		hasNext bool
-		then    []map[string]any
-		reads   int
+		nodes     []map[string]any
+		oid       string
+		hasNext   bool
+		forbidden bool
+		then      []map[string]any
+		reads     int
 	}
 	withRollup := func(t *testing.T, oid string, nodes ...map[string]any) {
 		t.Helper()
 		rollup.nodes, rollup.oid = nodes, oid
 		t.Cleanup(func() {
-			rollup.nodes, rollup.oid, rollup.hasNext, rollup.then, rollup.reads = nil, "", false, nil, 0
+			rollup.nodes, rollup.oid, rollup.hasNext, rollup.forbidden, rollup.then, rollup.reads = nil, "", false, false, nil, 0
 		})
 	}
 	// runWith drives the node against a stub forge holding `pr`. A non-empty
@@ -156,9 +159,14 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 					sc = map[string]any{"contexts": map[string]any{
 						"pageInfo": map[string]any{"hasNextPage": rollup.hasNext}, "nodes": nodes}}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+				answer := map[string]any{"data": map[string]any{"repository": map[string]any{
 					"pullRequest": map[string]any{"commits": map[string]any{"nodes": []any{
-						map[string]any{"commit": map[string]any{"oid": oid, "statusCheckRollup": sc}}}}}}}})
+						map[string]any{"commit": map[string]any{"oid": oid, "statusCheckRollup": sc}}}}}}}}
+				if rollup.forbidden {
+					answer["errors"] = []map[string]any{{"type": "FORBIDDEN", "message": "Resource not accessible by integration",
+						"path": []any{"repository", "pullRequest", "commits", "nodes", 0, "commit", "statusCheckRollup"}}}
+				}
+				_ = json.NewEncoder(w).Encode(answer)
 			// Ordered before the arming case deliberately, even though the two
 			// names do not collide as substrings ("disable" carries no
 			// "enable"): the reader should not have to verify that to know
@@ -1191,12 +1199,25 @@ func TestDepUpdateGuardArmAutomerge(t *testing.T) {
 
 	// Mutation: drop the hasNextPage check -> it merges on the first page of
 	// contexts, past whatever the next one holds.
-	t.Run("UNSTABLE, a rollup past one page: merges nothing", func(t *testing.T) {
+	t.Run("UNSTABLE, a rollup past one page naming no next one: merges nothing", func(t *testing.T) {
 		withRollup(t, "", optionalRed, requiredGreen)
 		rollup.hasNext = true
 		res, calls, _ := runWith(t, nil, unstablePR, unstableRefusal, nil)
 		if len(mergedOn(calls)) != 0 || res["armed"] != false {
 			t.Fatalf("merged on a rollup it read one page of: %v", res)
+		}
+	})
+	// A rollup read the token may not make is a failed read: it merges
+	// nothing and says why, never a reading of the data beside the error.
+	t.Run("UNSTABLE, a rollup read answering FORBIDDEN: merges nothing, says so", func(t *testing.T) {
+		withRollup(t, "", optionalRed, requiredGreen)
+		rollup.forbidden = true
+		res, calls, _ := runWith(t, map[string]string{"{{vars.automerge_on_unstable}}": `"merge"`}, unstablePR, unstableRefusal, nil)
+		if len(mergedOn(calls)) != 0 || res["armed"] != false {
+			t.Fatalf("merged on a rollup read answering FORBIDDEN: %v", res)
+		}
+		if reason, _ := res["reason"].(string); !strings.Contains(reason, "Resource not accessible by integration") {
+			t.Errorf("the refusal must name the failed read, got %q", reason)
 		}
 	})
 
