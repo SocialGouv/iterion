@@ -175,8 +175,8 @@ green.
 
   | class | variable | jobs |
   | --- | --- | --- |
-  | small | `CI_SMALL_RUNNER` | the `test` and `race` aggregators, `fmt-check`, `vendor-check`, `govulncheck`, `docs-build`, `nats-conformance`, `desktop-vet-cross`, `brand`, `helm-lint`, the merge-queue-gate mirror |
-  | large | `CI_LARGE_RUNNER` | the heavy jobs the queue requires: `test-unit`, `golangci`, `studio` |
+  | small | `CI_SMALL_RUNNER` | the `test` and `race` aggregators, `fmt-check`, `vendor-check`, `govulncheck`, `docs-build`, `desktop-vet-cross`, `brand`, `helm-lint`, the merge-queue-gate mirror |
+  | large | `CI_LARGE_RUNNER` | the heavy jobs the queue requires: `test-unit`, `golangci`, `studio`; and `nats-conformance`, whose JetStream suite does not fit 500m under its 5-minute package bound |
   | heavy | `CI_HEAVY_RUNNER` | the heavy layer the merge queue does not require, run after the merge (a `ci:full` pull request's `test` and `race` still wait on it): `race-shard`, `test-e2e`, `mongo-conformance`, `cloud-e2e` |
 
   The variable names the class's scale set (the small one is
