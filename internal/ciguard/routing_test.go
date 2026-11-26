@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -422,67 +421,52 @@ const heavyAdvisoryIf = "${{ !cancelled() && " + lightLiteral + " && " + fullSui
 
 // PULL REQUEST CI ON DEMAND (#3738). A pull request runs the light layer only
 // when it asks: labelled `ci:run` (or `ci:full`, which keeps meaning the heavy
-// layer too), opened by a bot, or from a fork. eligibleLiteral says so, and
-// is true on every event that is no pull request, so the merge queue, push,
-// the nightly and a dispatch keep their layers. The bot is read from the
-// author's account type — every GitHub App's user is of type `Bot` (renovate,
-// tokenbureau, dependabot) — never from a list of names.
-const eligibleLiteral = `(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository)`
+// layer too), opened by a bot, or from a fork. lightLiteral says so, and is
+// true on every event that is no pull request, so the merge queue, push, the
+// nightly and a dispatch keep their layers. It reads the labels the pull
+// request carries, the same way on every activity type: a `labeled` payload
+// already holds the new label, so any label is a synchronize of the same
+// head, and nothing reads which label the event added. The bot is read from
+// the author's account type — every GitHub App's user is of type `Bot`
+// (renovate, tokenbureau, dependabot) — never from a list of names. Every job
+// but tapVerifierJob, heavyGateJob and the aggregators carries it, byte for
+// byte, in front of its own condition.
+const lightLiteral = `(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository)`
 
-// ignoredLabelLiteral is a `labeled` event for a label that asks for no CI:
-// `labeled` is a trigger so that `ci:run` and `ci:full` start a run, and GitHub
-// fires it for every label. Such a run runs nothing, cancels nothing (the
-// concurrency block) and repeats the verdict of the run before it
-// (labelVerdictJob).
-const ignoredLabelLiteral = `(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')`
-
-// lightLiteral is where the light layer runs: an eligible event that is not
-// an ignored label. Every job but tapVerifierJob, heavyGateJob,
-// labelVerdictJob and the aggregators carries it, byte for byte, in front of
-// its own condition.
-const lightLiteral = "(" + eligibleLiteral + " && !" + ignoredLabelLiteral + ")"
-
-// askedIf is the one `if:` a gated light leg and a required job that does its
-// own work carry: the light literal and the tap skip. On every event that is
-// no pull request the light literal is true, so in the merge queue it reduces
-// to tapSkip — event_layers_test.go evaluates it there rather than trusting
-// this sentence.
+// askedIf is the one `if:` a gated light leg carries: the light literal and
+// the tap skip. On every event that is no pull request the light literal is
+// true, so in the merge queue it reduces to tapSkip — event_layers_test.go
+// evaluates it there rather than trusting this sentence.
 const askedIf = "${{ " + lightLiteral + " && " + tapSkip + " }}"
+
+// requiredOwnIf is the one `if:` a required job that does its own work carries
+// (vendor-check, golangci, fmt-check): askedIf behind `!cancelled()`, with
+// `needs: [tapVerifierJob]`. On a refused pull request it skips, and a job
+// skipped by its `if:` reports SUCCESS the moment GitHub creates it: without
+// a need it is created in the run's first instant, while `test` is created
+// only once its legs concluded — so for that gap the newest check run of its
+// name would be green, over the red run before it, before any refusal
+// exists. Behind tapVerifierJob, whose check run is pending from the run's
+// first instant and concludes only after its steps ran on a runner, it is
+// created after `test`, whose legs all skip in that first instant.
+// `!cancelled()` keeps a red brand from skipping it.
+const requiredOwnIf = "${{ !cancelled() && " + lightLiteral + " && " + tapSkip + " }}"
 
 // advisoryIf is the one `if:` an advisory job that is not heavy carries: out of
 // the merge queue, and in the light layer.
 const advisoryIf = "${{ github.event_name != 'merge_group' && " + lightLiteral + " }}"
 
-// labelVerdictJob reads, on an ignored label of a pull request that asked for
-// CI, the verdict of the run before it on the same commit
-// (scripts/ci/label-verdict.sh) and outputs it as `test` and `race`; it runs
-// there and nowhere else (labelVerdictIf) — on a pull request that did not
-// ask, the aggregators refuse whatever the label. Like heavyGateJob it is
-// needed for its outputs alone and is no leg.
-const (
-	labelVerdictJob = "label-verdict"
-	labelVerdictIf  = "${{ " + eligibleLiteral + " && " + ignoredLabelLiteral + " }}"
-)
-
 // prCIEnv is the env key, and prCIValue its exact value, through which an
-// aggregator learns the policy: `refused` on a pull request that is not
-// eligible, `mirror` on an ignored label, `run` everywhere else.
-// labelVerdictEnv carries labelVerdictJob's output for the aggregator, its
-// value per aggregator in labelVerdictValues.
+// aggregator learns the policy: `refused` on a pull request that did not ask
+// for CI, `run` everywhere else.
 const (
-	prCIEnv         = "PR_CI"
-	prCIValue       = "${{ (!" + eligibleLiteral + " && 'refused') || (" + ignoredLabelLiteral + " && 'mirror') || 'run' }}"
-	labelVerdictEnv = "LABEL_VERDICT"
+	prCIEnv   = "PR_CI"
+	prCIValue = "${{ (!" + lightLiteral + " && 'refused') || 'run' }}"
 )
-
-var labelVerdictValues = map[string]string{
-	"test": "${{ needs." + labelVerdictJob + ".outputs.test }}",
-	"race": "${{ needs." + labelVerdictJob + ".outputs.race }}",
-}
 
 // deciderJobs are needed for their outputs alone: no aggregator re-verifies
 // their result as a leg's.
-var deciderJobs = map[string]bool{heavyGateJob: true, labelVerdictJob: true}
+var deciderJobs = map[string]bool{heavyGateJob: true}
 
 // heavyGateJob is the decider of the debounced push (#3737): on a push to
 // main it answers `heavy=true` or `heavy=false` from the run history, and
@@ -518,13 +502,14 @@ const (
 // tap half is the same literal the heavy jobs and the verifier share.
 const aggregatorIf = "${{ !cancelled() && " + tapSkip + " }}"
 
-// aggregatedLegs returns the legs a job's `needs:` names, the deciderJobs
-// left out: a decider is needed for its output, never re-verified as a leg. A
-// job whose legs are empty is no aggregator, whatever else it needs.
+// aggregatedLegs returns the legs a job's `needs:` names, the deciderJobs and
+// tapVerifierJob left out: a decider is needed for its output and the tap
+// verifier for ordering (requiredOwnIf), neither re-verified as a leg. A job
+// whose legs are empty is no aggregator, whatever else it needs.
 func aggregatedLegs[T any](needs []T) []string {
 	var legs []string
 	for _, n := range needs {
-		if leg := fmt.Sprint(n); !deciderJobs[leg] {
+		if leg := fmt.Sprint(n); !deciderJobs[leg] && leg != tapVerifierJob {
 			legs = append(legs, leg)
 		}
 	}
@@ -591,10 +576,11 @@ func skipsMergeGroup(cond string) bool {
 //     refuses the condition rather than judging it, because judging means
 //     matching spellings and the spellings do not run out. Two conditions
 //     are admitted, each compared byte for byte rather than read, each tied
-//     to the role of the job that carries it: askedIf — the light literal
-//     (#3738), true on every event that is no pull request, and the tap
-//     skip — on a required job that does its own work (and on every gated
-//     leg), whose tap verifier
+//     to the role of the job that carries it: requiredOwnIf — the light
+//     literal (#3738), true on every event that is no pull request, and the
+//     tap skip, behind `!cancelled()` and `needs: [brand]` — on a required
+//     job that does its own work (askedIf on every gated leg), whose tap
+//     verifier
 //     TestTheTapSkipIsVerifiedWhereNothingSkipsIt holds in place; and
 //     aggregatorIf on a required aggregator — the same tap skip combined
 //     with `!cancelled()`, the trio TestAggregatorsReVerifyEveryLeg holds.
@@ -623,14 +609,14 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// both read that success. It neutralises every guard in this
 			// file at once, so it is refused rather than judged.
 			t.Errorf("job %q carries continue-on-error: true — a failing job would report success to its aggregator and to the ruleset. Nothing that feeds a required verdict may carry it", name)
-		case requiredChecks[name] && name != tapVerifierJob && len(job.Needs) == 0 && sameExpression(job.If, askedIf):
+		case requiredChecks[name] && name != tapVerifierJob && len(job.Needs) == 1 && job.Needs[0] == tapVerifierJob && sameExpression(job.If, requiredOwnIf):
 			// The one admitted condition on a required job that does its own
 			// work: the light literal — true on every event that is no pull
 			// request, event_layers_test.go evaluates it in the merge queue —
 			// and the tap skip, whose verifier lives in a job that can never
-			// carry it. Where the light literal is false the aggregators go
-			// red by policy (#3738), so a skipped required job here never
-			// leaves the pull request green.
+			// carry it, behind `!cancelled()` and a need on that verifier
+			// (requiredOwnIf says why). Where the light literal is false the
+			// aggregators go red by policy (#3738).
 		case (requiredChecks[name] || heldChecks[name]) && len(aggregatedLegs(job.Needs)) > 0 && sameExpression(job.If, aggregatorIf):
 			// The one admitted condition on a required or held AGGREGATOR: the
 			// run-state spelling that keeps a failed leg from skipping it,
@@ -647,7 +633,7 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// `contains(…)`. A widened matcher finds one more spelling every
 			// round; the set is closed instead, and each member is compared
 			// byte for byte against the role of the job that carries it.
-			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:` other than askedIf (%q), byte for byte, or on an aggregator exactly %q; %q carries none at all. If another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, askedIf, aggregatorIf, tapVerifierJob)
+			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check that does its own work carries exactly %q with needs [%s] (it has %v), an aggregator exactly %q, and %q none at all. If another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, requiredOwnIf, tapVerifierJob, job.Needs, aggregatorIf, tapVerifierJob)
 		case heavyLegs[name] && !gatedJobs[name]:
 			t.Errorf("job %q is a heavy leg but not a gated leg: heavyLegs is a subset of gatedJobs", name)
 		case heavyLegs[name] && sameExpression(job.If, heavyLegIf):
@@ -679,10 +665,6 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			t.Errorf("job %q decides the debounced push and carries `if:` %q, want exactly %q — it decides a push and nothing else, and never holds a merge-queue slot", name, job.If, heavyGateIf)
 		case name == heavyGateJob:
 			// Push only: it skips the merge queue by never running there.
-		case name == labelVerdictJob && !sameExpression(job.If, labelVerdictIf):
-			t.Errorf("job %q repeats the verdict of the run before an ignored label and carries `if:` %q, want exactly %q — it reads a history on an ignored label and nowhere else, never in the merge queue", name, job.If, labelVerdictIf)
-		case name == labelVerdictJob:
-			// An ignored label only: it never runs in the merge queue.
 		case heldChecks[name]:
 			t.Errorf("job %q is a held check and carries `if:` %q with needs %v: a held aggregator carries exactly %q, a held job of its own work is a heavy advisory job", name, job.If, job.Needs, aggregatorIf)
 		case !requiredChecks[name] && !gatedJobs[name] && !skips:
@@ -791,9 +773,8 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 		}
 		for _, leg := range job.Needs {
 			if deciderJobs[leg] {
-				// Needed for its output, which LIGHT_RUN or LABEL_VERDICT
-				// reads; it is no leg. TestHeavyLayerRunsOnTheDebouncedPush
-				// and TestALabelThatAsksForNoCIRepeatsTheVerdict hold them.
+				// Needed for its output, which LIGHT_RUN reads; it is no
+				// leg, and TestHeavyLayerRunsOnTheDebouncedPush holds it.
 				continue
 			}
 			if !gatedJobs[leg] {
@@ -828,20 +809,10 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 			t.Errorf("job %q needs no heavy leg yet carries %s: nothing it aggregates may be forgiven a skip", name, lightRunEnv)
 		}
 		// The policy (#3738) reaches the step through prCIEnv, rendered from
-		// the eligible and ignored-label literals byte for byte, and an
-		// ignored label's verdict through labelVerdictEnv, the decider's
-		// output for this aggregator — never through another spelling that
-		// could read `run` where the legs skipped.
+		// the light literal byte for byte — never through another spelling
+		// that could read `run` where the legs skipped.
 		if got := job.Env[prCIEnv]; !sameExpression(got, prCIValue) {
 			t.Errorf("job %q carries %s=%q, want exactly %q", name, prCIEnv, got, prCIValue)
-		}
-		if want, ok := labelVerdictValues[name]; !ok {
-			t.Errorf("job %q is an aggregator labelVerdictValues does not know: which verdict of %s does it repeat?", name, labelVerdictJob)
-		} else if got := job.Env[labelVerdictEnv]; !sameExpression(got, want) {
-			t.Errorf("job %q carries %s=%q, want exactly %q", name, labelVerdictEnv, got, want)
-		}
-		if !slices.Contains(job.Needs, labelVerdictJob) {
-			t.Errorf("job %q does not need %s: GitHub renders its output empty there, and an ignored label's run would read no verdict", name, labelVerdictJob)
 		}
 		for key, value := range job.Env {
 			if key != lightRunEnv && key != prCIEnv && strings.Contains(value, "pull_request") {

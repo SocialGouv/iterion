@@ -90,16 +90,12 @@ permissions:
 # release push landing behind a merge displaces only a run still pending. No
 # `queue:` key: it would keep every pending run. Every other
 # event cancels in progress, so a newer commit of a pull request still cancels
-# the older run — save one: a `labeled` event whose label is neither `ci:run`
-# nor `ci:full` (the ignored-label literal, #3738). It shares the pull
-# request's group and cancels nothing, so it never stops a real run: it waits
-# behind the run in progress and, once that run concluded, repeats its
-# verdict (the `label-verdict` job). A newer commit or a `ci:run` label still
-# cancels it like any pull request run, and a second ignored label replaces it
-# while it is pending.
+# the older run, and so does a label (#3738): a `labeled` run is a
+# synchronize of the same head, judged on the labels it carries, so the run
+# it replaces loses nothing the new one does not redo.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full') }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 # EXPERIMENTAL DELIVERY MODE (docs/adr/173-experimental-delivery-mode.md,
 # #3691): while the project is experimental the merge queue gates on the
@@ -129,33 +125,39 @@ concurrency:
 #
 # PULL REQUEST CI ON DEMAND (#3738): a pull request runs the light layer only
 # when it asks. A second literal, the LIGHT literal, sits in front of every
-# job but `brand`, `heavy-gate`, `label-verdict` and the two aggregators:
+# job but `brand`, `heavy-gate` and the two aggregators:
 #
-#   ((github.event_name != 'pull_request'
-#       || contains(github.event.pull_request.labels.*.name, 'ci:run')
-#       || contains(github.event.pull_request.labels.*.name, 'ci:full')
-#       || github.event.pull_request.user.type == 'Bot'
-#       || github.event.pull_request.head.repo.full_name != github.repository)
-#     && !(github.event_name == 'pull_request'
-#       && github.event.action == 'labeled'
-#       && github.event.label.name != 'ci:run'
-#       && github.event.label.name != 'ci:full'))
+#   (github.event_name != 'pull_request'
+#     || contains(github.event.pull_request.labels.*.name, 'ci:run')
+#     || contains(github.event.pull_request.labels.*.name, 'ci:full')
+#     || github.event.pull_request.user.type == 'Bot'
+#     || github.event.pull_request.head.repo.full_name != github.repository)
 #
-# Its first half, the ELIGIBLE literal, is true on every event that is no pull
-# request — the merge queue, push, the nightly and a dispatch keep their
-# layers untouched — and on a pull request labelled `ci:run` (or `ci:full`,
-# which keeps meaning the heavy layer too), opened by a bot (an App's user is
-# of type `Bot`: renovate, tokenbureau, dependabot) or from a fork. Its second
-# half, the IGNORED-LABEL literal, is a `labeled` event for any other label:
-# that run runs nothing and repeats the verdict of the run before it (see the
-# concurrency block and `label-verdict`). On an unlabelled session pull
-# request, which is not eligible, `test` and `race` FAIL with a message that
-# names the policy and both ways out — the `ci:run` label or the train
-# (`task ci:train`) — rather than skip: a skipped required check reports
-# SUCCESS, and a pull request nothing tested would be green. They learn which
-# case they are in from PR_CI, rendered from the same two literals: `run`,
-# `refused` or `mirror`. `brand` runs on every pull request as before: it is
-# the tap skip's verifier, and nothing skips it.
+# It is true on every event that is no pull request — the merge queue, push,
+# the nightly and a dispatch keep their layers untouched — and on a pull
+# request labelled `ci:run` (or `ci:full`, which keeps meaning the heavy layer
+# too), opened by a bot (an App's user is of type `Bot`: renovate,
+# tokenbureau, dependabot) or from a fork. It reads the labels the pull
+# request CARRIES, the same way on every activity type: `labeled` is a
+# trigger so that labelling starts the run, and a `labeled` payload already
+# holds the new label, so ANY label is a synchronize of the same head —
+# `epic:…` on a `ci:run` pull request reruns the light layer, on an
+# unlabelled one it refuses again. On a session pull request that did not
+# ask, `test` and `race` FAIL with a message that names the policy and both
+# ways out — the `ci:run` label or the train (`task ci:train`, which refuses
+# a pull request touching .github/, scripts/ci/, Taskfile.yml or devbox.*:
+# those need the label) — rather than skip: a skipped required check reports
+# SUCCESS, and a pull request nothing tested would be green. They learn it
+# from PR_CI, `refused` or `run`, rendered from the same literal. `brand`
+# runs on every pull request as before: it is the tap skip's verifier, and
+# nothing skips it. `vendor-check`, `golangci` and `fmt-check`, required and
+# skipped on a refusal, `needs: brand`: a skipped job reports SUCCESS the
+# moment it is created, and `test` is created only when its legs concluded,
+# so a skipped required job created first would be the newest — green —
+# check of its name before the refusal exists. Behind brand they are created
+# only after brand, whose check run is pending from the run's first instant,
+# ran its steps on a runner, while `test`, whose legs all skip at that
+# instant, is created as soon as they do.
 #
 # Jobs pick one of THREE sides of the merge queue, and internal/ciguard holds
 # each side to its contract:
@@ -200,8 +202,8 @@ concurrency:
 #      `!cancelled()`, the light literal and the heavy literal: they skip the
 #      queue, a light pull request and a light push. The other advisory jobs
 #      carry `github.event_name != 'merge_group'` and the light literal.
-#      `heavy-gate`, the decider, runs on push alone, and `label-verdict` on
-#      an ignored label alone, so both skip the queue too.
+#      `heavy-gate`, the decider, runs on push alone, so it skips the queue
+#      too.
 
 # The trap the aggregator design answers, twice over: a job skipped by a
 # job-level `if:` reports SUCCESS, so a required check that never ran
@@ -371,51 +373,6 @@ jobs:
           HEAVY_EVERY_HOURS: ${{ vars.CI_HEAVY_EVERY_HOURS || '6' }}
         run: scripts/ci/heavy-gate.sh
 
-  # ---- the verdict a label that asks for no CI repeats ----
-
-  label-verdict:
-    # PULL REQUEST CI ON DEMAND (#3738): `labeled` is a trigger so that the
-    # `ci:run` and `ci:full` labels start a run, and GitHub fires it for EVERY
-    # label — `epic:…`, renovate's `dependencies` a second after it opens its
-    # pull request. Such a run runs nothing (the light literal is false on
-    # it), but its jobs still write check runs under the required names, and
-    # a job its `if:` skips reports SUCCESS: a run of skipped jobs would turn
-    # the red `test` of the run before it green. So the run REPEATS that
-    # verdict: the concurrency block queues it behind the pull request's run
-    # in progress (it cancels none), this job reads the newest earlier run of
-    # tests.yml on the same head commit that reached a verdict
-    # (scripts/ci/label-verdict.sh), and `test` and `race` report what it
-    # read. `brand`, the one required job that runs on every pull request,
-    # runs again. Where this job fails its outputs are empty, and both
-    # aggregators read that as red.
-    #
-    # Its `if:` is the eligible literal and the ignored-label literal, both
-    # read by the aggregators' PR_CI: on a pull request that did not ask for
-    # CI the aggregators refuse it whatever the label, with nothing to repeat.
-    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      test: ${{ steps.verdict.outputs.test }}
-      race: ${{ steps.verdict.outputs.race }}
-    steps:
-      - name: Checkout the reader
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: scripts/ci/label-verdict.sh
-          sparse-checkout-cone-mode: false
-
-      - name: Repeat the verdict of the run before this one
-        id: verdict
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          LABEL: ${{ github.event.label.name }}
-        run: scripts/ci/label-verdict.sh
-
   # ---- gated legs: the real work, one side each, aggregated by `test` ----
 
   test-unit:
@@ -438,7 +395,7 @@ jobs:
     # on the LAST shard, away from it. Should the weights ever put them
     # together, that shard still fits the ceiling.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    if: "${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
     # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
     # excluded from the partition and proved by test-native-exec instead.
@@ -706,7 +663,7 @@ jobs:
     # A Homebrew tap update skips it too: the header says why, and `brand`
     # verifies it.
     needs: [heavy-gate]
-    if: "${{ !cancelled() && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_HEAVY_RUNNER || 'arc-runners' }}
     timeout-minutes: 50
     strategy:
@@ -787,7 +744,7 @@ jobs:
     # queue behind the required `test` aggregator; carries the light literal
     # and the tap skip, nothing else.
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    if: "${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_LARGE_RUNNER || 'arc-runners' }}
     timeout-minutes: 15
     steps:
@@ -863,7 +820,7 @@ jobs:
     # aggregators `needs:` it: `test` for the plain run, `race` for the race
     # run, so neither verdict loses the package (#3662).
     # A Homebrew tap update skips this leg: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    if: "${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_NATIVE_EXEC_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
@@ -936,16 +893,13 @@ jobs:
     # its output is empty, the run is heavy, and every heavy leg must pass.
     #
     # PULL REQUEST CI ON DEMAND (#3738): before any leg, the step reads PR_CI,
-    # rendered from the eligible and ignored-label literals (the header).
-    # `run` verifies the legs as above. `refused` — a session's pull request
-    # without `ci:run` or `ci:full`, neither a bot's nor a fork's, whose legs
-    # all skipped — FAILS with the policy and both ways out (the label, or
-    # the train): a skip here would be a green required check over nothing.
-    # `mirror` — a label that asks for no CI — reports label-verdict's `test`
-    # output, the verdict of the run before it on this commit; anything but
-    # `success`, an empty output included, is red. label-verdict is needed
-    # for its output alone, like heavy-gate.
-    needs: [heavy-gate, label-verdict, test-unit, test-e2e, studio, test-native-exec]
+    # rendered from the light literal (the header). `run` verifies the legs
+    # as above. `refused` — a session's pull request without `ci:run` or
+    # `ci:full`, neither a bot's nor a fork's, whose legs all skipped — FAILS
+    # with the policy and both ways out (the label, or the train): a skip
+    # here would be a green required check over nothing. Any other value is
+    # red.
+    needs: [heavy-gate, test-unit, test-e2e, studio, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 5
@@ -954,8 +908,7 @@ jobs:
       TEST_E2E_RESULT: ${{ needs.test-e2e.result }}
       STUDIO_RESULT: ${{ needs.studio.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
-      PR_CI: ${{ (!(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && 'refused') || ((github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full') && 'mirror') || 'run' }}
-      LABEL_VERDICT: ${{ needs.label-verdict.outputs.test }}
+      PR_CI: ${{ (!(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && 'refused') || 'run' }}
       LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every leg reported success
@@ -965,19 +918,11 @@ jobs:
           case "${PR_CI:-}" in
             run) ;;
             refused)
-              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally."
-              exit 1
-              ;;
-            mirror)
-              if [ "${LABEL_VERDICT:-}" = "success" ]; then
-                echo "::notice::a label that asks for no CI started this run: it ran nothing and repeats the green verdict of the run before it on this commit (the label-verdict job names that run)."
-                exit 0
-              fi
-              echo "::error::a label that asks for no CI started this run: it ran nothing and repeats the verdict of the run before it on this commit, '${LABEL_VERDICT:-no answer}' — the label-verdict job names that run and why."
+              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves."
               exit 1
               ;;
             *)
-              echo "::error::PR_CI is '${PR_CI:-}', none of run, refused or mirror — red rather than a guess."
+              echo "::error::PR_CI is '${PR_CI:-}', neither run nor refused — red rather than a guess."
               exit 1
               ;;
           esac
@@ -1035,7 +980,7 @@ jobs:
     # A Homebrew tap update skips it too: the header says why, and `brand`
     # verifies it.
     needs: [heavy-gate]
-    if: "${{ !cancelled() && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     # On the scale set: the namespace-bound package (pkg/sandbox/kubernetes,
     # whose native witnesses need a Bubblewrap mount ARC pods refuse) is
     # excluded from the partition and proved by test-native-exec instead.
@@ -1137,18 +1082,16 @@ jobs:
     # every event the light literal admits.
     #
     # PULL REQUEST CI ON DEMAND (#3738): the `test` aggregator's PR_CI rule,
-    # byte for byte — `refused` fails with the policy, `mirror` reports
-    # label-verdict's `race` output — so the context keeps the required
-    # contract it returns to when the experimental mode ends.
-    needs: [heavy-gate, label-verdict, race-shard, test-native-exec]
+    # byte for byte — `refused` fails with the policy — so the context keeps
+    # the required contract it returns to when the experimental mode ends.
+    needs: [heavy-gate, race-shard, test-native-exec]
     if: "${{ !cancelled() && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 5
     env:
       RACE_SHARD_RESULT: ${{ needs.race-shard.result }}
       TEST_NATIVE_EXEC_RESULT: ${{ needs.test-native-exec.result }}
-      PR_CI: ${{ (!(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && 'refused') || ((github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full') && 'mirror') || 'run' }}
-      LABEL_VERDICT: ${{ needs.label-verdict.outputs.race }}
+      PR_CI: ${{ (!(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && 'refused') || 'run' }}
       LIGHT_RUN: ${{ !((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     steps:
       - name: Every shard reported success
@@ -1158,19 +1101,11 @@ jobs:
           case "${PR_CI:-}" in
             run) ;;
             refused)
-              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally."
-              exit 1
-              ;;
-            mirror)
-              if [ "${LABEL_VERDICT:-}" = "success" ]; then
-                echo "::notice::a label that asks for no CI started this run: it ran nothing and repeats the green verdict of the run before it on this commit (the label-verdict job names that run)."
-                exit 0
-              fi
-              echo "::error::a label that asks for no CI started this run: it ran nothing and repeats the verdict of the run before it on this commit, '${LABEL_VERDICT:-no answer}' — the label-verdict job names that run and why."
+              echo "::error::pull request CI on demand (#3738, docs/merge-policy.md#pull-request-ci-on-demand): a session's pull request runs no CI unless it asks, and this one carries neither \`ci:run\` nor \`ci:full\` and is neither a bot's nor a fork's. This check is red by POLICY, not by a test: nothing ran. Two ways out: add the \`ci:run\` label (\`ci:full\` for the heavy layer too) — labelling starts a run, while re-running this one does not, it reads the labels of the event that started it — or land it through the train (\`task ci:train\`, scripts/ci/train), which runs the gate locally — except a pull request that touches .github/, scripts/ci/, Taskfile.yml or devbox.*, which the train refuses and only the label serves."
               exit 1
               ;;
             *)
-              echo "::error::PR_CI is '${PR_CI:-}', none of run, refused or mirror — red rather than a guess."
+              echo "::error::PR_CI is '${PR_CI:-}', neither run nor refused — red rather than a guess."
               exit 1
               ;;
           esac
@@ -1209,7 +1144,7 @@ jobs:
     # experimental delivery mode lasts (ADR-173); a regression in the Mongo
     # store lands on `main` and the next heavy push run is what reddens.
     needs: [heavy-gate]
-    if: "${{ !cancelled() && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_HEAVY_RUNNER || 'arc-runners' }}
     # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
     # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
@@ -1367,7 +1302,7 @@ jobs:
   nats-conformance:
     # Advisory: not a required check, so it cannot block a merge — see the
     # merge-queue note at the top of this file.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     # Runs the JetStream integration tests (mixed-version schema rollout,
     # issue #481) against a real broker. Gated on ITERION_TEST_NATS_URI
     # in-tree so a developer's plain `go test ./...` skips them; CI
@@ -1428,7 +1363,7 @@ jobs:
     # the debounced push, the nightly, a dispatch and a pull request that
     # carries the `ci:full` label.
     needs: [heavy-gate]
-    if: "${{ !cancelled() && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
     # Builds the iterion image, spins kind + Helm-installs the cloud
     # stack with its dev Mongo + NATS + SeaweedFS (values-dev.yaml), then
     # exercises the full chain (server → NATS → runner → Mongo →
@@ -1671,7 +1606,10 @@ jobs:
     # drift that caused Sprint-8 to find 14h-old modules.txt against a
     # fresher go.mod. Fail the PR before the drift lands.
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    # It waits for brand and runs behind `!cancelled()` (#3738): skipped on a
+    # refused pull request, it must not be created before that run's `test`.
+    needs: [brand]
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 15
     steps:
@@ -1696,7 +1634,7 @@ jobs:
   helm-lint:
     # Advisory: not a required check, so it cannot block a merge — see the
     # merge-queue note at the top of this file.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     # Catches values typing drift cheaply (~30s) so a broken values.yaml
     # surfaces before the cloud-e2e kind cluster bootstrap. The
     # --strict pass on values-prod.yaml additionally rejects unknown
@@ -1777,7 +1715,10 @@ jobs:
     # positives). Runs in parallel with `test`; ~1-2 min. Add to the
     # branch-protection required checks to gate merges on a clean lint.
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    # It waits for brand and runs behind `!cancelled()` (#3738): skipped on a
+    # refused pull request, it must not be created before that run's `test`.
+    needs: [brand]
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_LARGE_RUNNER || 'arc-runners' }}
     timeout-minutes: 20
     env:
@@ -1896,7 +1837,7 @@ jobs:
     # type error that exists only against 22.04's headers would still reach a
     # release first. Move this the day that one moves. Its dev packages mirror
     # that workflow's Linux step for the same reason.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1924,7 +1865,7 @@ jobs:
     # job-level `runs-on:` where TestSelfHostedRoutingExpressionsAgree can read
     # it. Inside a matrix `include:` it would be invisible to that guard, which
     # would trade two runner slots for a blind spot in a fork guard.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 20
     strategy:
@@ -1950,7 +1891,7 @@ jobs:
   govulncheck:
     # Advisory: not a required check, so it cannot block a merge — see the
     # merge-queue note at the top of this file.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     # govulncheck is call-graph aware (only reports CVEs whose vulnerable
     # functions are actually reachable from this codebase). Trivy's
     # filesystem scan catches the broader set including unused-import
@@ -2028,7 +1969,10 @@ jobs:
     # small one, copied byte-for-byte from vendor-check —
     # TestSelfHostedRoutingExpressionsAgree asserts every copy is identical.
     # A Homebrew tap update skips this job: the header says why, and `brand` verifies it.
-    if: "${{ ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
+    # It waits for brand and runs behind `!cancelled()` (#3738): skipped on a
+    # refused pull request, it must not be created before that run's `test`.
+    needs: [brand]
+    if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ') }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 10
     permissions:
@@ -2060,7 +2004,7 @@ jobs:
     # whole-tree check. To promote this to a required check: delete the
     # merge_group skip and the step-level continue-on-error in the same
     # change, and add it to the ruleset.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2123,7 +2067,7 @@ jobs:
     # No path filter here, deliberately: the change that broke the site was a
     # Go change under pkg/, and the generated pages in docs/references/ are
     # exactly where a Go change lands.
-    if: "${{ github.event_name != 'merge_group' && ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:run' && github.event.label.name != 'ci:full')) }}"
+    if: "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_SMALL_RUNNER || 'arc-runners' }}
     timeout-minutes: 15
     permissions:

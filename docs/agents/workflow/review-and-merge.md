@@ -39,9 +39,11 @@ request runs no CI unless it asks
 ([CI on demand](../../merge-policy.md#pull-request-ci-on-demand)), so the local
 gate is its first witness. To get CI's, add the `ci:run` label (`ci:full` for
 the heavy layer too): labelling starts the run, no push needed. Or land it
-through the train (`task ci:train`). Without either, `test` and `race` are red
-by policy, never skipped. A bot's or a fork's pull request runs automatically;
-any other label runs nothing and repeats the last verdict.
+through the train (`task ci:train`) — except a pull request touching
+`.github/`, `scripts/ci/`, `Taskfile.yml` or `devbox.*`, which the train
+refuses: those need the label. Without either, `test` and `race` are red by
+policy, never skipped. A bot's or a fork's pull request runs automatically;
+any label reruns the pull request as a synchronize would.
 
 ## The operator direct-landing lane (decided 2026-10-22)
 
