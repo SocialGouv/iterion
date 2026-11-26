@@ -1,9 +1,11 @@
 # Quotas and limits
 
 **Audience.** Anyone choosing platform-default values, deciding what to
-set on a paying org, or debugging "why did this run get denied". Both
-the operator-set platform defaults and the per-org overrides documented
-here come from real fields on real records — not aspirational settings.
+override on one org or team, or debugging "why did this run get denied".
+Both the operator-set platform defaults and the per-org and per-team
+overrides documented here come from real fields on real records — not
+aspirational settings. Iterion has no notion of plan or entitlement: an
+override is a value written on the org or team record.
 
 Iterion enforces six distinct limits at run launch and one at the
 webhook intake, plus one authorization rung in front of them, and can
@@ -18,14 +20,21 @@ the retry sweeper's automatic resumes, the scheduled launches, the
 trigger spine and the board dispatcher. The table in
 [Which surfaces are gated](#which-surfaces-are-gated) names them all.
 
-Two families re-enter the engine **outside** it: `POST
-/api/runs/{id}/fork` and `POST /api/runs/{id}/rewind` create a run from
-an EXISTING one, and a resume driven by an existing run's own machinery
-(`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the
-assistant mission and watch coordinators) re-enters the engine on a run
-that already exists. Both are authorized by the run-by-id ladder
-(ADR-103) — a member of the run's team — and neither is metered; that is
-a known follow-up, not a property of the gate. That holds for a TRUSTED
+Two families reach the engine **outside** it. `POST
+/api/runs/{id}/fork` and `POST /api/runs/{id}/rewind` prepare a run from
+an EXISTING one without executing it: a fork parks its new child
+`cancelled`, a rewind parks the run itself `paused_operator`, and either
+executes only once a caller posts `POST /api/runs/{id}/resume` — which
+crosses the gate and is metered like any resume. The fork route itself
+crosses only the [maintenance fence](cloud-deployment.md#local-contracts-and-admission-maintenance)
+(it creates a run); the rewind route crosses no admission check. A
+resume driven by an existing run's own machinery (`/answer-human`,
+`/interactions/{iid}/answer`, `/host-event`, the assistant mission and
+watch coordinators) re-enters the engine on a run that already exists,
+and is not metered. Both families are authorized by the run-by-id ladder
+(ADR-103) — a member of the run's team; the unmetered resumes are a
+known follow-up ([#2401](https://github.com/SocialGouv/iterion/issues/2401),
+item 31), not a property of the gate. That holds for a TRUSTED
 run only: an untrusted (fork review lane) run is never resumed by a
 surface that crossed no gate — see the fork lane paragraph under
 [Limits, fields and platform defaults](#limits-fields-and-platform-defaults).
@@ -73,18 +82,31 @@ The self-hosted single-store mount of `/api/v1/native` is untouched: it
 runs with no identity store, so there is no role to read — the same arm
 `gateLaunch` itself opens with.
 
+One switch precedes even the rung: the operator's
+[maintenance fence](cloud-deployment.md#local-contracts-and-admission-maintenance)
+(`maintenance.fence_launches`). While it is armed — or while its record
+cannot be read; this check fails closed — every new launch is refused
+`maintenance_fence` (503). A super-admin and a resume of an existing run
+pass it.
+
 Then the six limits, in this exact order:
 
-1. **Org status** — team `EffectiveStatus()` ∈ {`active`}. Suspended
-   and read-only orgs short-circuit here.
+1. **Team and org status** — the team's `EffectiveStatus()` and, when
+   the team belongs to an org, the org's. A suspended or read-only team,
+   or a suspended, read-only or pending-deletion org, short-circuits here
+   (`org_suspended` either way).
 2. **Per-repository quota** — when the launch names a repository and a
    quota covers it, its month-to-date consumption (read off
    `pkg/credusage`'s repository dimension) must be under the ceiling. See
    [Budget floors](#budget-floors--holding-capacity-back-from-unreserved-work).
-3. **Concurrency** — `count(active runs for tenant) < MaxConcurrentRuns`
-   ([CountActiveRunsByTenant](../pkg/server/launch_gate.go)). Active =
-   `queued` or `running`.
-4. **Launch rate** — token-bucket `LaunchRatePerMin` per team, rate =
+3. **Concurrency** — `count(active runs for the team) < Team.MaxConcurrentRuns`
+   ([CountActiveRunsByTenant](../pkg/server/launch_gate.go), the tenant
+   being the team). Active = `queued` or `running`. The count and the
+   run's insert are separate operations, not one atomic acquire: launches
+   racing for the last slot — on one replica or several — can all read a
+   free slot and all be admitted, so the cap can be overshot by the
+   number of concurrent admissions.
+4. **Launch rate** — token-bucket `Team.LaunchRatePerMin` per team, rate =
    `perMin/60` per second, burst = `perMin`.
 5. **Monthly run quota** — `AllowRun()` atomically increments the
    month's `org_usage` counter and refuses when the new total exceeds
@@ -94,6 +116,14 @@ Then the six limits, in this exact order:
    decided off the same post-increment document as step 5, in one round
    trip. The run quota is tested first, so an org over both caps is
    answered `monthly_run_quota_exceeded`.
+
+Steps 3 and 4 are per **team** (`Team` fields, counted on the team id);
+steps 5 and 6 are per **org** (`Org` fields, one counter summing every
+team of the org; a team with no org meters on its own id). An untrusted (fork review lane) launch meets one more
+refusal between steps 1 and 2: whether its team's own keys can fund the
+run at all (`fork_run_unfunded` and its siblings — see
+[the fork lane](#limits-fields-and-platform-defaults) below), judged
+before anything is metered.
 
 Step 2 binds only when the launch **names** a repository, which every
 automated lane does at the gate. `POST /api/runs` is the exception in
@@ -147,7 +177,8 @@ prevent (#1725, `runview.RunMayHaveStarted`):
 | `POST /api/v1/triggers/emit` (custom event) | the caller's | pre-check only, per request | **no** — an emit is one EVENT and fans out to 0..N launches; the pre-check's slot is handed back at once and the spine meters each launch it performs |
 | Trigger spine direct launches (`serviceLauncher`: `mode: direct` board triggers, run-completion chains, the emit fan-out, the local schedule source) | `trigger-spine` on the subscription's team | yes | yes — refunded when the refusal proves nothing started; kept on a landed-but-failed publish |
 | `cloudsched` scheduled launches (`launchScheduledBot`) | `cloud-scheduler` on the schedule's team | yes | yes, rolled back on a refused launch |
-| `POST /api/runs/{id}/fork` and `/rewind` (a run created from an existing one), and the resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team; on an untrusted run the resumes are refused instead (`resume_not_admitted`) | **no** — known follow-up |
+| `POST /api/runs/{id}/fork` and `/rewind` (a run prepared from an existing one, parked until a `/resume`) | the caller's | **no** at preparation — authorized by the run-by-id ladder (ADR-103); the fork crosses the maintenance fence, the rewind nothing; the `/resume` that executes either is gated (the `POST /api/runs/{id}/resume` row) | **no** at preparation; the executing `/resume` is |
+| The resumes an existing run's own machinery drives (`/answer-human`, `/interactions/{iid}/answer`, `/host-event`, the assistant mission and watch coordinators) | the caller's, or the run's own | **no** — authorized by the run-by-id ladder (ADR-103), which takes a member of the run's team; on an untrusted run they are refused instead (`resume_not_admitted`) | **no** — known follow-up ([#2401](https://github.com/SocialGouv/iterion/issues/2401), item 31) |
 | Local mode (`iterion studio` / `iterion dispatch` with no identity store, the pipelines admission) | — | no gate exists | — |
 
 On the board dispatcher a denial is a **launch refusal** of the
@@ -155,8 +186,9 @@ dispatcher's transient class, not a verdict on the card
 ([dispatcher.md](dispatcher.md#claim-selection-on-the-cloud-board--what-is-never-claimed)):
 the card returns to its column under the machine provenance
 `launch_refused`, its ledger reads the rule that refused it — `launch
-gate: concurrency_cap_exceeded: org has 3 active runs (cap 3) …` — and
-the next attempt waits out the backoff, so an org at its cap retries its
+gate: concurrency_cap_exceeded: org has 3 active runs (cap 3) …` (the
+code prints "org"; the count and the cap are the card's team's) — and
+the next attempt waits out the backoff, so a team at its cap retries its
 ready cards on the backoff schedule, not on every 5s tick. A cap that
 does not free within the attempt cap files the card `blocked` under
 `launch_given_up` with the rule on it, and the pipeline board shows it
@@ -180,21 +212,27 @@ the row between the match and the record does not lose the edit.
 Every limit has three knobs: an **override field** (on the Org or the
 Team document — see the table), a **platform env var** (the default
 applied when the override field is zero), and a public **denial reason
-token**. Zero means "no limit" everywhere — the safe default for
-existing deployments. The first two rows are the exception: having a
-workspace at all, and the `member` rung inside it, are authorization
-rather than limits — no field, no env var; they are cleared by belonging
+token**. The `ITERION_ORG_DEFAULT_*` names hold for the per-team rows
+too: the platform default applies to each team. Zero means "no limit"
+on every row of this table — the safe default for existing deployments —
+except the fork review lane rows, below. Two quotas outside this table
+read zero differently: a zero memory quota resolves to the 1 GiB default
+([Memory quota](#memory-quota--pointer)), and the webhook call quota has
+no zero and no org override at all ([Webhook call
+quota](#webhook-call-quota--the-separate-axis)). The first two rows are
+not limits: having a workspace at all, and the `member` rung inside it,
+are authorization — no field, no env var; they are cleared by belonging
 to a team and by the caller's role in it.
 
 | Limit | Override field | Platform env var | Denial reason | HTTP |
 |---|---|---|---|---|
 | No workspace: the caller names no team, or one the identity store no longer has | n/a — the caller's team | n/a — not configurable | `no_workspace` | 403 |
 | Below the `member` rung of the team | n/a — the caller's role | n/a — not configurable | `member_role_required` | 403 |
-| Org suspended / read-only | `Status` | n/a — admin action | `org_suspended` | 403 |
-| Concurrent active runs | `MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
-| Launches per minute | `LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
-| Monthly LLM cost cap (USD) | `MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
-| Monthly run quota | `MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
+| Team or org suspended / read-only (an org also when pending deletion) | `Team.Status`, `Org.Status` | n/a — admin action | `org_suspended` | 403 |
+| Concurrent active runs, per team | `Team.MaxConcurrentRuns` | `ITERION_ORG_DEFAULT_MAX_CONCURRENT_RUNS` | `concurrency_cap_exceeded` | 429 (`Retry-After: 30`) |
+| Launches per minute, per team | `Team.LaunchRatePerMin` | `ITERION_ORG_DEFAULT_LAUNCH_RATE_PER_MIN` | `launch_rate_limited` | 429 |
+| Monthly LLM cost cap (USD), per org | `Org.MonthlyCostCapUSD` | `ITERION_ORG_DEFAULT_MONTHLY_COST_CAP_USD` | `monthly_cost_cap_exceeded` | 402 |
+| Monthly run quota, per org | `Org.MonthlyRunQuota` | `ITERION_ORG_DEFAULT_MONTHLY_RUN_QUOTA` | `monthly_run_quota_exceeded` | 402 |
 | Per-repository quota | `budget_floor` platform settings (`repo_quotas`) | n/a — runtime-mutable, no env default | `repo_quota_exceeded` | 402 |
 | Fork review lane: one contributor's monthly run quota (ADR-162) | `Org.ForkAuthorRunQuota` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_RUN_QUOTA` (default **20**) | `fork_author_run_quota_exceeded` | 402 |
 | Fork review lane: one contributor's monthly LLM cost cap (ADR-162) | `Org.ForkAuthorCostCapUSD` | `ITERION_ORG_DEFAULT_FORK_AUTHOR_COST_CAP_USD` (default **$20**) | `fork_author_cost_cap_exceeded` | 402 |
@@ -349,7 +387,7 @@ to a UI-driven launch.
 |---|---|---|
 | `org_usage.runs` | At launch admission (step 5 above) | [pkg/orgusage/orgusage.go:AllowRun](../pkg/orgusage/orgusage.go) |
 | `org_usage.cost_usd` + tokens | At the end of each runner execution attempt, from that attempt's accumulated LLM events | [pkg/runner/loop_spend.go:recordOrgSpend](../pkg/runner/loop_spend.go) calls `orgusage.AddSpend` |
-| `webhook_quotas.count` — one `_id` per org-month, plus one per webhook-month when a per-webhook cap applies | At webhook admission, after the rate limit | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
+| `webhook_quotas.count` — one `_id` per team-month (`org\|<team id>\|<month>`, despite the prefix), plus one per webhook-month when a per-webhook cap applies | At webhook admission, after the rate limit | [pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go) |
 
 The run counter includes **every** launch: REST `POST /api/runs`,
 `POST /api/runs/{id}/resume` (a resume re-enters the engine and spends
@@ -579,10 +617,20 @@ gates already enforce.
 > deployment-wide policy, not the lowered one.
 >
 > A real guarantee needs durable allocation — reserve at admission, settle
-> against actual spend when the attempt ends, reconcile on crash — tracked on
-> [#950](https://github.com/SocialGouv/iterion/issues/950) and **not built**.
-> Its design is
-> [ADR-155](adr/155-reserved-capacity-is-a-durable-allocation.md): what this
+> against actual spend when the attempt ends, reconcile on crash — and it is
+> **not built**. Its design is
+> [ADR-155](adr/155-reserved-capacity-is-a-durable-allocation.md), amended by
+> the operator's decision of 2026-11-24
+> ([on #2968](https://github.com/SocialGouv/iterion/issues/2968)): no separate
+> capacity ledger — the slot axes become subjects of the existing
+> `store.CredSlotStore`. Its tracking epic
+> [#950](https://github.com/SocialGouv/iterion/issues/950) is closed; the
+> units still open are
+> [#2971](https://github.com/SocialGouv/iterion/issues/2971),
+> [#2973](https://github.com/SocialGouv/iterion/issues/2973),
+> [#2974](https://github.com/SocialGouv/iterion/issues/2974),
+> [#2975](https://github.com/SocialGouv/iterion/issues/2975) and
+> [#2980](https://github.com/SocialGouv/iterion/issues/2980). What this
 > deployment enforces is what is documented above, not what that record
 > decides.
 
@@ -812,6 +860,7 @@ Both views share the same JSON shape
 {
   "org": { "id": "…", "name": "…", "status": "active", … },
   "members": 12,
+  "teams": 3,
   "effective_memory_quota_bytes": 1073741824,
   "monthly_run_quota":            1000,
   "runs_this_month":              347,
@@ -820,7 +869,6 @@ Both views share the same JSON shape
   "output_tokens_this_month":      921334,
   "aggregate_tokens_this_month":  2210544,
   "monthly_cost_cap_usd":         80.0,
-  "max_concurrent_runs":          5,
   "active_runs":                  2,
   "webhook_calls_this_month":     410,
   "memory_used_bytes":            73801234,
@@ -837,8 +885,8 @@ Two routes serve it:
 - `GET /api/orgs/{id}/usage` — any member of the org (self-serve
   mirror).
 
-The "effective" values resolve the team override against the platform
-default before returning, so the UI shows the **real** ceiling the gate
+The "effective" values and the two caps resolve the org override against
+the platform default before returning, so the UI shows the **real** ceiling the gate
 would apply.
 
 ## Webhook call quota — the separate axis
@@ -847,14 +895,25 @@ Inbound webhook deliveries have their **own** quota separate from the
 run launch counter
 ([pkg/webhooks/store.go:Counter](../pkg/webhooks/store.go)). It rejects
 the request before the launch gate fires — so a flood of "filtered"
-deliveries (label edits on a noisy MR) still counts toward the org's
+deliveries (label edits on a noisy MR) still counts toward the team's
 webhook budget, but never against the cost cap or run quota.
 
-- Default per-org cap: **10 000 / month**
+- Per-**team** cap: **10 000 / month**, keyed `org|<team id>|<month>` —
+  the webhook's `TenantID` is its team id, whatever the key prefix says
   ([pkg/server/webhooks_routes.go:defaultOrgMonthlyWebhookCalls](../pkg/server/webhooks_routes.go)).
-- Per-webhook tighter override: `Config.MonthlyCallLimit` (0 = inherit).
-- Atomic CAS Mongo counter (`org_usage` reuses the same pattern); a
-  denied call does **not** consume quota.
+  A constant: no env var, no org or team override, and no zero.
+- Per-webhook tighter override: `Config.MonthlyCallLimit` (0 = only the
+  team cap applies).
+- Increment, then roll back on a breach: each counter is one atomic
+  `findOneAndUpdate` `$inc`, and a call that lands over the cap is denied
+  and its increment taken back by a second write. A denied call ends up
+  not consuming quota, but under heavy concurrency the stored count
+  overshoots transiently between the two writes, and a concurrent call
+  can be denied on that overshoot.
+- The usage view's `webhook_calls_this_month` reads this counter under
+  the **org** id (`OrgCount(org.ID)`), while the intake writes it under
+  the team id: for a team whose id differs from its org's, its deliveries
+  do not appear there.
 
 Reset semantics, audit and denial format match the run quota — only the
 quota dimension differs.
@@ -864,7 +923,10 @@ quota dimension differs.
 Memory + knowledge spaces have their own aggregate quota
 (`MemoryQuotaBytes` on the Org document) plus per-visibility sub-caps.
 The counter the write path enforces is keyed per **team**, so each team
-of the org carries the whole ceiling rather than a share of one.
+of the org carries the whole ceiling rather than a share of one — the
+teams that exist when the override is written; a team added later meets
+the 1 GiB default until it is written again
+([#3754](https://github.com/SocialGouv/iterion/issues/3754)).
 The launch gate does **not** evaluate it — memory writes go through a
 separate CAS check inside the memory store. See
 [memory-and-knowledge.md](memory-and-knowledge.md) for the full

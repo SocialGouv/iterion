@@ -52,13 +52,14 @@ the doctrine across them. Decision records:
   bare hash of an e-mail is a dictionary lookup; the pepper is the signing
   key. A key rotation starts a new series. No address → no digest.
 - IP is `s.clientIP(r)`: a forwarded header only from a peer in
-  `TrustedProxyCIDRs`, which no setting fills yet (#2673) — so today the
-  peer's `ip:port`, the ingress pod's behind an ingress. User-agent is the
-  request's.
+  `TrustedProxyCIDRs` (`ITERION_AUTH_TRUSTED_PROXY_CIDRS`, chart
+  `config.auth.trustedProxyCidrs`), otherwise the peer's address — never
+  with its port; the ingress pod's behind an ingress with no trusted range.
+  User-agent is the request's.
 - A 429 writes no row; the log adds no bound. Today's bounds: login and
-  forced rotation per attempted address (burst 5); the per-IP tier is per
-  connection until #2673; register burst 3; the OIDC callback none (an IdP
-  round trip per row). ADR-157 lists them.
+  forced rotation per attempted address (burst 5); the per-IP tier keys on
+  the client address (its /64 for IPv6); register burst 3; the OIDC
+  callback none (an IdP round trip per row). ADR-157 lists them.
 
 ## Retention
 

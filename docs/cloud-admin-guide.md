@@ -301,16 +301,18 @@ exchange, an error the IdP returned — writes no row: it names no subject,
 and the server's `Warn` log is its trace; the login-CSRF guard
 (`agent_binding`) is the exception and is recorded.
 
-**What the recorded IP is, and what bounds a flood.** No deployment
-setting yet trusts a forwarded header: the server's trusted-proxy list is
-wired to no chart value or environment variable (#2673). The recorded IP
-is therefore the immediate peer's address **and port** — behind an
-ingress, the ingress pod's — and the per-IP rate-limit bucket is keyed on
-that same value, so it is per TCP connection rather than per client. What
-bounds the rows today, per route: `POST /api/auth/login` and
+**What the recorded IP is, and what bounds a flood.** The recorded IP is
+the client the server can name, never with its port: a forwarded header is
+read only from a peer inside `ITERION_AUTH_TRUSTED_PROXY_CIDRS` (chart
+`config.auth.trustedProxyCidrs`, the private ranges by default), otherwise
+the socket's address ([trusted proxies](environment-variables.md#trusted-proxies-server)).
+The per-IP rate-limit bucket keys on that same address, widened to its /64
+for IPv6. With no trusted range behind an ingress, that address is the
+ingress pod's, and the whole instance shares one bucket. What bounds the
+rows, per route: `POST /api/auth/login` and
 `POST /api/auth/password/change` also limit per attempted address (burst
 5, 5/min), so one address cannot be hammered faster than that, but
-attempts spread over many addresses and fresh connections are not bounded;
+attempts spread over many client addresses are not bounded;
 `POST /api/auth/password/reset/confirm` and
 `POST /api/auth/desktop/exchange` have the per-IP bucket only;
 `POST /api/auth/register` its own (burst 3); the OIDC callback has no
