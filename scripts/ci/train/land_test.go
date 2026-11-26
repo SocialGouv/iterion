@@ -271,7 +271,11 @@ func greenLot(t *testing.T, f *fixture, prs []PR) *Report {
 }
 
 func lander(f *fixture, gh GitHub) *Lander {
-	return &Lander{Dir: f.dir, Remote: "origin", Git: &gitRunner{}, GH: gh, Log: io.Discard, HeadPoll: time.Millisecond, HeadWait: 5 * time.Second, MergeWait: 50 * time.Millisecond}
+	// MergeWait is short so the paths that end "not merged" stay fast; their
+	// outcome does not depend on it. A test whose merge DOES arrive after
+	// some reads raises it: a wall-clock bound shorter than a loaded runner's
+	// reads is a flake, not a check. HeadWait only bounds a success path.
+	return &Lander{Dir: f.dir, Remote: "origin", Git: &gitRunner{}, GH: gh, Log: io.Discard, HeadPoll: time.Millisecond, HeadWait: time.Minute, MergeWait: 50 * time.Millisecond}
 }
 
 func originMain(t *testing.T, f *fixture) (commit, tree string) {
@@ -584,7 +588,11 @@ func TestLandWaitsForAMergeGitHubFinishesAfterATimeout(t *testing.T) {
 	rep := greenLot(t, f, prs)
 	gh := newFakeGitHub(t, f, prs)
 	gh.lateMerge[1] = true
-	if err := lander(f, gh).Land(context.Background(), rep); err != nil {
+	l := lander(f, gh)
+	// The merge arrives on the third read, whatever the clock: the wait only
+	// has to outlast those reads on a loaded runner.
+	l.MergeWait = time.Minute
+	if err := l.Land(context.Background(), rep); err != nil {
 		t.Fatalf("a merge GitHub finished after a timeout stopped the landing: %v", err)
 	}
 	if len(rep.Landed) != 1 || rep.Landed[0].Merge != gh.merged[1] || !rep.Landed[0].Verified {
