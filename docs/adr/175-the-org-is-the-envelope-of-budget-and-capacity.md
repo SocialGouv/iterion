@@ -43,6 +43,7 @@ The operator's posture bounds this record in two ways. First, nothing is built w
   - a **positive** value is the limit.
 
   This is the convention the fork-author org fields already ship (ADR-162), extended instead of adding a third family. A plan can never make a tenant unbounded by accident, and a tenant can be made unbounded on purpose, in a way that can be grepped.
+- **The env layer keeps its meaning.** The convention above governs the tenant and plan layers, and covers the existing team fields as well as the new ones. The env layer, `ITERION_ORG_DEFAULT_*`, is read exactly as today: unset, 0, negative or invalid means **no cap** (`orgLimitDefaultsFromEnv`). The built-in default below it is **unbounded** on every axis except two, both already shipped: the fork-author bound (20 runs / $20, ADR-162, with its own `unbounded` env literal) and the webhook call quota (10 000). The fold therefore resolves to exactly what `orValue` resolves to today for every deployment that sets no tenant or plan value, the stock chart included.
 - **One resolver.** A single function, `Resolve(ctx, org, team, field)`, folds the layers in order: team, then org, then the plan (D3: the database record, then the Helm file), then `ITERION_ORG_DEFAULT_*`, then the built-in default. It is the only site behind:
   - `gateLaunch`;
   - the org-admin clamp on team caps, which clamps against the resolved org or plan value rather than the env;
