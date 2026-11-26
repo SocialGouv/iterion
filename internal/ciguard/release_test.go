@@ -21,6 +21,7 @@ type releaseStep struct {
 	ID   string            `yaml:"id"`
 	Name string            `yaml:"name"`
 	Uses string            `yaml:"uses"`
+	With map[string]any    `yaml:"with"`
 	If   string            `yaml:"if"`
 	Env  map[string]string `yaml:"env"`
 	Run  string            `yaml:"run"`
@@ -228,6 +229,16 @@ func TestReleaseFollowsAGreenHeavyRunOfMain(t *testing.T) {
 		t.Errorf("the version job checks out at step %d, after the heavy proof at step %d: the proof runs %s from the tree it has not checked out yet", checkout, at[heavyStepID], heavyGateScript)
 	case steps[checkout].If != "" || (hasToken && steps[tokenAt].If != ""):
 		t.Errorf("the checkout (`if: %s`) or the token (`if: %s`) is gated: the heavy proof runs %s from the tree on every run", steps[checkout].If, steps[tokenAt].If, heavyGateScript)
+	}
+	// The proof runs scripts/ci/heavy-gate.sh from the workspace root: a
+	// checkout placed elsewhere, of another repository, or sparse enough to
+	// drop scripts/ leaves that path missing just the same.
+	if checkout >= 0 {
+		for _, key := range []string{"path", "repository", "sparse-checkout"} {
+			if v, ok := steps[checkout].With[key]; ok {
+				t.Errorf("the version job's checkout sets `%s: %v`: the heavy proof runs %s from the workspace root, a full checkout of this repository", key, v, heavyGateScript)
+			}
+		}
 	}
 	order := []string{heavyStepID, dailyStepID, tipStepID, changesStepID, majorStepID, releaseItName}
 	for i := 1; i < len(order); i++ {
