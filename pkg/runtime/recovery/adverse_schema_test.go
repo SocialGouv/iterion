@@ -372,8 +372,16 @@ type ownedExtractionAmbiguous struct{}
 func (ownedExtractionAmbiguous) Error() string         { return "auxiliary transport ambiguous" }
 func (ownedExtractionAmbiguous) AmbiguousEffect() bool { return true }
 func TestOwnedExtractionAllowanceAndControl(t *testing.T) {
-	for _, mode := range []string{"zero", "one", "two", "ambiguous", "joined-cancel", "cancel-only", "deadline", "parent-cancel"} {
+	// parent-cancel-unwatched starts the stream without the cold watchdog:
+	// the provider's ambiguous failure is returned after the cancellation with
+	// no select between them, the order parent-cancel reaches only when the
+	// scheduler picks the provider's arm.
+	for _, mode := range []string{"zero", "one", "two", "ambiguous", "joined-cancel", "cancel-only", "deadline", "parent-cancel", "parent-cancel-unwatched"} {
 		t.Run(mode, func(t *testing.T) {
+			parentCancel := mode == "parent-cancel" || mode == "parent-cancel-unwatched"
+			if mode == "parent-cancel-unwatched" {
+				t.Setenv("ITERION_CLAW_STREAM_COLD_TIMEOUT", "0")
+			}
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("TMPDIR", t.TempDir())
 			t.Setenv("ANTHROPIC_BASE_URL", "")
@@ -401,7 +409,7 @@ func TestOwnedExtractionAllowanceAndControl(t *testing.T) {
 			}
 			reg := model.NewRegistry()
 			reg.Register("anthropic", func(string) (api.APIClient, error) {
-				if mode == "parent-cancel" {
+				if parentCancel {
 					return &ownedExtractionCancelClient{inner: failure, cancel: cancel}, nil
 				}
 				if mode == "ambiguous" || mode == "joined-cancel" || mode == "cancel-only" || mode == "deadline" {
@@ -431,7 +439,7 @@ func TestOwnedExtractionAllowanceAndControl(t *testing.T) {
 				}
 				return
 			}
-			if mode == "parent-cancel" {
+			if parentCancel {
 				var schema *model.OutputSchemaError
 				if err == nil || r.Status != store.RunStatusCancelled || errors.As(err, &schema) {
 					t.Fatalf("PARENT_CANCEL_RECLASSIFIED %v status=%s", err, r.Status)

@@ -22,4 +22,3 @@ github.com/SocialGouv/iterion/pkg/server	TestAssistantWatchSweep_K3HandoverThrou
 github.com/SocialGouv/iterion/pkg/runview	TestAlertsOfASuccessorNeverReachAPredecessorsStream	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertRotationReregistersTheSuccessor	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertEpochEndRetiredQueueAndResume	#3624
-github.com/SocialGouv/iterion/pkg/runtime/recovery	TestOwnedExtractionAllowanceAndControl/parent-cancel	#3588
