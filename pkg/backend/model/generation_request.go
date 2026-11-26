@@ -481,6 +481,7 @@ func callAndAggregate(
 	coldTimeout := resolveClawStreamColdTimeout()
 	idleTimeout := resolveClawStreamIdleTimeout()
 	ch, err := startStreamWithColdWatchdog(ctx, requestCtx, client, req, coldTimeout)
+	opened := err == nil
 
 	// The cold allowance began before StreamResponse was entered. Carry its
 	// remaining time into aggregation instead of accidentally granting a
@@ -492,20 +493,34 @@ func callAndAggregate(
 			err = &StreamIdleError{Phase: StreamIdleCold, Idle: coldTimeout}
 		}
 	}
+	err = streamVerdict(ctx, err)
 	if err != nil {
 		span.Finish(err)
-		if opts.OnResponse != nil {
-			opts.OnResponse(ResponseInfo{
-				Latency: time.Since(start),
-				Error:   err,
-			})
+		// An opened stream went out and may have been served: its call is
+		// booked unreported, as aggregation books one it abandons. On a
+		// cancelled run, a start the cold timer or the cancellation pre-empted
+		// is not booked here, even if its stream opens after the select gave
+		// up (see abandonedCall). The booking rides the hook's usage,
+		// so an observer that books an unreported cancellation itself sees
+		// this one already booked.
+		var booked *aggregatedResponse
+		if opened || errors.As(err, new(*StreamIdleError)) {
+			booked = abandonedCall(err)
 		}
-		if errors.As(err, new(*StreamIdleError)) {
-			return abandonedCall(err), nil
+		if opts.OnResponse != nil {
+			info := ResponseInfo{Latency: time.Since(start), Error: err}
+			if booked != nil {
+				info.Usage = booked.usage
+			}
+			opts.OnResponse(info)
+		}
+		if booked != nil {
+			return booked, nil
 		}
 		return nil, err
 	}
 	agg := aggregateStreamWithIdleWatchdog(ctx, ch, coldRemaining, idleTimeout)
+	agg.err = streamVerdict(ctx, agg.err)
 	// aggregate receives the remaining cold allowance so its timer is exact,
 	// while callers and operators need the configured policy duration in the
 	// typed error rather than an incidental sub-millisecond remainder.
@@ -546,10 +561,63 @@ func callAndAggregate(
 	return &agg, nil
 }
 
+// streamCancelledError is the verdict of a provider call whose failure was
+// classified once its parent context was done. The provider's own outcome —
+// a start error, an error frame, a closed or stalled stream — is then the
+// teardown's echo, and the select that observed it raced the cancellation:
+// classifying it instead would decide the run's terminal status (cancelled,
+// or failed on an ambiguous effect, or retried on a transport fault) by
+// goroutine order.
+//
+// The chain holds the cancellation alone (Unwrap returns Cause), so no typed
+// reader (errors.Is/As, errtrack.IsAmbiguousEffect) classifies the echo. The
+// text holds it alone too: the context-window retry and recovery dispatch
+// match substrings, and a provider message in it would compact and re-ask a
+// cancelled call. Observed keeps the provider's outcome for a reader that
+// asks for it by type.
+type streamCancelledError struct {
+	// Cause is the parent context's error: context.Canceled or
+	// context.DeadlineExceeded.
+	Cause error
+	// Observed is what the provider path reported after the cancellation.
+	Observed error
+}
+
+func (e *streamCancelledError) Error() string {
+	return e.Cause.Error() + " (the provider call failed after its context ended)"
+}
+
+func (e *streamCancelledError) Unwrap() error { return e.Cause }
+
+// streamVerdict is the one point every failing exit of a provider call
+// crosses before it is classified — the stream start, the cold window, every
+// aggregation exit. Once ctx is done, a failure reports the cancellation
+// (streamCancelledError) whichever arm observed it first; a failure that IS
+// the context's error passes unchanged. A nil error stays nil: a response the
+// provider completed is not rewritten by a later cancellation.
+func streamVerdict(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	ctxErr := ctx.Err()
+	if ctxErr == nil || err == ctxErr { //nolint:errorlint // identity, not a chain match: a wrapped or joined error carries more than the cancellation
+		return err
+	}
+	return &streamCancelledError{Cause: ctxErr, Observed: err}
+}
+
 // abandonedCall is the response of a request the cold watchdog gave up on:
 // it went out, and whatever the provider spent on it, nothing reported it.
 // A provider that answered with an error instead served nothing, and
 // callAndAggregate returns that error alone.
+//
+// On a run cancelled while the stream starts, the select decides: a start
+// it received as opened is booked; one the cold timer or the parent's
+// cancellation pre-empted is not, even if its stream opens later. A stream
+// that opens as the cold window ends on a cancelled run is therefore booked
+// 1 or 0 by which arm wins; the extraction observer books that entered call
+// either way. The request of an unbooked call may still have gone out, so
+// the direct path can under-count by one call.
 func abandonedCall(err error) *aggregatedResponse {
 	return &aggregatedResponse{usage: Usage{UnreportedCalls: 1}, err: err}
 }

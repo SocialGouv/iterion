@@ -162,6 +162,7 @@ var serialFamily = map[string]string{
 	"gate_can_ask_test.go":                     "Setenv",
 	"gateway_credential_test.go":               "Setenv",
 	"gateway_routing_test.go":                  "Setenv",
+	"generation_cancel_verdict_test.go":        "Setenv", // also runtime.GOMAXPROCS(1), process-wide: the file stays serial when Setenv is freed
 	"generation_test.go":                       "Setenv",
 	"glm_routes_to_zai_test.go":                "SetCredentialsLookup, Setenv",
 	"human_route_test.go":                      "Setenv",
