@@ -170,8 +170,8 @@ jobs:
           # GITHUB_TOKEN-created releases do not fire `release: published`
           # for downstream workflows (GitHub blocks the recursion); the
           # token-bureau App token keeps that event available. brew-update.yml
-          # does not listen for it: it reads this release's assets after
-          # version.yml's next nightly run.
+          # does not listen for it: it follows this workflow's successful
+          # completion and reads this release's assets then.
           token: ${{ steps.token.outputs.token }}
 
   # No `needs:` — chart packaging is independent of the binary build, so

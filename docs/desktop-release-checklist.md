@@ -42,7 +42,7 @@ If any of these is missing or expired:
 - [ ] Tag and push: `git tag v<X.Y.Z> && git push origin v<X.Y.Z>` (or use the `release-it` flow).
 - [ ] Watch `desktop-release.yml` succeed end-to-end.
 - [ ] Watch `release.yml` (CLI) succeed end-to-end (parallel job on the same tag).
-- [ ] `brew-update.yml` taps the release after the next nightly release run (it follows `version.yml`'s nightly, 00:03–02:21 UTC measured) — or dispatch it with `tag` to tap now. Watch its tap PR merge with the cask SHA.
+- [ ] `brew-update.yml` taps the release when `release.yml` (📦 Release) completes green for its tag — the cask catches up with the desktop ZIP on the tap run Desktop Release's green completion starts — or dispatch it with `tag` to tap now. Watch its tap PR merge with the cask SHA.
 
 ## 6. Post-publish verification
 

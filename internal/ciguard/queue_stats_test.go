@@ -18,7 +18,7 @@ import (
 // was blamed on a push only when the push's commit date fell within 90
 // seconds of the rebuild, so GitHub rebuilding #1967's group 114 seconds after
 // v3.217.0's commit was counted as the queue's own churn — an undercount of
-// the one line the release hold exists to shrink.
+// the one line the once-a-day release exists to shrink.
 const rebuildCauseProgram = "../../scripts/diagnostics/queue-rebuild-cause.awk"
 
 // Epochs of the measured #1967 case, kept as the numbers the script hands the
@@ -104,7 +104,7 @@ const noDiscards = "Queue builds discarded by a direct push to main: 0 (already 
 
 // TestARebuildsCauseIsReadFromTheGroupsBase holds every rule of the
 // attribution to a case, because the number it feeds — "queue builds discarded
-// by a direct push" — is what decides whether the release hold and the queue's
+// by a direct push" — is what decides whether the once-a-day release and the queue's
 // width are working.
 //
 // Mutations seen red, each on its own case (one line of
@@ -143,7 +143,7 @@ func TestARebuildsCauseIsReadFromTheGroupsBase(t *testing.T) {
 			},
 		},
 		{
-			// The expensive case the release hold exists to shrink: a full
+			// The expensive case the once-a-day release exists to shrink: a full
 			// green run thrown away.
 			name: "a build already green when the push hit is counted apart",
 			rows: []buildRow{

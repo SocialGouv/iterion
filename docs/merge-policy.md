@@ -268,11 +268,11 @@ started. A red light push run names a batch; a red heavy job names every batch
 since the last green heavy run. main-watch must tell a heavy run from a light
 one (#3757): a green light run says nothing about the heavy layer.
 
-Automatic releases (`version.yml` on a merge and nightly) can tag and publish
-a commit whose heavy layer has not yet run or has not yet finished: a heavy
-regression can ship in a released version before the next heavy run judges
-it. Gating the release on a green Tests run for its sha is a
-deferred decision.
+An automatic release tags only a commit a green heavy run proved, at most once
+a day ([releases](#releases-and-the-queue)): a heavy regression is caught by
+the heavy run before any tag carries it. Both decisions read the same
+predicate, `scripts/ci/heavy-gate.sh`: a red heavy run keeps every push heavy
+and releases nothing, until a green heavy run lands.
 
 `test-unit` stays on the pull request: it is the fast signal (sharded three
 ways, a 40-minute ceiling against the heavy legs' 50) and carries the
@@ -431,13 +431,11 @@ A code pull request titled like a tap update does not merge: its heavy checks
 skip, `brand` refuses it, and the entry leaves the queue. A push to `main`
 evaluates the predicate false, so `main` still runs everything.
 
-The tap pull request also opens at night. `brew-update.yml` runs when
-`version.yml`'s nightly run completes (00:03–02:21 UTC on its 27 runs since
-2026-09-11), not on a cron of its own: GitHub fired its 04:37 UTC cron between
-10:46 and 12:21 UTC, inside the queue's working hours. Over 2026-09-12..10-12
-each hour from 00:00 to 05:59 UTC saw 2-7 merges in all, against 19-37 for
-each hour from 06:00 to 21:59. It taps the newest tag whose CLI artefacts are
-complete, so the nightly's own tag, still building, waits for the next night;
+The tap pull request opens at most once a day, like the release it follows.
+`brew-update.yml` runs when `release.yml` (📦 Release) completes green for a
+tag — the moment that tag's CLI binaries are attached — so a release is tapped
+as soon as it can be. It taps the newest tag whose CLI artefacts are complete,
+so a tag whose build failed is passed over;
 a cask left behind is caught up once its release holds the desktop ZIP; and
 nothing walks the tap back — `update-brew-tap.sh` never writes a version
 below the one a file carries, and `brew-tap-pr.sh` opens a pull request only
@@ -616,87 +614,87 @@ Two consequences worth stating plainly:
 - **The durable fix is queue throughput, not exceptions.** Every direct push to
   `main` invalidates every merge group in flight: each one rebuilds from
   scratch on the new base. That is why the brew-tap update lands through the
-  queue as its own pull request, and why the release waits for the queue to
-  drain ([below](#releases-and-the-queue)); an exception buys the rebuild back
-  for one PR only.
+  queue as its own pull request, and why a release lands at most once a day
+  ([below](#releases-and-the-queue)); an exception buys the rebuild back for
+  one PR only.
 
 ## Releases and the queue
 
-A release is a direct push to `main` — `version.yml` runs release-it, which
-commits `chore: release vX.Y.Z` and its tag, the token-bureau App bypassing
-the ruleset — so it invalidates every merge group in flight like any other
-direct push. Releasing after every merge discards the build of whatever is
-queued behind the merged PR while it runs. Measured with `task ci:queue-stats`
-over 2026-09-22..28: 58 releases for 102 merges, and 20 queue
-builds discarded by a direct push while they ran — 15 by a release commit, 5 by
-a pull request merged directly (31 of the 102 skipped the queue through the
-admin bypass, and each of those is a direct push too). Over 2026-09-01..28: 387
-of 1096 queue builds, 242 of them by a release.
+A release is cut only after a **green heavy run** of `🧪 Tests` on `main`, at
+most **once a day**, and only for the **commit that run proved**
+([#3741](https://github.com/SocialGouv/iterion/issues/3741), decided
+2026-11-26). Every tag is therefore proven by the heavy layer — race, e2e,
+mongo and cloud-e2e — and none is cut after each merge.
 
-So `version.yml` holds a **merged pull request's** release while a merge group
-is building — any `gh-readonly-queue/main/*` branch exists — and the merge that
-drains the queue releases everything merged since the last tag. The **nightly**
-(22:27 UTC) and a **`workflow_dispatch`** release regardless, without reading
-the queue at all: the nightly is the backstop for a queue that drains without a merge (its
-last entry ejected) or never drains, and a dispatch is an operator's explicit
-request. A release delayed by a busy queue therefore waits at most until the
-next drain or the next nightly; to ship now, dispatch it.
+`version.yml` runs on `workflow_run` of `🧪 Tests` completing on `main`. The
+job starts for a Tests run of this repository's `main` that **succeeded** and
+came from a push, the schedule or a dispatch — never a pull request's or a
+merge group's run. Then, in order, each step gating the next:
 
-GitHub sometimes leaves a `gh-readonly-queue/main/*` branch behind after its
-group merged (seen on mastodon, cilium, zed, flutter). Counted as a live
-group, one such orphan would hold every merged PR's release until the nightly.
-A branch is named after the pull request at the tail of its group
-(`pr-<n>-<base>`), and a group only exists while that pull request waits in
-the queue, so the hold counts a branch only while its pull request is **open**
-— and, as a backstop for one dequeued but kept open, while its head commit
-(dated when the entry was queued; rebuilds keep the date) is less than a day
-old; from their last enqueue to their merge, the 221 queue merges of
-2026-09-15..29 waited 16 minutes at the median and 80 at most.
-The job's log names every branch it ignored with its pull request's state:
-check it, then **delete it** — `gh api -X DELETE
-repos/SocialGouv/iterion/git/refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`.
+1. **The run was a green heavy run.** The step asks
+   `scripts/ci/heavy-gate.sh --judge-run <run> <attempt>` about the very
+   attempt that completed: green when it concluded `success` with every
+   `race-shard (N)` job a success. A light run skips them (see
+   [light runs, heavy main](#light-runs-heavy-main)), and a skipped leg proves
+   nothing: the run skips with a notice naming the reason. Whatever triggered
+   the heavy layer — a push, the schedule or a dispatch — the jobs say whether
+   it ran. An attempt the script cannot read fails the step: no release on a
+   guess.
+2. **At most one release a day.** The newest `v*` tag younger than 20 hours
+   (`MIN_TAG_AGE_HOURS`) skips the run with a notice; the next green heavy run
+   past the mark releases. 20 rather than 24, so a heavy run that comes a few
+   hours earlier the next day still releases.
+3. **The proven commit only.** The run moves to `main`'s tip and releases only
+   when that tip is the run's `head_sha`. A commit merged since was never
+   judged by the heavy layer: the run skips with a notice naming both commits,
+   and the next green heavy run releases.
+4. **Something to release** since the last tag, then the
+   [major hold](#the-major-hold), then release-it.
 
-The hold is **best effort, not a lock**. The branch list is read just before
-the run moves to `main`'s tip — in that order, so a group that merges between
-the two holds the release rather than leaving release-it on a stale tree — and
-release-it still builds for a few minutes before it pushes; a group that starts
-between the read and the push rebuilds once. What is left is measured, not
-assumed: `task ci:queue-stats` counts the queue builds discarded by a release
-([Measuring the queue](#measuring-the-queue)) — which also counts the nightly
-and dispatched releases that invalidate on purpose; the script cannot tell them
-apart from a merged PR's release that slipped through the window.
+"A green heavy run" has one definition, one jq function in
+`scripts/ci/heavy-gate.sh` read by both the heavy layer's debounce (#3737)
+and the release's judge mode: this repository's push, schedule or dispatch
+run, concluded `success`, every `race-shard (N)` job a success (the debounce
+also requires them inside its window).
 
-**Checked against 2026-11-25**, the day of the
-[queue hygiene](#queue-hygiene-nothing-moves-main-while-entries-are-in-flight-decided-2026-11-25)
-decision, the hold held. Six releases moved `main`. The four cut after a
-merged pull request (v7.35.0 at 02:27 UTC, v7.37.0, v7.38.0, v7.38.1) each
-logged `no merge group in flight — releasing`, and no `merge_group` run of a
-live group was running at their push: at 17:40 the group of #3670 still had
-jobs running, but `golangci` had failed at 17:32 and the hold's branch
-listing no longer had its branch. The two that cancelled groups were
-**dispatched** by the operator: v7.36.0 at 12:17 (the groups of #3646, #3657
-and #3658, started at 12:11, cancelled and rebuilt on the release) and
-v7.36.1 at 16:29 (those of #3592, #3657 and #3680). A dispatch does not read
-the queue, by design: it is the operator's explicit request, and the hold
-does not override it. Queue hygiene puts the check on the operator instead:
-**dispatch a release only on an empty queue**, or leave it to the next drain
-or to the nightly, which GitHub fires in the queue's quiet hours. Sending the
-release commit through the queue instead would need a pull request and a
-queue build per release, and buy no more than the hold already gives an
-automatic release.
+A **red heavy run releases nothing**, and the release waits for the next
+green heavy run of `main` — after the fix lands and the heavy layer runs
+again, which can be hours later. Nothing retries on its own.
+
+A **`workflow_dispatch`** is the operator's explicit request, for a fix that
+cannot wait: it releases `main`'s tip as it finds it, without the heavy-run
+proof or the daily cap. The major hold still answers it. To release now:
+`gh workflow run version.yml --repo SocialGouv/iterion --ref main` (the
+`version` input defaults to `minor`; pass `-f version=patch` or an explicit
+`X.Y.Z`). A dispatch tags a commit no heavy run may have judged — dispatch on
+an empty queue, and only when waiting costs more than that.
+`internal/ciguard/release_test.go` pins the rule and runs each step's own text
+over crafted job listings, tag ages and moved tips.
+
+The release is still a direct push to `main` — release-it commits
+`chore: release vX.Y.Z` and its tag, the token-bureau App bypassing the
+ruleset — so it invalidates every merge group in flight like any other direct
+push. Once a day, that is one rebuild of whatever is queued at that moment.
+Releasing after each merge cost far more: over 2026-09-22..28, 58 releases for
+102 merges, and 15 queue builds discarded by a release commit; over
+2026-09-01..28, 242 of 1096 queue builds. A dispatch reads no queue either:
+**dispatch a release only on an empty queue**
+([queue hygiene](#queue-hygiene-nothing-moves-main-while-entries-are-in-flight-decided-2026-11-25)).
+`task ci:queue-stats` counts the queue builds a release discards
+([Measuring the queue](#measuring-the-queue)).
 
 Two release runs never overlap, whatever triggered them: `version.yml` has one
-concurrency group for every trigger, with `queue: max`, and each run that
-releases moves to `main`'s tip before release-it — a run queued behind a
-release finds it already tagged and releases nothing (a nightly or a dispatch
-checks for new commits first, since a dispatch's explicit increment would
-otherwise cut an empty release). Overlap is what must never happen — when a
-push is rejected, release-it rolls back by deleting the remote tag of the
-version it computed, and if the other run had just pushed that same version,
-that is the other run's tag. `queue: max` is there because a group otherwise
-keeps a single pending run and silently replaces it with the next one: a merged
-pull request's run could replace a pending nightly or dispatch, then hold its
-release while the queue builds.
+concurrency group for every trigger, with `queue: max` and
+`cancel-in-progress: false`, and each run that releases moves to `main`'s tip
+before release-it — a run queued behind a release finds the daily cap reached,
+or nothing new since the tag (every run checks for new commits first, since a
+dispatch's explicit increment would otherwise cut an empty release). Overlap is
+what must never happen — when a push is rejected, release-it rolls back by
+deleting the remote tag of the version it computed, and if the other run had
+just pushed that same version, that is the other run's tag. `queue: max` is
+there because a group otherwise keeps a single pending run and silently
+replaces it with the next one: the run following an ordinary Tests completion
+could replace a pending heavy-run release or dispatch.
 
 ## The major hold
 
@@ -708,7 +706,7 @@ asks a **major hold** before release-it; the decision lives in
 [`scripts/ci/release-major-hold.sh`](../scripts/ci/release-major-hold.sh),
 exercised by `internal/ciguard/release_major_hold_test.go`:
 
-- an **automatic run** — a merged pull request or the nightly — whose
+- an **automatic run** — the release that follows a green heavy run — whose
   recommended version is the next major ends **green** with a notice naming
   the version: no tag is cut, main keeps carrying the breaking change;
 - a **dispatch** of `patch`, `minor`, an explicit same-major version or a
@@ -775,8 +773,8 @@ window in UTC so two periods compare:
   does, so a discarded build now reads as `cancelled` rather than as a full
   run nobody waited for; a build that had already finished red had ejected its
   pull request, so its rebuild is a re-enqueue, counted as the queue's).
-  **Queue builds discarded by a direct push** is the line the release hold
-  above exists to shrink. The attribution is
+  **Queue builds discarded by a direct push** is the line the once-a-day
+  release above exists to shrink. The attribution is
   [`queue-rebuild-cause.awk`](../scripts/diagnostics/queue-rebuild-cause.awk),
   its own program so a harness can run it:
   `internal/ciguard/queue_stats_test.go` holds each of its rules to a crafted
@@ -950,10 +948,9 @@ the [parked gate](#a-parked-gate-decided-2026-11-10) and the direct-landing
 lane wait until no entry is in flight, and so does a release dispatch
 ([releases](#releases-and-the-queue)). No entry is in flight when
 `gh api repos/SocialGouv/iterion/git/matching-refs/heads/gh-readonly-queue/main/`
-lists no branch whose pull request is still open — the test `version.yml`'s
-hold applies, without its one-day age backstop. An incident fix — the
+lists no branch whose pull request is still open. An incident fix — the
 [fast lane](#the-fast-lane-for-an-incident-fix-and-its-exact-procedure), or
 a [hotfix](#direct-pushes-admin-bypass) that un-breaks a red `main` — is the
-one exception, and warns the sessions whose entries it rebuilds. A
-merged pull request's automatic release already follows the rule:
-`version.yml` holds it while a group builds.
+one exception, and warns the sessions whose entries it rebuilds. The
+automatic release does not read the queue: it lands at most once a day, on
+the commit a green heavy run proved.

@@ -20,7 +20,7 @@
 # commit date fell within 90 seconds of the rebuild. GitHub rebuilt #1967's
 # group 114 seconds after v3.217.0's commit (06:30:01Z -> 06:31:55Z) and the
 # rebuild was counted as the queue's own — an undercount of exactly the line
-# the release hold exists to shrink. A base sha is a fact the group carries;
+# the once-a-day release exists to shrink. A base sha is a fact the group carries;
 # "within 90 seconds" was a guess about GitHub's scheduling latency.
 #
 # A base that did NOT move (same sha) is the queue re-forming the same group:
