@@ -24,7 +24,10 @@ var runWindowSort = bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -
 // among the newest runs wins the trial, then walks the rest of the collection
 // for matches a narrower index (updated_desc for a recent `since`) holds in a
 // few hundred keys. At 100 the scan wins only by filling its own limit, which
-// is the cheap case; each later batch is planned again from its keyset bound.
+// is the cheap case. A later batch of the same query shape usually reuses the
+// cached plan, whichever earlier call (of any tenant) left it; Mongo replans a
+// cached plan only past ten times the works it recorded, which bounds what a
+// mismatched cached plan costs rather than excluding it.
 const runWindowBatch = 100
 
 // windowBound is a keyset position in runWindowSort. createdAt and id are
