@@ -32,6 +32,9 @@ const (
 	assistantWatchLease         = 45 * time.Second
 	assistantWatchRetryBusy     = 20 * time.Second
 	assistantAutoWatchCooldown  = 300
+	// assistantWatchSweepPageSize is the number of active watches one sweep
+	// reads per page; a shorter page is the last one.
+	assistantWatchSweepPageSize = 500
 	// assistantWatchHealthPageSize bounds one durable reconciliation pass. A
 	// pending health episode holds the cursor before itself, so later pages
 	// are never skipped when a child was still progressing.
@@ -67,6 +70,7 @@ type assistantWatchCoordinator struct {
 	lastSweepCompletedAt time.Time
 	lastSweepDuration    time.Duration
 	resumeRun            func(context.Context, runview.ResumeSpec) (*runview.LaunchResult, error) // test seam; nil delegates to server.runs
+	sweepPage            int                                                                      // test seam; 0 reads assistantWatchSweepPageSize watches per page
 	// wake carries at most one pending sweep request from a request
 	// goroutine to sweepLoop. A sweep walks the whole store, so a burst of
 	// create/transfer requests must coalesce into ONE extra pass rather
@@ -113,7 +117,7 @@ func (c *assistantWatchCoordinator) snapshot() *assistantWatchCoordinator {
 	defer c.mu.RUnlock()
 	return &assistantWatchCoordinator{
 		server: c.server, runs: c.runs, store: c.store, botPaths: c.botPaths,
-		worker: c.worker, wake: c.wake, resumeRun: c.resumeRun,
+		worker: c.worker, wake: c.wake, resumeRun: c.resumeRun, sweepPage: c.sweepPage,
 		generation: c.generation, origin: c,
 	}
 }
@@ -463,12 +467,16 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 		pass.FailedUnlessDone(ctx, err)
 		return pass.Verdict()
 	}
+	pageSize := c.sweepPage
+	if pageSize == 0 {
+		pageSize = assistantWatchSweepPageSize
+	}
 	var after *runwatch.WatchCursor
 	for upper != nil {
 		if ctx.Err() != nil {
 			return pass.Verdict()
 		}
-		watches, err := ws.ListActivePage(ctx, after, *upper, 500)
+		watches, err := ws.ListActivePage(ctx, after, *upper, pageSize)
 		if err != nil {
 			c.server.logWarn("assistant run watch: list active page: %v", err)
 			pass.FailedUnlessDone(ctx, err)
@@ -534,7 +542,7 @@ func (c *assistantWatchCoordinator) sweep(ctx context.Context) lease.PassVerdict
 		}
 		last := watches[len(watches)-1]
 		after = &runwatch.WatchCursor{CreatedAt: last.CreatedAt, ID: last.ID}
-		if len(watches) < 500 {
+		if len(watches) < pageSize {
 			break
 		}
 	}
