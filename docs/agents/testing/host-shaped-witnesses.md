@@ -8,7 +8,7 @@ dates remain in [the flake register](flakes.md).
 | Package / witness | What the current witness measures | Remaining dependence |
 |---|---|---|
 | `pkg/lease`: `TestRun_aLeaderWhosePassesFindNothingToDoKeepsItsLease` | Virtual-time lease renewal across four TTLs; no healthy peer may take over | The scenario runs in `synctest`, including its waits |
-| `pkg/dsl/parser`: `TestBrokenListSplicesStayLinear` | Quadrupling input against an 8x ratio, using medians of three measurements | Uneven wall-clock stalls can still skew the ratio; the register's earlier min/min description was stale |
+| `pkg/dsl/parser`: `TestBrokenListSplicesStayLinear` | Quadrupling input against a 6x ratio of counted stream and stack-replay steps | None: no clock. A median wall-clock ratio read 8.1x on a loaded pod ([#3731](https://github.com/SocialGouv/iterion/issues/3731)) |
 | `pkg/dsl/expr`: `TestEvalWorkBudgetCountsNodeEvaluations` | An actual budget-exceeded refusal on 18M node evaluations | A two-minute wall-clock tripwire remains; it is not a virtual-time proof |
 | `pkg/botinstall`: `TestAnInstallTakesTheLockOfEveryFileItWritesOrRemoves` | Named lock refusal and unchanged bytes while an owned lock is held | Two-second lock wait and ten-second watchdog remain |
 | `pkg/backend/delegate`: `TestBackground_ADeliveredResultNoLongerHoldsTheGrace` | Delivered-result notification, wrap-up request and elapsed time | Ten-second ceiling against the configured twenty-second result wait remains |

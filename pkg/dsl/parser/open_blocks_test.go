@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestMain holds every openBlocks answer of the suite to the replay of the
@@ -233,53 +232,51 @@ func TestResyncReadsTheStackTheLoopsHold(t *testing.T) {
 // into the flat token slice, every splice recopied the stream's tail, and a
 // source whose broken lists repeat paid the tail per list: measured before
 // the queue, N=2000 → 0.33s, 4000 → 1.33s, 8000 → 5.30s, ×4 per doubling,
-// the memmove of the tail. The witness is the RATIO, never the clock —
-// but "neither figure moves with the machine" proved false at a 2x size
-// ratio: a saturated shard read 3.6x on a linear splice, and the 3x bound
-// sits one notch under the quadratic's 4x. The test therefore quadruples:
-// ~4x when linear, ~16x when quadratic, the bound at 8x — decisive on both
-// sides. Medians of three interleaved runs keep a load spike off the
-// verdict.
+// the memmove of the tail. The witness counts operations, never the clock:
+// a wall-clock ratio, even a median of three interleaved runs, read 8.1x on
+// a linear splice on a loaded ARC pod (#3731), so contention passed for the
+// quadratic. The work the parse does — the tokens its reads hand out, the
+// tokens a splice recopies, the positions the splice queue walks, the
+// tokens the open-block stack replays — is a count the machine cannot
+// inflate: quadrupling the lists quadruples it while every step is linear
+// (measured 4.0x) and multiplies it by ~16 when a splice recopies the tail
+// through Lexer.splice's counted branch, so the 6x bound is decisive on both
+// sides and reads the same on any run. An insertion that bypasses
+// Lexer.splice (a slices.Insert into p.lex.tokens at the rescue, the #2880
+// shape) fails the chokepoint assertion instead: the stream gains tokens
+// splice never counted. Not covered: a recopy written into splice's other,
+// uncounted branches, and a quadratic in the reads that index p.lex.tokens
+// directly (propertySpan's lookback, the `<name> : [` lookback, the
+// close-point memo walk, the open-block replay's readThrough). The suite's
+// cross-checks stay off so the count is the production parse's alone.
 func TestBrokenListSplicesStayLinear(t *testing.T) {
-	withoutOpenBlocksCheck(t, func() {
-		parse := func(lists int) time.Duration {
+	withoutClosePointCheck(t, func() {
+		// work answers the lexer's stream work and the stack's replay apart,
+		// so a red names the one that stopped being linear.
+		work := func(lists int) (stream, replay int) {
 			t.Helper()
 			p := &parser{lex: lexSource("lists.bot", deeperBrokenListsSource(lists), sourceBudget()), file: "lists.bot"}
 			lexed := p.lex.streamLen()
-			start := time.Now()
 			p.parseFile()
-			took := time.Since(start)
 			if errs := p.report.Count(SeverityError); errs < lists {
 				t.Fatalf("%d errors for %d broken lists: the shape never reached the resync", errs, lists)
 			}
 			if p.lex.streamLen() <= lexed {
 				t.Fatalf("%d broken lists spliced nothing: the shape no longer exercises the rescue's splice", lists)
 			}
-			return took
+			if gained := p.lex.streamLen() - lexed; p.lex.spliced != gained {
+				t.Fatalf("the stream gained %d tokens, Lexer.splice inserted %d: a splice bypassed the counted chokepoint", gained, p.lex.spliced)
+			}
+			return p.lex.work(), p.blocks.replayed
 		}
-		const lists = 4000
-		var small, large []time.Duration
-		for r := 0; r < 3; r++ {
-			small = append(small, parse(lists))
-			large = append(large, parse(4*lists))
+		const lists = 1000
+		sStream, sReplay := work(lists)
+		lStream, lReplay := work(4 * lists)
+		s, l := sStream+sReplay, lStream+lReplay
+		if ratio := float64(l) / float64(s); ratio > 6 {
+			t.Fatalf("quadrupling the broken lists cost %.1fx the work (%d then %d steps; stream %.1fx, stack replay %.1fx): a splice recopies the stream's tail, or the open-block stack starts over", ratio, s, l, float64(lStream)/float64(sStream), float64(lReplay)/float64(sReplay))
 		}
-		slices.Sort(small)
-		slices.Sort(large)
-		s, l := small[1], large[1]
-		if s <= 0 {
-			t.Fatalf("the %d-list parse measured %s: no baseline to compare against", lists, s)
-		}
-		// The size ratio is 4x, not 2x: the verdict must keep a decisive
-		// margin on BOTH sides. Quadrupling costs ~4x when the splice is the
-		// queue's cut-and-join and ~16x when it is a recopy, so the 8x bound
-		// sits at the geometric middle — a loaded shard inflating both arms
-		// unevenly (measured: 3.6x at a 2x ratio on a saturated ARC shard,
-		// 2026-10-31/11-01 witnesses, flake register) cannot cross it, and
-		// the quadratic class cannot duck under it.
-		if ratio := float64(l) / float64(s); ratio > 8 {
-			t.Fatalf("quadrupling the broken lists cost %.1fx (%s then %s): the rescue's splice recopies the stream's tail", ratio, s, l)
-		}
-		t.Logf("%d broken lists parsed in %s, %d in %s (%.2fx)", lists, s, 4*lists, l, float64(l)/float64(s))
+		t.Logf("%d broken lists parsed in %d steps, %d in %d (%.2fx)", lists, s, 4*lists, l, float64(l)/float64(s))
 	})
 }
 

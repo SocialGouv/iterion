@@ -169,10 +169,9 @@ func TestARefusedPropertyIsNotRecorded(t *testing.T) {
 	// rerun could clear it. A single-sample ratio still borrows the clock:
 	// the T48 gate (2026-11-02) measured 8.6x against the first 8x bound
 	// because a mid-parse preemption inflates the larger run more than the
-	// baseline. The ratio therefore reads min-of-3 on both sides, the repair
-	// T41 gave TestBrokenListSplicesStayLinear: load only inflates a min,
-	// and a quadratic Set scores ~16x even at ITS best — the 8x bound stays
-	// decisive. Same family, flakes.md carries both.
+	// baseline. The ratio therefore reads min-of-3 on both sides: load only
+	// inflates a min, and a quadratic Set scores ~16x even at ITS best — the
+	// 8x bound stays decisive. The load-margins register carries it.
 	minOf := func(strays int) time.Duration {
 		t.Helper()
 		best := time.Duration(0)
