@@ -325,6 +325,17 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 		}
 		all = append(all, fl)
 	}
+	// Filed before the quarantine pull request step, so a refused or failed
+	// row never leaves the tickets this pass created outside the epic.
+	var own []Issue
+	for _, fl := range all {
+		if fl.own && !slices.ContainsFunc(own, func(is Issue) bool { return is.Number == fl.ticket.Number }) {
+			own = append(own, fl.ticket)
+		}
+	}
+	if err := w.fileUnderEpic(ctx, run, own); err != nil {
+		return err
+	}
 	var pr *PullRequest
 	prNote := ""
 	if len(rows) > 0 {
@@ -389,13 +400,7 @@ func (w *Watcher) flake(ctx context.Context, run Run) error {
 			return err
 		}
 	}
-	var own []Issue
-	for _, fl := range all {
-		if fl.own && !slices.ContainsFunc(own, func(is Issue) bool { return is.Number == fl.ticket.Number }) {
-			own = append(own, fl.ticket)
-		}
-	}
-	return w.fileUnderEpic(ctx, run, own)
+	return nil
 }
 
 // fileUnderEpic files main-watch's own flake tickets under the CI-health

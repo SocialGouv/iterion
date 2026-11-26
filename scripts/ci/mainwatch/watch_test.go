@@ -155,7 +155,7 @@ func TestAGreenRerunFilesAFlakeTicketAndAQuarantinePullRequest(t *testing.T) {
 	if err := w.HandleRun(context.Background(), redRaceRun); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label", "issue", "issue", "branch", "commit", "pr", "auto-merge", "comment", "comment", "sub-issue", "sub-issue"}
+	want := []string{"label", "issue", "issue", "sub-issue", "sub-issue", "branch", "commit", "pr", "auto-merge", "comment", "comment"}
 	if got := f.kinds(); !slices.Equal(got, want) {
 		t.Fatalf("writes = %v, want %v", got, want)
 	}
@@ -208,7 +208,7 @@ func TestAFlakeOutsideTheQuarantinedJobsIsTicketedNotQuarantined(t *testing.T) {
 	if err := w.HandleRun(context.Background(), redMongoRun); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"label", "issue", "comment", "sub-issue"}
+	want := []string{"label", "issue", "sub-issue", "comment"}
 	if got := f.kinds(); !slices.Equal(got, want) {
 		t.Fatalf("writes = %v, want %v (no branch, no pull request)", got, want)
 	}
@@ -1239,6 +1239,22 @@ func TestAFailedSubIssueFilingIsRetriedByTheNextPass(t *testing.T) {
 	got := slices.Sorted(slices.Values(f.subs[flakeEpic]))
 	if !slices.Equal(got, []int64{70010, 70020}) {
 		t.Fatalf("sub-issues of #%d = %v, want both tickets once", flakeEpic, got)
+	}
+}
+
+// A quarantine list the validator refuses fails every pass over the run the
+// same way: the tickets the pass created are still filed under the epic.
+func TestARefusedQuarantineListStillFilesTheTickets(t *testing.T) {
+	f := newFixture(t)
+	recorded(t, f, redRaceRun, 2, "success")
+	w, _ := newWatcher(t, f, &recordingGit{})
+	w.ValidateQuarantine = func([]byte) error { return errors.New("row refused") }
+	if err := w.HandleRun(context.Background(), redRaceRun); err == nil || !strings.Contains(err.Error(), "row refused") {
+		t.Fatalf("err = %v, want the refused quarantine list", err)
+	}
+	got := slices.Sorted(slices.Values(f.subs[flakeEpic]))
+	if !slices.Equal(got, []int64{70010, 70020}) {
+		t.Fatalf("sub-issues of #%d = %v, want both tickets: the refusal is the PR step's, not the filing's", flakeEpic, got)
 	}
 }
 
