@@ -294,8 +294,16 @@ func (c *Completion) sweepOnce(run Run, script string, deadline time.Time) (Swee
 
 // execNeverReached reports whether an exec's failure says its request never
 // reached the container: the client could not start, could not connect to the
-// API server or the container runtime, or could not open the exec's stream.
+// API server or the container runtime, or could not open the exec's stream,
+// or the container runtime refused the exec before its process started.
 // Anything else may have run part of the command, and counts as reached.
+//
+// containerd's CRI service wraps every failure of an exec as "failed to exec
+// in container: …", the ones after the process started (its IO drain, its
+// timeout, its wait) included, so the wrapping alone proves nothing: only the
+// steps execInternal takes before process.Start are listed, each with the
+// wrapping in front. "failed to start exec" stays out: a start that timed out
+// may have left the process running until containerd's deferred kill.
 func execNeverReached(err error, stderr []byte) bool {
 	var pathErr *fs.PathError
 	if errors.Is(err, exec.ErrNotFound) || errors.As(err, &pathErr) {
@@ -312,6 +320,10 @@ func execNeverReached(err error, stderr []byte) bool {
 		"tls handshake timeout",
 		"cannot connect to the docker daemon",
 		"error during connect",
+		"failed to exec in container: failed to get container spec",
+		"failed to exec in container: failed to load task",
+		"failed to exec in container: failed to create exec",
+		"failed to exec in container: failed to wait for process",
 	} {
 		if strings.Contains(msg, needle) {
 			return true

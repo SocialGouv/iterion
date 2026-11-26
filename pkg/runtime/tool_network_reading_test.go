@@ -69,6 +69,22 @@ func TestAToolCommandsNetworkReading(t *testing.T) {
 			wantCounted: false,
 		},
 		{
+			// containerd refused the exec before its process started, and the
+			// sweep, retried, proved nothing ran: the runtime's timeout is the
+			// exec path's, not the command's, and the node is tried again.
+			name: "a sandbox exec containerd refused before the start, swept",
+			failure: func(t *testing.T) error {
+				return &model.ToolExecutionError{Cause: &model.ToolCommandFailure{
+					NodeID:  "publish_health",
+					Outcome: "shell command failed",
+					Cause:   errors.Join(exitError(t, 125), &sandbox.ExecStatusUnknownError{Swept: true, Detail: "the sweep found nothing left running"}),
+					Stderr:  "error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to load task: context deadline exceeded",
+				}}
+			},
+			wantCode:    ErrCodeNetworkTransient,
+			wantCounted: false,
+		},
+		{
 			// The text outside the tool failure is the engine's own, not the
 			// command's data: the full list reads it.
 			name: "a command failure joined with the engine's own network fault",
