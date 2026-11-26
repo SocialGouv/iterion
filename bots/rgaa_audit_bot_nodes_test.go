@@ -288,7 +288,10 @@ func TestRgaaAuditEngineDrivenNodes(t *testing.T) {
 	// Every node after prepare reads run_dir the way the edges hand it over:
 	// prepare's own output. The values map carries that under `input.run_dir`.
 	in := func(extra map[string]any) map[string]any {
-		v := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": std, "run.id": runID}
+		// wave_batches 0 dispatches every batch in one round and max_reask -1
+		// leaves the re-ask count to the loop, the shape these subtests were
+		// written against; the waves have their own subtest (#3746).
+		v := map[string]any{"input.run_dir": run, "input.workspace_dir": site, "input.standard": std, "run.id": runID, "input.wave_batches": 0, "input.max_reask": -1, "input.batch_size": 8}
 		maps.Copy(v, extra)
 		return v
 	}
@@ -811,6 +814,110 @@ L.out({ ok: true, cases: out });
 		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.batch_size": 0}))
 		if r.Code != 0 || rgaaInt(r.Out["count"]) != len(round0) {
 			t.Fatalf("batch_size 0 planned %v batches, the default plans %d", r.Out["count"], len(round0))
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("plan_batches_dispatches_one_wave_and_fold_probe_holds_the_rest_pending", func(t *testing.T) {
+		// #3746: a round carries at most wave_batches batches, so each round
+		// is one iteration of the re-ask loop the budget guard can decline.
+		// The criteria no wave has carried yet stay pending with no prior
+		// issue; one already asked is re-asked only while it has asks left.
+		dir := rgaaRunCopy(t, run)
+		// The copy carries the round the subtest above planned; this one
+		// starts from the worklist's own round 0.
+		for _, p := range []string{filepath.Join(dir, "batches"), filepath.Join(dir, "asked.json")} {
+			if err := os.RemoveAll(p); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r := rgaaRunNode(t, scripts, "plan_batches", site, env, in(map[string]any{"input.run_dir": dir, "input.batch_size": 8, "input.wave_batches": 1}))
+		if r.Code != 0 {
+			t.Fatalf("plan_batches died: %s", r.Stderr)
+		}
+		raw, _ := json.Marshal(r.Out["batches"])
+		var wave []batch
+		if err := json.Unmarshal(raw, &wave); err != nil {
+			t.Fatal(err)
+		}
+		if len(wave) != 1 || rgaaInt(r.Out["count"]) != 1 || wave[0].ID != round0[0].ID {
+			t.Fatalf("wave_batches 1 planned %d batches (%v), want the first batch %s alone", len(wave), r.Out["count"], round0[0].ID)
+		}
+		if held := rgaaInt(r.Out["held"]); held != len(ids)-len(wave[0].IDs) {
+			t.Fatalf("held %d criteria back, want %d", held, len(ids)-len(wave[0].IDs))
+		}
+		if planned, _ := filepath.Glob(filepath.Join(dir, "batches", "r0-*.json")); len(planned) != 1 {
+			t.Fatalf("the wave wrote %d batch files, want 1 — merge_verdicts reads every planned batch of the round as dispatched", len(planned))
+		}
+		var asked map[string]int
+		rgaaReadJSON(t, filepath.Join(dir, "asked.json"), &asked)
+		if len(asked) != len(wave[0].IDs) {
+			t.Fatalf("asked.json counts %v, want the wave's %v", asked, wave[0].IDs)
+		}
+		inWave := map[string]bool{}
+		for _, id := range wave[0].IDs {
+			inWave[id] = true
+			if asked[id] != 1 {
+				t.Fatalf("asked.json counts %s %d times, want 1", id, asked[id])
+			}
+		}
+		mergeVerdicts(t, dir, 0)
+		probe := func(maxReask int) map[string]any {
+			return rgaaOK(t, "fold_probe", rgaaRunNode(t, scripts, "fold_probe", site, env, in(map[string]any{"input.run_dir": dir, "input.round": 0, "input.max_reask": maxReask, "input.wave_batches": 1})))
+		}
+		// One re-ask left: the lost wave is re-asked with its reason, the held
+		// criteria ride as fresh asks with no prior issue.
+		out := probe(1)
+		_, pendingIDs, issues := readPending(t, dir)
+		if len(pendingIDs) != len(ids) || rgaaInt(out["not_asked"]) != len(ids)-len(wave[0].IDs) || rgaaInt(out["reask_spent"]) != 0 {
+			t.Fatalf("max_reask 1: pending %d of %d, not_asked %v, reask_spent %v", len(pendingIDs), len(ids), out["not_asked"], out["reask_spent"])
+		}
+		for _, id := range pendingIDs {
+			if _, has := issues[id]; has != inWave[id] {
+				t.Fatalf("criterion %s (in the wave: %v) carries prior issue %q", id, inWave[id], issues[id])
+			}
+		}
+		if nw := rgaaInt(out["next_wave"]); nw != min(len(ids), 8) {
+			t.Fatalf("next_wave %d, want one batch of at most 8 criteria", nw)
+		}
+		// No re-ask: the asked wave stays open (« à évaluer » in the fold),
+		// the held criteria are still owed their first ask.
+		out = probe(0)
+		_, pendingIDs, _ = readPending(t, dir)
+		if len(pendingIDs) != len(ids)-len(wave[0].IDs) || rgaaInt(out["reask_spent"]) != len(wave[0].IDs) {
+			t.Fatalf("max_reask 0: pending %d, reask_spent %v, want %d and %d", len(pendingIDs), out["reask_spent"], len(ids)-len(wave[0].IDs), len(wave[0].IDs))
+		}
+		for _, id := range pendingIDs {
+			if inWave[id] {
+				t.Fatalf("max_reask 0 re-asks %s, which its wave already carried", id)
+			}
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
+	t.Run("write_fragment_reads_a_criterion_id_spelled_in_the_singular", func(t *testing.T) {
+		// #3746: deepseek-class models answer `criterionId` for the
+		// contract's `criteriaId`. Read as foreign, a whole batch of sound
+		// verdicts was dropped and re-asked.
+		dir := rgaaRunCopy(t, run)
+		b := round0[0]
+		var verdicts []any
+		for i, id := range b.IDs {
+			key := []string{"criterionId", "criterion_id", "criteriaId"}[i%3]
+			verdicts = append(verdicts, map[string]any{key: id, "verdict": "manual", "reason": "undecidable", "justification": "needs a human"})
+		}
+		out := writeFragment(t, dir, b, verdicts)
+		if rgaaInt(out["written"]) != len(b.IDs) || rgaaInt(out["foreign"]) != 0 {
+			t.Fatalf("write_fragment kept %v of %d verdicts, %v foreign: %v", out["written"], len(b.IDs), out["foreign"], out)
+		}
+		// A criterion outside the batch is still foreign, whatever its key.
+		out = writeFragment(t, dir, b, []any{map[string]any{"criterionId": "99.1", "verdict": "manual", "reason": "undecidable", "justification": "x"}})
+		if rgaaInt(out["foreign"]) != 1 || rgaaInt(out["written"]) != 0 {
+			t.Fatalf("a criterion outside the batch was kept: %v", out)
 		}
 	})
 	if t.Failed() {
@@ -3495,21 +3602,30 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 		}
 		return out
 	}
-	// The three ways the trial is skipped: disabled, nothing on trial, the
-	// budget share spent (25 $ of a 30 $ cap past a 0.6 share).
+	// The four ways the trial is skipped: disabled, nothing on trial, the
+	// cost share spent (25 $ of a 30 $ cap past a 0.6 share), the token share
+	// spent — on a cheap or unpriced route the token cap runs out first
+	// (#3746).
+	gateCtx := func(input map[string]any, cost float64, tokens int64) *expr.Context {
+		return &expr.Context{
+			Input: func(p []string) any { return input[p[0]] },
+			Run: func(p []string) any {
+				return map[string]any{"cost_usd": cost, "max_cost_usd": 30.0, "tokens": tokens, "max_tokens": int64(10_000_000)}[p[0]]
+			},
+		}
+	}
 	for name, c := range map[string]struct {
-		input map[string]any
-		cost  float64
+		input  map[string]any
+		cost   float64
+		tokens int64
 	}{
-		"disabled":   {map[string]any{"refute_enabled": false, "claims": int64(4), "share": 0.6}, 1},
-		"no claims":  {map[string]any{"refute_enabled": true, "claims": int64(0), "share": 0.6}, 1},
-		"over share": {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 25},
+		"disabled":         {map[string]any{"refute_enabled": false, "claims": int64(4), "share": 0.6}, 1, 1_000_000},
+		"no claims":        {map[string]any{"refute_enabled": true, "claims": int64(0), "share": 0.6}, 1, 1_000_000},
+		"over share":       {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 25, 1_000_000},
+		"over token share": {map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 1, 7_000_000},
 	} {
 		cn := wf.Nodes["budget_gate"].(*ir.ComputeNode)
-		ctx := &expr.Context{
-			Input: func(p []string) any { return c.input[p[0]] },
-			Run:   func(p []string) any { return map[string]any{"cost_usd": c.cost, "max_cost_usd": 30.0}[p[0]] },
-		}
+		ctx := gateCtx(c.input, c.cost, c.tokens)
 		out := map[string]any{}
 		for _, e := range cn.Exprs {
 			v, err := e.AST.Eval(ctx)
@@ -3520,6 +3636,18 @@ func TestRgaaAuditReviewGateReadsTheTrialOnBothPaths(t *testing.T) {
 		}
 		if out["run_refuter"] != false || out["applied_floor"] != false || out["degraded_floor"] != false {
 			t.Errorf("budget_gate skipped (%s) hands review_gate run_refuter=%v applied=%v degraded=%v, want all false", name, out["run_refuter"], out["applied_floor"], out["degraded_floor"])
+		}
+	}
+	{
+		cn := wf.Nodes["budget_gate"].(*ir.ComputeNode)
+		ctx := gateCtx(map[string]any{"refute_enabled": true, "claims": int64(4), "share": 0.6}, 1, 5_000_000)
+		for _, e := range cn.Exprs {
+			if e.Key != "run_refuter" {
+				continue
+			}
+			if v, err := e.AST.Eval(ctx); err != nil || v != true {
+				t.Errorf("budget_gate under both shares: run_refuter=%v (%v), want true", v, err)
+			}
 		}
 	}
 	for _, flags := range [][2]bool{{true, false}, {false, true}, {false, false}, {true, true}} {

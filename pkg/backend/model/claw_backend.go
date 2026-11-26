@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -522,6 +523,7 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (result d
 	// ends with the node (docs/adr/127-an-agent-nodes-processes-end-with-the-node.md).
 	// A runner whose launcher ends the session draws none: everything here
 	// already carries the launcher's, whose end stops and reports it.
+	ctx = tool.WithTodoScope(ctx, clawTodoScope(ctx, task))
 	if !launcherEndsNodeSession(ctx) {
 		token, since := proc.NewNodeSessionToken(), delegate.NodeSessionSince()
 		ctx = proc.WithNodeSessionEnv(ctx, token)
@@ -1996,6 +1998,27 @@ func clawRunnerHome(ctx context.Context, task delegate.Task) string {
 	}
 	sum := sha256.Sum256([]byte(kind + "\x00" + identity))
 	return clawRunnerHomePrefix + hex.EncodeToString(sum[:])
+}
+
+// clawTodoScope names the delegation whose todo_write checklist this is: the
+// run or fan-out branch (the runner-home identity), the node and its loop
+// iteration. Keyed by the workspace alone, the parallel branches of one
+// fan-out — and the rounds of a loop — shared a single checklist and worked
+// each other's items (#3746). "" when no identity is wired (a library
+// dispatch), which keeps the per-workspace file.
+func clawTodoScope(ctx context.Context, task delegate.Task) string {
+	identity := task.HomeScope
+	if identity == "" {
+		identity = RunnerHomeScopeFromContext(ctx)
+	}
+	if identity == "" {
+		identity = RunIDFromContext(ctx)
+	}
+	if identity == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(identity + "\x00" + task.NodeID + "\x00" + strconv.Itoa(LoopIterationFromContext(ctx))))
+	return hex.EncodeToString(sum[:12])
 }
 
 // executeViaSandboxRunner forwards the task to the iterion-claw-runner

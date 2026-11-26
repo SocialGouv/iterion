@@ -129,8 +129,9 @@ replay, which is `LEDGER_INVALID` with the engine's own message.
 | `browser_path` | — | browser executable the rendered layer launches (`--browser-path` of the engine's probe and scan), e.g. the sandbox image's `/usr/bin/chromium`; empty = `$ULTRA11Y_BROWSER_PATH`, else the engine's own Playwright |
 | `serve_command` / `serve_ready_url` | — | how to serve the site for the scan |
 | `ledger_path` | `.ultra11y/verdicts/<standard>.json` | the committed ledger to replay |
-| `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks |
-| `refute_enabled` / `refuter_budget_share` | true / 0.6 | the second reader and its budget guard |
+| `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks (per criterion, after its first ask) |
+| `wave_batches` / `max_rounds` | 4 / 40 | batches dispatched per round (0 = all at once) and the bound on rounds — the waves plus their re-asks; the budget guard can decline a wave, never a fan-out mid-flight |
+| `refute_enabled` / `refuter_budget_share` | true / 0.6 | the second reader and its budget guard (share of the cost cap and of the token cap) |
 | `human_review` | false | pause on a human gate before the final report |
 | `require_complete` | false | degraded layers become typed failures |
 | `post_to_board` / `board_state` / `board_epic_label` / `findings_cap` | false / inbox / — / 80 | the board transcription (the command, schedule and board invocations set `post_to_board=true`); `findings_cap` 0 files nothing |
@@ -169,12 +170,17 @@ into the run directory, fingerprint-checked), so the job needs Node with
 - **Secret**: `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) — the
   `claude_code` backend's credential. Another provider is a backend/model
   dial (`ITERION_RGAA_BACKEND_*`, `ITERION_RGAA_MODEL_*`, above).
-- **Budget**: the wall of a full run is the token ceiling, not dollars —
-  the bot's default 3M ran out at 91% on a ~100-criterion run;
-  `--max-tokens` raises it, `--max-cost-usd` caps the spend (about 2 $
-  per batch of 8 criteria; a first run with no ledger is ~60 $). A
-  committed ledger (`.ultra11y/verdicts/rgaa.json`) is replayed, so a
-  recurring run only re-adjudicates what changed.
+- **Budget**: the default caps are $30 and 80M tokens. The token cap is
+  sized for a `claw` route, which books every tool-loop step's whole prompt
+  (about 1–3M tokens a batch of 8 criteria, against ~30k on `claude_code`);
+  the cost cap is the real guard. The batches are dispatched in waves of
+  `wave_batches` (4), and the loop budget guard declines the next wave when
+  the budget cannot pay for it: what was decided is folded and the rest is
+  reported « à évaluer », never a run cut mid-fan-out. `--max-cost-usd`
+  and `--max-tokens` move the caps (about 2 $ per batch of 8 criteria on
+  the default models; a first run with no ledger is ~60 $). A committed
+  ledger (`.ultra11y/verdicts/rgaa.json`) is replayed, so a recurring run
+  only re-adjudicates what changed.
 - `rendered=off` keeps the job static; for the rendered layer, serve the
   site with `serve_command` / `serve_ready_url`, install a Chromium and name
   it with `browser_path`.
@@ -201,7 +207,7 @@ jobs:
       - run: iterion bots install https://github.com/SocialGouv/iterion --path bots/rgaa-audit --ref "$ITERION_VERSION"
       - run: |
           iterion run .botz/rgaa-audit --sandbox none --no-interactive \
-            --max-cost-usd 60 --max-tokens 5000000 \
+            --max-cost-usd 60 \
             --var 'scope_globs=src/**' --var rendered=off \
             --var report_dir="$PWD/rgaa-report"
       - uses: actions/upload-artifact@v4
@@ -229,7 +235,7 @@ rgaa-audit:
     - iterion bots install https://github.com/SocialGouv/iterion --path bots/rgaa-audit --ref "$ITERION_VERSION"
     - >-
       iterion run .botz/rgaa-audit --sandbox none --no-interactive
-      --max-cost-usd 60 --max-tokens 5000000
+      --max-cost-usd 60
       --var 'scope_globs=src/**' --var rendered=off
       --var report_dir="$CI_PROJECT_DIR/rgaa-report"
   artifacts:

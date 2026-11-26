@@ -49,6 +49,22 @@ func DefaultTodosPath() string {
 	return TodosPathForKey(clawctx.WorkspaceFingerprint(cwd))
 }
 
+// ScopedTodosPath keys the todo file by the working directory's workspace
+// fingerprint PLUS an embedder-supplied scope, so concurrent delegations in
+// one directory (an iterion fan-out's parallel branches, the rounds of a
+// loop, two runs on one checkout) never read or overwrite each other's
+// checklist. An empty scope is DefaultTodosPath.
+func ScopedTodosPath(scope string) string {
+	if scope == "" {
+		return DefaultTodosPath()
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	return TodosPathForKey(clawctx.WorkspaceFingerprint(cwd) + "-" + scope)
+}
+
 // sanitizeTodosKey keeps keys filesystem-safe.
 func sanitizeTodosKey(key string) string {
 	var b strings.Builder
