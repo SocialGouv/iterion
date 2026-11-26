@@ -23,6 +23,12 @@
 # layer is red, or has not run green, every push stays heavy until a green
 # heavy run lands: a red heavy run never buys a light window.
 #
+# A RERUN keeps the heavy layer: when GITHUB_RUN_ATTEMPT is not 1 the script
+# decides heavy without reading the history. The history lists completed runs
+# only, so it cannot hold the run being rerun: a rerun of a red heavy run would
+# otherwise re-decide light behind an older green one, erase its own red, and
+# hand main-watch a green attempt to read as a flake.
+#
 # The decision fails toward MORE testing, never silently toward less: when the
 # run history cannot be read (API error, unreadable JSON) or the window is not
 # a whole number of hours in 0..720, it says so with a `::warning::` and
@@ -30,7 +36,8 @@
 # every push.
 #
 # Inputs (env): HEAVY_EVERY_HOURS (the repository variable
-# CI_HEAVY_EVERY_HOURS, defaulted by the workflow), GITHUB_REPOSITORY,
+# CI_HEAVY_EVERY_HOURS, defaulted by the workflow), GITHUB_RUN_ATTEMPT (set by
+# the runner; unset reads as a first attempt), GITHUB_REPOSITORY,
 # GITHUB_OUTPUT, GH_TOKEN for `gh`. Output: `heavy=true` or `heavy=false`
 # appended to $GITHUB_OUTPUT, and the reason as a `::notice::`. Exit 0 on every
 # decision; non-zero only when the output itself cannot be written — the
@@ -59,6 +66,10 @@ fi
 hours=$((10#$hours))
 if [ "$hours" -eq 0 ]; then
   decide true "CI_HEAVY_EVERY_HOURS is 0: every push to main runs the heavy layer"
+fi
+
+if [ "${GITHUB_RUN_ATTEMPT:-1}" != 1 ]; then
+  decide true "attempt ${GITHUB_RUN_ATTEMPT} reruns this run: a rerun keeps the heavy layer rather than re-deciding behind a history that cannot hold the run itself"
 fi
 
 now="$(date -u +%s)"

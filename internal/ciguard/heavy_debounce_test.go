@@ -146,6 +146,8 @@ type heavyHistory struct {
 	broken string
 	// garbled, when set, is the API path fragment answered with non-JSON.
 	garbled string
+	// attempt, when set, is the GITHUB_RUN_ATTEMPT the script runs under.
+	attempt string
 }
 
 // heavyRepo is the repository the stand-in gh serves.
@@ -226,6 +228,9 @@ esac
 	}
 	if window != "-" {
 		env = append(env, heavyWindowEnv+"="+window)
+	}
+	if h.attempt != "" {
+		env = append(env, "GITHUB_RUN_ATTEMPT="+h.attempt)
 	}
 	cmd := exec.Command("bash", "--noprofile", "--norc", script)
 	cmd.Dir, cmd.Env = t.TempDir(), env
@@ -326,6 +331,7 @@ func TestHeavyGateDecidesFromTheRunHistory(t *testing.T) {
 			8: with(greenRun(20*time.Minute), func(r *heavyRun) { r.jobs = shards("skipped", "skipped", "skipped") }),
 			9: green,
 		}}, false, false},
+		{"a first attempt behind a green heavy run stays light", "6", func() heavyHistory { h := one(green); h.attempt = "1"; return h }(), false, false},
 		{"no run on main", "6", heavyHistory{}, true, false},
 		{"the window defaults to nothing in the script", "-", one(green), true, true},
 		{"the run list is unreadable", "6", heavyHistory{broken: "/actions/workflows/"}, true, true},
@@ -350,6 +356,16 @@ func TestHeavyGateDecidesFromTheRunHistory(t *testing.T) {
 			}
 		})
 	}
+	// A rerun cannot see itself in a history of completed runs: behind an
+	// older green heavy run, a rerun of a red heavy run would re-decide light
+	// and erase its own red. It keeps the heavy layer without a read.
+	t.Run("a rerun keeps the heavy layer behind a green heavy run, without reading the history", func(t *testing.T) {
+		h := heavyHistory{runs: map[int]heavyRun{7: green}, attempt: "2"}
+		decision, out, calls := runHeavyGate(t, "6", h)
+		if decision != "heavy=true\n" || calls != 0 || strings.Contains(out, "::warning::") || !strings.Contains(out, "attempt 2 reruns this run") {
+			t.Errorf("decision %q after %d gh calls, want heavy=true after none, naming the rerun, without a warning\n%s", decision, calls, out)
+		}
+	})
 	t.Run("a window of 0 runs heavy on every push without reading the history", func(t *testing.T) {
 		decision, out, calls := runHeavyGate(t, "0", heavyHistory{broken: "/"})
 		if decision != "heavy=true\n" || calls != 0 || strings.Contains(out, "::warning::") {

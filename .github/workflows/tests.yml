@@ -297,8 +297,10 @@ jobs:
     # run whose heavy legs ran decides: a push, schedule or dispatch run of
     # this repository, created inside the window plus two hours, concluded
     # success, every `race-shard (N)` job a success. A red heavy run keeps
-    # every push heavy until a green one lands. On an unreadable history or
-    # window it warns and decides heavy — failing toward more testing.
+    # every push heavy until a green one lands. A rerun (GITHUB_RUN_ATTEMPT
+    # above 1) decides heavy without reading the history, which cannot hold
+    # the run being rerun. On an unreadable history or window it warns and
+    # decides heavy — failing toward more testing.
     # CI_HEAVY_EVERY_HOURS=0 runs the heavy layer on every push.
     #
     # Push only: every other event decides by itself (the heavy literal reads
