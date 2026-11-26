@@ -65,7 +65,7 @@ RUN --mount=type=cache,target=/root/go \
 #   trivy    — official install script (handles arch + checksum).
 #   gitleaks — release tarball; asset arch suffix is x64 / arm64.
 # ---------------------------------------------------------------------
-# renovate: datasource=github-releases depName=aquasecurity/trivy
+# renovate: datasource=docker depName=aquasec/trivy
 ARG TRIVY_VERSION=0.70.0
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 ARG GITLEAKS_VERSION=8.21.2

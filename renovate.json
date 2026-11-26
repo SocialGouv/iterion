@@ -79,7 +79,7 @@
       "groupName": "image CLI tools"
     },
     {
-      "description": "Scanners baked into the sec sandbox image (sandbox/sec/Dockerfile), which the security bots run: trivy, gitleaks and osv-scanner, pinned by `# renovate:` comments. Their release tags carry a leading `v` the inline-pin regex does not capture, so the tag is stripped to the bare version. One group, so a scanner refresh is one image rebuild and one PR to judge.",
+      "description": "Scanners baked into the sec sandbox image (sandbox/sec/Dockerfile), which the security bots run: gitleaks and osv-scanner (trivy in the next rule), pinned by `# renovate:` comments. Their release tags carry a leading `v` the inline-pin regex does not capture, so the tag is stripped to the bare version. One group, so a scanner refresh is one image rebuild and one PR to judge.",
       "matchManagers": [
         "custom.regex"
       ],
@@ -87,11 +87,23 @@
         "github-releases"
       ],
       "matchDepNames": [
-        "aquasecurity/trivy",
         "gitleaks/gitleaks",
         "google/osv-scanner"
       ],
       "extractVersion": "^v(?<version>.+)$",
+      "groupName": "sec image scanners"
+    },
+    {
+      "description": "trivy, in the same sec image scanners group. Its versions are looked up on Docker Hub (aquasec/trivy, bare semver tags) because Renovate's GitHub lookups of the aquasecurity repositories answer no-result (#3771); the Dockerfile still downloads the GitHub release asset of that same version.",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchDepNames": [
+        "aquasec/trivy"
+      ],
       "groupName": "sec image scanners"
     },
     {
