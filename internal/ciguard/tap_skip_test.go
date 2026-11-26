@@ -31,7 +31,7 @@ const tapVerifierJob = "brand"
 const (
 	tapVerifierRun      = "./scripts/ci/tap-entry-check.sh"
 	brewUpdateWorkflow  = "../../.github/workflows/brew-update.yml"
-	brewUpdateJobIf     = "github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'workflow_run'"
+	brewUpdateJobIf     = "github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'"
 	brewUpdateJobName   = "update"
 	checkoutActionsName = "actions/checkout@"
 )
@@ -207,23 +207,33 @@ func TestTheTapPullRequestCarriesTheSkipTitle(t *testing.T) {
 	}
 }
 
-// TestTheTapUpdateFollowsTheAutomaticRelease holds brew-update.yml's trigger:
-// the completion of version.yml's automatic run, the one that follows a Tests
-// run of main. A `workflow_run` naming a workflow that does not exist never
-// fires and reports nothing — and the name carries an emoji with a variation
-// selector, so one retyped byte is enough. The event filter must name the
-// event version.yml's automatic run actually carries (`workflow_run`): a filter
-// on an event version.yml no longer has never taps at all, in silence.
-func TestTheTapUpdateFollowsTheAutomaticRelease(t *testing.T) {
-	var version struct {
+// binariesWorkflowPath is release.yml: run from a v* tag, it attaches the CLI
+// binaries the tap formula needs to that tag's GitHub release.
+const binariesWorkflowPath = "../../.github/workflows/release.yml"
+
+// TestTheTapUpdateFollowsTheReleaseBinaries holds brew-update.yml's trigger:
+// the completion of 📦 Release (release.yml), the run that attaches a tag's CLI
+// binaries, and only when it concluded success — the moment the tag can be
+// tapped. A `workflow_run` naming a workflow that does not exist never fires
+// and reports nothing, and the name carries an emoji with a variation
+// selector, so one retyped byte is enough. A dispatch with a `tag` input stays
+// the way to tap one release now. Which tag a run then taps — one whose
+// release holds the four binaries — is brew-tap-resolve.sh's, held by
+// tap_resolve_test.go.
+func TestTheTapUpdateFollowsTheReleaseBinaries(t *testing.T) {
+	var binaries struct {
 		Name string `yaml:"name"`
+		On   struct {
+			Push struct {
+				Tags []string `yaml:"tags"`
+			} `yaml:"push"`
+		} `yaml:"on"`
 	}
-	src, err := os.ReadFile(releaseWorkflowPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", releaseWorkflowPath, err)
+	if err := yaml.Unmarshal(mustRead(t, binariesWorkflowPath), &binaries); err != nil {
+		t.Fatalf("parse %s: %v", binariesWorkflowPath, err)
 	}
-	if err := yaml.Unmarshal(src, &version); err != nil {
-		t.Fatalf("parse %s: %v", releaseWorkflowPath, err)
+	if got := binaries.On.Push.Tags; len(got) != 1 || got[0] != "v*" {
+		t.Errorf("%s runs on push tags %q, want [v*] — the tap follows this workflow because each of its runs is one release tag's binaries", binariesWorkflowPath, got)
 	}
 
 	var brew struct {
@@ -232,30 +242,32 @@ func TestTheTapUpdateFollowsTheAutomaticRelease(t *testing.T) {
 				Workflows []string `yaml:"workflows"`
 				Types     []string `yaml:"types"`
 			} `yaml:"workflow_run"`
+			WorkflowDispatch struct {
+				Inputs map[string]any `yaml:"inputs"`
+			} `yaml:"workflow_dispatch"`
 		} `yaml:"on"`
 		Jobs map[string]struct {
 			If string `yaml:"if"`
 		} `yaml:"jobs"`
 	}
-	src, err = os.ReadFile(brewUpdateWorkflow)
-	if err != nil {
-		t.Fatalf("read %s: %v", brewUpdateWorkflow, err)
-	}
-	if err := yaml.Unmarshal(src, &brew); err != nil {
+	if err := yaml.Unmarshal(mustRead(t, brewUpdateWorkflow), &brew); err != nil {
 		t.Fatalf("parse %s: %v", brewUpdateWorkflow, err)
 	}
 
-	if got := brew.On.WorkflowRun.Workflows; len(got) != 1 || got[0] != version.Name {
-		t.Errorf("brew-update.yml follows workflow_run %q, want exactly [%q] — version.yml's name, byte for byte", got, version.Name)
+	if got := brew.On.WorkflowRun.Workflows; len(got) != 1 || got[0] != binaries.Name {
+		t.Errorf("brew-update.yml follows workflow_run %q, want exactly [%q] — release.yml's name, byte for byte", got, binaries.Name)
 	}
 	if got := brew.On.WorkflowRun.Types; len(got) != 1 || got[0] != "completed" {
 		t.Errorf("brew-update.yml's workflow_run types are %q, want [completed]", got)
+	}
+	if _, ok := brew.On.WorkflowDispatch.Inputs["tag"]; !ok {
+		t.Errorf("brew-update.yml's workflow_dispatch lost its `tag` input — the way to tap one release now")
 	}
 	job, ok := brew.Jobs[brewUpdateJobName]
 	if !ok {
 		t.Fatalf("brew-update.yml defines no %q job", brewUpdateJobName)
 	}
 	if !sameExpression(job.If, brewUpdateJobIf) {
-		t.Errorf("brew-update.yml's %q job runs on `if: %s`, want `if: %s` — a dispatch, or version.yml's automatic run and nothing else", brewUpdateJobName, job.If, brewUpdateJobIf)
+		t.Errorf("brew-update.yml's %q job runs on `if: %s`, want `if: %s` — a dispatch, or a Release run that succeeded and nothing else: a red one may lack the binaries", brewUpdateJobName, job.If, brewUpdateJobIf)
 	}
 }

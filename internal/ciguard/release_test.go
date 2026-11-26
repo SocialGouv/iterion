@@ -253,6 +253,15 @@ func TestReleaseFollowsAGreenHeavyRunOfMain(t *testing.T) {
 			t.Errorf("step %q receives %s as %q, want %q — the fact must come from the event through env", c.step, c.env, got, c.want)
 		}
 	}
+	// "A green heavy run" is one predicate with two sites: this workflow and
+	// scripts/ci/heavy-gate.sh (#3737). The comment naming the twin is what
+	// sends whoever edits one to the other.
+	if !strings.Contains(string(mustRead(t, releaseWorkflowPath)), "scripts/ci/heavy-gate.sh") {
+		t.Errorf("version.yml no longer names scripts/ci/heavy-gate.sh as the twin of its heavy-run predicate — the two definitions can then drift in silence")
+	}
+	if !strings.Contains(steps[at[heavyStepID]].Run, `select(.name | startswith("race-shard"))`) {
+		t.Errorf("the heavy-run proof no longer selects every job whose name starts with race-shard — the predicate shared with scripts/ci/heavy-gate.sh")
+	}
 	for _, id := range []string{heavyStepID, dailyStepID, tipStepID} {
 		if strings.Contains(steps[at[id]].Run, "${{") {
 			t.Errorf("step %q's run embeds a GitHub expression — pass event values through env", id)
@@ -440,6 +449,18 @@ func TestTheDailyCapLetsOneAutomaticReleaseADay(t *testing.T) {
 			tags: map[string]time.Duration{"v7.41.0": 19 * time.Hour}, wantDue: "false", wantLog: "v7.41.0 was cut 19 h ago"},
 		{name: "a tag cut twenty-one hours ago lets it through", event: "workflow_run",
 			tags: map[string]time.Duration{"v7.41.0": 21 * time.Hour}, wantDue: "true"},
+		// The 20 h boundary, a minute on each side.
+		{name: "a tag cut 19h59 ago still holds it", event: "workflow_run",
+			tags: map[string]time.Duration{"v7.41.0": 19*time.Hour + 59*time.Minute}, wantDue: "false", wantLog: "under the 20 h daily cap"},
+		{name: "a tag cut 20h01 ago lets it through", event: "workflow_run",
+			tags: map[string]time.Duration{"v7.41.0": 20*time.Hour + time.Minute}, wantDue: "true", wantLog: "v7.41.0 was cut 20 h ago"},
+		// The newest tag is the newest by CREATION, not by version or name: a
+		// maintenance tag cut an hour ago below an older, higher release
+		// still counts as today's release.
+		{name: "a recent tag with a lower version holds the release", event: "workflow_run",
+			tags: map[string]time.Duration{"v7.41.0": 30 * time.Hour, "v7.40.1": time.Hour}, wantDue: "false", wantLog: "v7.40.1 was cut 1 h ago"},
+		{name: "a recent tag whose name sorts below an older one holds the release", event: "workflow_run",
+			tags: map[string]time.Duration{"v9.9.0": 30 * time.Hour, "v10.0.1": time.Hour}, wantDue: "false", wantLog: "v10.0.1 was cut 1 h ago"},
 		{name: "a young tag outside v* does not count", event: "workflow_run",
 			tags: map[string]time.Duration{"v7.41.0": 30 * time.Hour, "desktop-nightly": time.Hour}, wantDue: "true"},
 		{name: "a dispatch ignores the cap", event: "workflow_dispatch",

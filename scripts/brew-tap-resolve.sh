@@ -11,8 +11,8 @@
 #
 # Without INPUT_TAG it picks the NEWEST tag, at or above the version the
 # formula carries, whose release holds the four CLI binaries the formula
-# needs. A tag still building — the release run's own, when this runs right after
-# it — or whose build failed is passed over, so it never stalls the tap.
+# needs. A tag whose build failed, or another tag still building, is passed
+# over, so it never stalls the tap.
 # Version order (sort -V), not creation order: a maintenance tag cut after a
 # newer release never walks the tap backwards. A pre-release is never tapped
 # (brew-tap-pr.sh refuses one, and sort -V would rank it above its own final).

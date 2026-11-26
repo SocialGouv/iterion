@@ -95,6 +95,14 @@ jobs:
         # completed, not the run's latest attempt, which a rerun may change.
         # No race-shard job at all fails the step: the proof reads a job name,
         # and a rename must not turn into a release rule that never answers.
+        #
+        # "A green heavy run" is ONE predicate, shared with its twin
+        # scripts/ci/heavy-gate.sh (#3737, which debounces the heavy layer on
+        # the last green heavy run): the Tests run concluded success (this
+        # job's `if`) AND every job whose name starts with `race-shard`
+        # concluded success (this step). Change one, change the other in the
+        # same commit: two definitions that drift let a run count as heavy for
+        # one and light for the other.
         id: heavy
         if: github.event_name == 'workflow_run'
         env:
@@ -106,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           legs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}/jobs?per_page=100" \
-            --jq '.jobs[] | select(.name == "race-shard" or (.name | startswith("race-shard ("))) | [.name, (.conclusion // "pending")] | @tsv')"
+            --jq '.jobs[] | select(.name | startswith("race-shard")) | [.name, (.conclusion // "pending")] | @tsv')"
           if [ -z "$legs" ]; then
             echo "::error::Tests run ${RUN_URL} (attempt ${RUN_ATTEMPT}) has no race-shard job — renamed in tests.yml? The heavy-run proof reads that job's legs."
             exit 1

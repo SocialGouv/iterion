@@ -11,8 +11,8 @@ import (
 )
 
 // The behaviour of scripts/brew-tap-resolve.sh: which tag brew-update.yml
-// taps. It runs right after a version.yml run, whose own tag is still
-// building at that moment — the cases below are the ways that timing could
+// taps. It runs when a release's binaries are attached, while another tag may
+// still be building or have failed — the cases below are the ways that could
 // stall the tap, or walk it backwards.
 
 const tapResolveScript = "../../scripts/brew-tap-resolve.sh"

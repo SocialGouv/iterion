@@ -1,25 +1,19 @@
 name: 🍺 Brew Tap Update
 
-# The tap update follows version.yml's AUTOMATIC runs — the run that follows
-# each green Tests run of main, which releases at most once a day (#3741) —
-# not a dispatched release. Measured on #2241 (2026-10): one tap PR per
-# release, with a release after every merge, meant one main commit per merge,
-# and the release train's cadence kept evicting the head of the merge queue —
-# a PR sat CLEAN for three days without merging, each tap commit re-running
-# the group behind it. With one release a day, a tap PR lands at most once a
-# day too.
-#
-# Chained to version.yml rather than on a cron of its own: GitHub fires this
-# repository's schedules 1.5 to 8 hours late, or drops them (four nightlies in
-# a row, 2026-10-02..05), while a Tests run of main completes on every push.
-# Most of those version runs release nothing: the tap run then finds the
-# formula and the cask already current and stops after the resolve.
+# The tap update follows the completion of 📦 Release (release.yml), the
+# workflow that builds a tag's CLI binaries and attaches them to its GitHub
+# release: when it concludes success, the four binaries the formula needs
+# exist, and the tag is tapped right away. A release is cut at most once a day
+# (#3741), so a tap PR lands at most once a day too. Measured on #2241
+# (2026-10): one tap PR per release, with a release after every merge, meant
+# one main commit per merge, and the release train's cadence kept evicting the
+# head of the merge queue — a PR sat CLEAN for three days without merging,
+# each tap commit re-running the group behind it.
 #
 # A run resolves the NEWEST v* tag, at or above what the tap formula carries,
 # whose release holds the four CLI binaries (intermediate releases never need
-# tap entries — the formula points at the latest). The tag the triggering run
-# just cut is usually still building when this runs: it is passed over and
-# tapped by a later version run, instead of stalling every run it builds. The skip only fires
+# tap entries — the formula points at the latest). A tag whose release lacks
+# them is passed over rather than stalling the tap. The skip only fires
 # when BOTH the formula and the cask already carry the tag: a cask left
 # behind catches up with that release's desktop ZIP once it exists, and
 # update-brew-tap.sh's all-or-nothing guard keeps a partial download from
@@ -35,10 +29,10 @@ name: 🍺 Brew Tap Update
 
 on:
   workflow_run:
-    # version.yml's `name:`, byte for byte (the emoji carries a variation
+    # release.yml's `name:`, byte for byte (the emoji carries a variation
     # selector): a workflow_run naming a workflow that does not exist never
     # fires, and says nothing. internal/ciguard compares the two.
-    workflows: ["🏷️ Version"]
+    workflows: ["📦 Release"]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -61,10 +55,10 @@ permissions:
 
 jobs:
   update:
-    # version.yml's automatic runs tap; a dispatched release does not (a
-    # dispatch of this workflow backfills instead). Any conclusion: a run
-    # that failed to release leaves the earlier releases to tap all the same.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'workflow_run'
+    # A Release run that succeeded taps: its tag's binaries are attached. A
+    # red one taps nothing — its binaries may be missing — and the next green
+    # release, or a dispatch with a tag, taps instead.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Get GitHub App Token

@@ -432,12 +432,10 @@ skip, `brand` refuses it, and the entry leaves the queue. A push to `main`
 evaluates the predicate false, so `main` still runs everything.
 
 The tap pull request opens at most once a day, like the release it follows.
-`brew-update.yml` runs when an automatic `version.yml` run completes — the run
-that follows each green Tests run of `main` — not on a cron of its own: GitHub
-fires this repository's crons hours late or drops them. Most of those runs
-find the tap current and stop after resolving the tag. It taps the newest tag
-whose CLI artefacts are complete, so the tag the triggering run just cut,
-still building, waits for a later run;
+`brew-update.yml` runs when `release.yml` (📦 Release) completes green for a
+tag — the moment that tag's CLI binaries are attached — so a release is tapped
+as soon as it can be. It taps the newest tag whose CLI artefacts are complete,
+so a tag whose build failed is passed over;
 a cask left behind is caught up once its release holds the desktop ZIP; and
 nothing walks the tap back — `update-brew-tap.sh` never writes a version
 below the one a file carries, and `brew-tap-pr.sh` opens a pull request only
@@ -651,9 +649,21 @@ merge group's run. Then, in order, each step gating the next:
 4. **Something to release** since the last tag, then the
    [major hold](#the-major-hold), then release-it.
 
+"A green heavy run" is one predicate, shared with the heavy layer's debounce
+(`scripts/ci/heavy-gate.sh`, #3737): the Tests run concluded `success` and
+every job whose name starts with `race-shard` concluded `success`.
+
+A **red heavy run releases nothing**, and the release waits for the next
+green heavy run of `main` — after the fix lands and the heavy layer runs
+again, which can be hours later. Nothing retries on its own.
+
 A **`workflow_dispatch`** is the operator's explicit request, for a fix that
 cannot wait: it releases `main`'s tip as it finds it, without the heavy-run
-proof or the daily cap. The major hold still answers it.
+proof or the daily cap. The major hold still answers it. To release now:
+`gh workflow run version.yml --repo SocialGouv/iterion --ref main` (the
+`version` input defaults to `minor`; pass `-f version=patch` or an explicit
+`X.Y.Z`). A dispatch tags a commit no heavy run may have judged — dispatch on
+an empty queue, and only when waiting costs more than that.
 `internal/ciguard/release_test.go` pins the rule and runs each step's own text
 over crafted job listings, tag ages and moved tips.
 
