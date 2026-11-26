@@ -12,62 +12,256 @@ import (
 )
 
 // ciEvent is one trigger of tests.yml as a job condition sees it: the
-// `github` context the expressions read, whether the experimental delivery
-// mode (docs/adr/173-experimental-delivery-mode.md) runs the heavy layer
-// there, and the `needs` context heavyGateJob leaves behind it.
+// `github` context the expressions read; whether the light layer runs there
+// (lightLiteral, pull request CI on demand, #3738); whether the experimental
+// delivery mode (docs/adr/173-experimental-delivery-mode.md) runs the heavy
+// layer there; what the aggregators' prCIEnv renders (run, refused or
+// mirror); and the `needs` context the decider jobs leave behind them.
 type ciEvent struct {
 	name   string
 	github map[string]any
+	asked  bool
 	full   bool
+	policy string
 	needs  map[string]any
 }
 
-// gateNeeds is the `needs` context heavyGateJob leaves: its result and, when
-// it answered, its `heavy` output. GitHub renders a skipped or failed job's
-// outputs empty.
-func gateNeeds(result, heavy string) map[string]any {
-	outputs := map[string]any{}
+// deciderNeeds is the `needs` context the decider jobs leave: heavyGateJob's
+// result and, when it answered, its `heavy` output; labelVerdictJob's result
+// and, when it answered, its `test` and `race` outputs. GitHub renders a
+// skipped or failed job's outputs empty.
+func deciderNeeds(gateResult, heavy, labelResult, verdict string) map[string]any {
+	gate := map[string]any{}
 	if heavy != "" {
-		outputs["heavy"] = heavy
+		gate["heavy"] = heavy
 	}
-	return map[string]any{heavyGateJob: map[string]any{"result": result, "outputs": outputs}}
+	label := map[string]any{}
+	if verdict != "" {
+		label["test"], label["race"] = verdict, verdict
+	}
+	return map[string]any{
+		heavyGateJob:    map[string]any{"result": gateResult, "outputs": gate},
+		labelVerdictJob: map[string]any{"result": labelResult, "outputs": label},
+	}
 }
 
-// ciEvents are the runs tests.yml serves. The merge queue, an unlabelled
-// pull request and a push heavyGateJob decided light are LIGHT; the push the
-// gate decided heavy, a push whose gate failed (failing toward more testing),
-// the nightly, a dispatch and a `ci:full` pull request run the full suite.
-// The gate skips every event but push.
-var ciEvents = []ciEvent{
-	{"push to main, heavy window elapsed", map[string]any{"event_name": "push", "event": map[string]any{}}, true, gateNeeds("success", "true")},
-	{"push to main inside the heavy window", map[string]any{"event_name": "push", "event": map[string]any{}}, false, gateNeeds("success", "false")},
-	{"push to main, heavy-gate failed", map[string]any{"event_name": "push", "event": map[string]any{}}, true, gateNeeds("failure", "")},
-	{"nightly schedule", map[string]any{"event_name": "schedule", "event": map[string]any{}}, true, gateNeeds("skipped", "")},
-	{"workflow_dispatch", map[string]any{"event_name": "workflow_dispatch", "event": map[string]any{}}, true, gateNeeds("skipped", "")},
-	{"merge queue", map[string]any{"event_name": "merge_group", "event": map[string]any{
-		"merge_group": map[string]any{"head_commit": map[string]any{"message": "feat(x): a change (#1)"}},
-	}}, false, gateNeeds("skipped", "")},
-	{"unlabelled pull request", map[string]any{"event_name": "pull_request", "event": map[string]any{
-		"pull_request": map[string]any{"title": "feat(x): a change", "labels": []any{map[string]any{"name": "bug"}}},
-	}}, false, gateNeeds("skipped", "")},
-	{"ci:full pull request", map[string]any{"event_name": "pull_request", "event": map[string]any{
-		"pull_request": map[string]any{"title": "feat(x): a change", "labels": []any{map[string]any{"name": "bug"}, map[string]any{"name": "ci:full"}}},
-	}}, true, gateNeeds("skipped", "")},
+// gateNeeds is deciderNeeds on an event no label started.
+func gateNeeds(result, heavy string) map[string]any {
+	return deciderNeeds(result, heavy, "skipped", "")
 }
+
+// mirrorNeeds is deciderNeeds on an ignored label: heavyGateJob skipped,
+// labelVerdictJob at result with its verdict.
+func mirrorNeeds(result, verdict string) map[string]any {
+	return deciderNeeds("skipped", "", result, verdict)
+}
+
+// prRepo is the repository the canned pull requests target.
+const prRepo = "SocialGouv/iterion"
+
+// pullRequest is the `github` context of a pull_request event: action, the
+// label it added when action is `labeled`, the labels the pull request
+// carries, and edit applied to its payload (author, head repository).
+func pullRequest(action, label string, edit func(pr map[string]any), labels ...string) map[string]any {
+	names := []any{}
+	for _, l := range labels {
+		names = append(names, map[string]any{"name": l})
+	}
+	pr := map[string]any{
+		"title":  "feat(x): a change",
+		"labels": names,
+		"user":   map[string]any{"login": "devthejo", "type": "User"},
+		"head":   map[string]any{"sha": "abc", "repo": map[string]any{"full_name": prRepo}},
+	}
+	if edit != nil {
+		edit(pr)
+	}
+	event := map[string]any{"action": action, "pull_request": pr}
+	if action == "labeled" {
+		event["label"] = map[string]any{"name": label}
+	}
+	return map[string]any{"event_name": "pull_request", "repository": prRepo, "event": event}
+}
+
+// byBot and fromFork edit a canned pull request: a GitHub App's pull request
+// (its user is of type Bot, whatever its login) and a fork's.
+func byBot(login string) func(map[string]any) {
+	return func(pr map[string]any) { pr["user"] = map[string]any{"login": login, "type": "Bot"} }
+}
+
+func fromFork(pr map[string]any) {
+	pr["head"] = map[string]any{"sha": "abc", "repo": map[string]any{"full_name": "someone/iterion"}}
+}
+
+func otherEvent(name string, payload map[string]any) map[string]any {
+	return map[string]any{"event_name": name, "repository": prRepo, "event": payload}
+}
+
+// ciEvents are the runs tests.yml serves. The merge queue, a push heavyGateJob
+// decided light and a pull request that asked for CI without `ci:full` are
+// LIGHT; the push the gate decided heavy, a push whose gate failed (failing
+// toward more testing), the nightly, a dispatch and a `ci:full` pull request
+// run the full suite. A pull request asks for CI with `ci:run` or `ci:full`,
+// or by being a bot's or a fork's (#3738): a session's pull request that did
+// not ask runs nothing and its aggregators REFUSE it, and a `labeled` event
+// for any other label runs nothing and its aggregators MIRROR the run before
+// it. heavyGateJob skips every event but push, labelVerdictJob every event but
+// an eligible pull request's ignored label.
+var ciEvents = []ciEvent{
+	{"push to main, heavy window elapsed", otherEvent("push", map[string]any{}), true, true, "run", gateNeeds("success", "true")},
+	{"push to main inside the heavy window", otherEvent("push", map[string]any{}), true, false, "run", gateNeeds("success", "false")},
+	{"push to main, heavy-gate failed", otherEvent("push", map[string]any{}), true, true, "run", gateNeeds("failure", "")},
+	{"nightly schedule", otherEvent("schedule", map[string]any{}), true, true, "run", gateNeeds("skipped", "")},
+	{"workflow_dispatch", otherEvent("workflow_dispatch", map[string]any{}), true, true, "run", gateNeeds("skipped", "")},
+	{"merge queue", otherEvent("merge_group", map[string]any{
+		"action": "checks_requested", "merge_group": map[string]any{"head_commit": map[string]any{"message": "feat(x): a change (#1)"}},
+	}), true, false, "run", gateNeeds("skipped", "")},
+	{"an unlabelled session pull request, opened", pullRequest("opened", "", nil, "bug"), false, false, "refused", gateNeeds("skipped", "")},
+	{"an unlabelled session pull request, synchronize", pullRequest("synchronize", "", nil), false, false, "refused", gateNeeds("skipped", "")},
+	{"a ci:run pull request, synchronize", pullRequest("synchronize", "", nil, "bug", "ci:run"), true, false, "run", gateNeeds("skipped", "")},
+	{"a ci:full pull request, synchronize", pullRequest("synchronize", "", nil, "bug", "ci:full"), true, true, "run", gateNeeds("skipped", "")},
+	{"labelling ci:run", pullRequest("labeled", "ci:run", nil, "ci:run"), true, false, "run", gateNeeds("skipped", "")},
+	{"labelling ci:full on a ci:run pull request", pullRequest("labeled", "ci:full", nil, "ci:run", "ci:full"), true, true, "run", gateNeeds("skipped", "")},
+	{"a bot's pull request (renovate), opened", pullRequest("opened", "", byBot("socialgouv-renovate[bot]")), true, false, "run", gateNeeds("skipped", "")},
+	{"a bot's pull request (tokenbureau), synchronize", pullRequest("synchronize", "", byBot("tokenbureau[bot]")), true, false, "run", gateNeeds("skipped", "")},
+	{"a fork's pull request, opened", pullRequest("opened", "", fromFork), true, false, "run", gateNeeds("skipped", "")},
+	{"an unrelated label on an unlabelled session pull request", pullRequest("labeled", "epic:ci-diet", nil, "epic:ci-diet"), false, false, "refused", gateNeeds("skipped", "")},
+	{"an unrelated label on a ci:run pull request", pullRequest("labeled", "epic:ci-diet", nil, "ci:run", "epic:ci-diet"), false, false, "mirror", mirrorNeeds("success", "success")},
+	{"an unrelated label on a ci:full pull request", pullRequest("labeled", "bug", nil, "ci:full", "bug"), false, false, "mirror", mirrorNeeds("success", "success")},
+	{"renovate labels its pull request", pullRequest("labeled", "dependencies", byBot("socialgouv-renovate[bot]"), "dependencies"), false, false, "mirror", mirrorNeeds("success", "success")},
+	{"an unrelated label on a fork's pull request", pullRequest("labeled", "bug", fromFork, "bug"), false, false, "mirror", mirrorNeeds("success", "success")},
+}
+
+// statusFunction matches the status-check functions of a job condition. A
+// condition without one is implicitly `success() && (…)`: the job runs only
+// when every job it needs succeeded.
+var statusFunction = regexp.MustCompile(`\b(success|failure|always|cancelled)\(\s*\)`)
+
+// jobRunner answers whether each job of jobs runs on an event, the way GitHub
+// decides it: a job whose `if:` carries no status-check function runs only
+// when every job it `needs:` concluded success — one that skipped or failed
+// skips it — and then only when its condition holds; a job whose `if:` does
+// carry one (`!cancelled()`) runs on its condition alone. A decider's result
+// comes from the event's `needs` context, which the event models; any other
+// job needed concludes success where it runs and skipped where it does not.
+func jobRunner(t *testing.T, jobs map[string]map[string]any, github, needs map[string]any) (runs func(string) bool, result func(string) string) {
+	str := func(v any) string { s, _ := v.(string); return s }
+	memo := map[string]bool{}
+	var visiting []string
+	result = func(job string) string {
+		if deciderJobs[job] {
+			if n, ok := needs[job].(map[string]any); ok {
+				return str(n["result"])
+			}
+			t.Fatalf("the event models no result for decider %q", job)
+		}
+		if runs(job) {
+			return "success"
+		}
+		return "skipped"
+	}
+	runs = func(job string) bool {
+		if v, ok := memo[job]; ok {
+			return v
+		}
+		for _, v := range visiting {
+			if v == job {
+				t.Fatalf("needs cycle through %q", job)
+			}
+		}
+		visiting = append(visiting, job)
+		defer func() { visiting = visiting[:len(visiting)-1] }()
+		def, ok := jobs[job]
+		if !ok {
+			t.Fatalf("no job %q", job)
+		}
+		cond := str(def["if"])
+		got := true
+		if !statusFunction.MatchString(cond) {
+			needed, _ := def["needs"].([]any)
+			for _, n := range needed {
+				if result(fmt.Sprint(n)) != "success" {
+					got = false
+				}
+			}
+		}
+		if got && strings.TrimSpace(cond) != "" {
+			v, err := evalContexts(cond, github, needs)
+			if err != nil {
+				t.Fatalf("job %q `if:` %q: %v", job, cond, err)
+			}
+			got = truthy(v)
+		}
+		memo[job] = got
+		return got
+	}
+	return runs, result
+}
+
+// TestTheJobRunnerReadsGitHubsNeedsRule pins jobRunner on the rule the
+// workflow's `!cancelled()` exists for: without a status-check function a
+// job is skipped when a job it needs skipped or failed, whatever its
+// condition; with one it runs on its condition alone.
+func TestTheJobRunnerReadsGitHubsNeedsRule(t *testing.T) {
+	jobs := map[string]map[string]any{
+		"skipped-leg":   {"if": "github.event_name == 'schedule'"},
+		"plain":         {"needs": []any{"skipped-leg"}, "if": "github.event_name == 'push'"},
+		"unconditional": {"needs": []any{"skipped-leg"}},
+		"status":        {"needs": []any{"skipped-leg"}, "if": "${{ !cancelled() && github.event_name == 'push' }}"},
+		"transitive":    {"needs": []any{"plain"}},
+		"behind-gate":   {"needs": []any{heavyGateJob}},
+		heavyGateJob:    {"if": heavyGateIf},
+	}
+	github := map[string]any{"event_name": "push", "event": map[string]any{}}
+	for _, tc := range []struct {
+		job   string
+		gate  string
+		wants bool
+	}{
+		{"skipped-leg", "success", false},
+		{"plain", "success", false},
+		{"unconditional", "success", false},
+		{"status", "success", true},
+		{"transitive", "success", false},
+		{"behind-gate", "success", true},
+		{"behind-gate", "failure", false},
+		{"behind-gate", "skipped", false},
+	} {
+		runs, _ := jobRunner(t, jobs, github, gateNeeds(tc.gate, ""))
+		if got := runs(tc.job); got != tc.wants {
+			t.Errorf("job %q with %s %s: runs=%v, want %v", tc.job, heavyGateJob, tc.gate, got, tc.wants)
+		}
+	}
+}
+
+// policyWords are what the refusal of a pull request that did not ask for CI
+// must say: the policy, by its anchor, and both ways out.
+var policyWords = []string{"merge-policy.md#pull-request-ci-on-demand", "`ci:run`", "`task ci:train`", "POLICY"}
 
 // TestEachEventRunsItsLayer EVALUATES the workflow's own conditions for each
-// event instead of comparing their spelling: the heavy jobs' `if:` and the
-// aggregators' light-run env are read from tests.yml and evaluated against the
-// event's context. Per event:
+// event instead of comparing their spelling: every job's `if:` and the
+// aggregators' env are read from tests.yml and evaluated against the event's
+// context, `needs` modelled the way GitHub reads it (jobRunner). Per event:
 //
 //   - every heavy job (heavyLegs, heavyAdvisoryJobs) runs exactly where the
-//     event is full — the merge queue runs only the light layer;
-//   - heavyGateJob runs on push and nowhere else;
-//   - every other gated leg and every required job runs on every event;
-//   - every aggregator is green with the heavy legs at the result the event
-//     gives them (`success` where they run, `skipped` where they skip), and
-//     RED when a heavy leg reports `skipped` on a full event — on push, the
-//     nightly, a dispatch and `ci:full`, a skipped heavy leg is a red one.
+//     event is full — the merge queue, a light pull request and a pull request
+//     that did not ask run no heavy job;
+//   - heavyGateJob runs on push and nowhere else, labelVerdictJob on an
+//     eligible pull request's ignored label and nowhere else;
+//   - tapVerifierJob and the aggregators run on every event;
+//   - every other job — the light legs, the required jobs that do their own
+//     work, the advisory jobs (outside the merge queue) — runs exactly where
+//     the event asked for CI: on every event that is no pull request, on a
+//     pull request labelled `ci:run` or `ci:full`, a bot's and a fork's, and
+//     never on an ignored label;
+//   - where the policy is `run`, every aggregator is green with the legs at
+//     the result the event gives them, and RED when a heavy leg reports
+//     `skipped` on a full event;
+//   - where it is `refused`, every aggregator is RED and says why, by the
+//     policy's name and both ways out — a skipped aggregator would be a
+//     green required check over nothing;
+//   - where it is `mirror`, every aggregator is green when labelVerdictJob
+//     read a green run before it, and RED when it read a red one or failed.
 func TestEachEventRunsItsLayer(t *testing.T) {
 	var wf struct{ Jobs map[string]map[string]any }
 	if err := yaml.Unmarshal(mustRead(t, workflowPaths[0]), &wf); err != nil {
@@ -76,26 +270,32 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 	str := func(v any) string { s, _ := v.(string); return s }
 	aggregators := 0
 	for _, ev := range ciEvents {
-		runs := func(job string) bool {
-			cond := str(wf.Jobs[job]["if"])
-			if strings.TrimSpace(cond) == "" {
-				return true
-			}
-			v, err := evalContexts(cond, ev.github, ev.needs)
-			if err != nil {
-				t.Fatalf("job %q `if:` %q: %v", job, cond, err)
-			}
-			return truthy(v)
-		}
-		for name := range wf.Jobs {
+		runs, _ := jobRunner(t, wf.Jobs, ev.github, ev.needs)
+		isPush := ev.github["event_name"] == "push"
+		inQueue := ev.github["event_name"] == "merge_group"
+		for name, job := range wf.Jobs {
+			needs, _ := job["needs"].([]any)
+			aggregator := len(aggregatedLegs(needs)) > 0
 			heavy := heavyLegs[name] || heavyAdvisoryJobs[name]
-			switch got := runs(name); {
-			case heavy && got != ev.full:
-				t.Errorf("%s: heavy job %q runs=%v, want %v — the heavy layer runs on the debounced push, the nightly, a dispatch and `ci:full`, and nowhere else", ev.name, name, got, ev.full)
-			case name == heavyGateJob && got != (ev.github["event_name"] == "push"):
-				t.Errorf("%s: %q runs=%v, want it on push and nowhere else", ev.name, name, got)
-			case !heavy && (gatedJobs[name] || requiredChecks[name] || heldChecks[name]) && !got:
-				t.Errorf("%s: light-layer job %q does not run — the light layer runs on every event", ev.name, name)
+			got := runs(name)
+			var want bool
+			var why string
+			switch {
+			case heavy:
+				want, why = ev.full, "the heavy layer runs on the debounced push, the nightly, a dispatch and `ci:full`, and nowhere else"
+			case name == heavyGateJob:
+				want, why = isPush, "it decides a push and nothing else"
+			case name == labelVerdictJob:
+				want, why = ev.policy == "mirror", "it repeats a verdict on an eligible pull request's ignored label and nowhere else"
+			case name == tapVerifierJob || aggregator:
+				want, why = true, "nothing skips the tap verifier, and an aggregator reports on every event"
+			case gatedJobs[name] || requiredChecks[name] || heldChecks[name]:
+				want, why = ev.asked, "the light layer runs exactly where the event asked for CI"
+			default:
+				want, why = ev.asked && !inQueue, "an advisory job runs where the event asked for CI, outside the merge queue"
+			}
+			if got != want {
+				t.Errorf("%s: job %q runs=%v, want %v — %s", ev.name, name, got, want, why)
 			}
 		}
 		for name, job := range wf.Jobs {
@@ -107,26 +307,25 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 				aggregators++
 			}
 			env, _ := job["env"].(map[string]any)
-			// verdict runs the aggregator's steps with every leg at the result
-			// the event gives it, except heavy legs forced to heavyResult when
-			// it is not empty, and env rendered the way GitHub renders it.
-			verdict := func(heavyResult string) (bool, string) {
+			// verdict runs the aggregator's steps against the decider context
+			// deciders, every leg at the result the event gives it except heavy
+			// legs forced to heavyResult when it is not empty, and env rendered
+			// the way GitHub renders it.
+			verdict := func(deciders map[string]any, heavyResult string) (bool, string) {
+				_, result := jobRunner(t, wf.Jobs, ev.github, deciders)
 				vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 				for k, v := range env {
 					value := str(v)
-					if leg, ok := strings.CutPrefix(value, "${{ needs."); ok {
+					if leg, ok := strings.CutPrefix(value, "${{ needs."); ok && strings.HasSuffix(leg, ".result }}") {
 						leg = strings.TrimSuffix(leg, ".result }}")
-						result := "success"
-						switch {
-						case heavyLegs[leg] && heavyResult != "":
-							result = heavyResult
-						case !runs(leg):
-							result = "skipped"
+						r := result(leg)
+						if heavyLegs[leg] && heavyResult != "" {
+							r = heavyResult
 						}
-						vars = append(vars, k+"="+result)
+						vars = append(vars, k+"="+r)
 						continue
 					}
-					rendered, err := renderValue(value, ev.github, ev.needs)
+					rendered, err := renderValue(value, ev.github, deciders)
 					if err != nil {
 						t.Fatalf("aggregator %q env %s=%q: %v", name, k, value, err)
 					}
@@ -144,13 +343,46 @@ func TestEachEventRunsItsLayer(t *testing.T) {
 				}
 				return true, out.String()
 			}
-			if green, out := verdict(""); !green {
-				t.Errorf("%s: aggregator %q is RED with every leg at the result the event gives it — the run this mode designs could never pass:\n%s", ev.name, name, out)
+			if rendered, err := renderValue(str(env[prCIEnv]), ev.github, ev.needs); err != nil || rendered != ev.policy {
+				t.Errorf("%s: aggregator %q renders %s=%q (%v), want %q", ev.name, name, prCIEnv, rendered, err, ev.policy)
 			}
-			if ev.full {
-				if green, _ := verdict("skipped"); green {
-					t.Errorf("%s: aggregator %q stays GREEN with its heavy legs skipped — on a full run a skipped heavy leg must be red", ev.name, name)
+			switch ev.policy {
+			case "run":
+				if green, out := verdict(ev.needs, ""); !green {
+					t.Errorf("%s: aggregator %q is RED with every leg at the result the event gives it — the run this mode designs could never pass:\n%s", ev.name, name, out)
 				}
+				if ev.full {
+					if green, _ := verdict(ev.needs, "skipped"); green {
+						t.Errorf("%s: aggregator %q stays GREEN with its heavy legs skipped — on a full run a skipped heavy leg must be red", ev.name, name)
+					}
+				}
+			case "refused":
+				green, out := verdict(ev.needs, "")
+				if green {
+					t.Errorf("%s: aggregator %q is GREEN on a pull request that did not ask for CI, with every leg skipped — a required check over nothing:\n%s", ev.name, name, out)
+				}
+				for _, word := range policyWords {
+					if !strings.Contains(out, word) {
+						t.Errorf("%s: aggregator %q refuses without saying %s — the refusal names the policy and both ways out:\n%s", ev.name, name, word, out)
+					}
+				}
+			case "mirror":
+				if green, out := verdict(ev.needs, ""); !green {
+					t.Errorf("%s: aggregator %q is RED although %s read a green run before it:\n%s", ev.name, name, labelVerdictJob, out)
+				}
+				for _, red := range []struct {
+					what  string
+					needs map[string]any
+				}{
+					{"read a red run before it", mirrorNeeds("success", "failure")},
+					{"failed without an answer", mirrorNeeds("failure", "")},
+				} {
+					if green, out := verdict(red.needs, ""); green {
+						t.Errorf("%s: aggregator %q is GREEN although %s %s — an ignored label would turn a red pull request green:\n%s", ev.name, name, labelVerdictJob, red.what, out)
+					}
+				}
+			default:
+				t.Fatalf("%s: policy %q is none of run, refused, mirror", ev.name, ev.policy)
 			}
 		}
 	}
@@ -503,8 +735,16 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 	// as "", so a group keyed on a path no context models would render alike
 	// for two pushes here and differ on GitHub: the strict check below fails
 	// on any `github.` path the concurrency block reads that ctxFor lacks.
+	// A pull request event is spelled `pull_request/<action>`, and
+	// `pull_request/labeled/<label>` for the label it added; plain
+	// `pull_request` is a synchronize.
 	ctxFor := func(event, ref, sha string) map[string]any {
 		payload := map[string]any{}
+		action, label := "synchronize", ""
+		if rest, ok := strings.CutPrefix(event, "pull_request/"); ok {
+			action, label, _ = strings.Cut(rest, "/")
+			event = "pull_request"
+		}
 		switch event {
 		case "push":
 			payload = map[string]any{
@@ -514,7 +754,10 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 				},
 			}
 		case "pull_request":
-			payload = map[string]any{"pull_request": map[string]any{"head": map[string]any{"sha": sha}}}
+			payload = map[string]any{"action": action, "pull_request": map[string]any{"head": map[string]any{"sha": sha}}}
+			if action == "labeled" {
+				payload["label"] = map[string]any{"name": label}
+			}
 		}
 		return map[string]any{
 			"workflow": "🧪 Tests", "event_name": event, "ref": ref, "sha": sha,
@@ -530,7 +773,7 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 		for _, m := range githubPath.FindAllStringSubmatch(expr, -1) {
 			path := strings.Split(m[1][1:], ".")
 			modelled := false
-			for _, ev := range []string{"push", "pull_request", "schedule", "workflow_dispatch"} {
+			for _, ev := range []string{"push", "pull_request", "pull_request/labeled/bug", "schedule", "workflow_dispatch"} {
 				if resolvePath(ctxFor(ev, "r", "s"), path) != nil {
 					modelled = true
 				}
@@ -593,6 +836,46 @@ func TestTriggersAndConcurrencyKeepEachWitness(t *testing.T) {
 	}
 	if !cancels("pull_request", "refs/pull/1/merge") {
 		t.Error("cancel-in-progress is false on pull_request: a superseded pull request commit keeps its run")
+	}
+
+	// Pull request CI on demand (#3738): `labeled` is a trigger, so that a
+	// label starts the run — alongside the default activity types, which a
+	// `types:` list replaces rather than extends.
+	pr, _ := wf.On["pull_request"].(map[string]any)
+	types, _ := pr["types"].([]any)
+	for _, want := range []string{"opened", "synchronize", "reopened", "labeled"} {
+		found := false
+		for _, got := range types {
+			found = found || got == want
+		}
+		if !found {
+			t.Errorf("on.pull_request.types is %v, which lacks %q — want opened, synchronize, reopened and labeled", types, want)
+		}
+	}
+	// A label that asks for CI starts a run that replaces the one in progress,
+	// like a new commit. Any other label shares the pull request's group and
+	// cancels nothing: it never stops a real run, it queues behind it and
+	// repeats its verdict once it concluded (labelVerdictJob); a new commit
+	// or a `ci:run` label still cancels it like any pull request run.
+	const pr1 = "refs/pull/1/merge"
+	for _, label := range []string{"ci:run", "ci:full", "CI:RUN"} {
+		if !cancels("pull_request/labeled/"+label, pr1) {
+			t.Errorf("labelling %s does not cancel the run in progress: the run it asks for would wait behind a superseded one", label)
+		}
+	}
+	for _, label := range []string{"epic:ci-diet", "dependencies", "bug", "ci:runner"} {
+		ignored := "pull_request/labeled/" + label
+		if cancels(ignored, pr1) {
+			t.Errorf("labelling %s cancels the run in progress: an unrelated label would stop a real run", label)
+		}
+		if a, b := group(ignored, pr1, "aaa"), group("pull_request", pr1, "aaa"); a != b {
+			t.Errorf("labelling %s lands in group %q, the pull request's runs in %q: the run would not wait for the verdict it repeats", label, a, b)
+		}
+	}
+	for _, action := range []string{"opened", "reopened", "synchronize"} {
+		if !cancels("pull_request/"+action, pr1) {
+			t.Errorf("a pull request %s does not cancel the run in progress", action)
+		}
 	}
 }
 

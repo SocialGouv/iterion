@@ -19,9 +19,9 @@ import (
 // for both. On a push both operands are empty and the predicate is false.
 const tapUpdate = `startsWith(github.event.merge_group.head_commit.message || github.event.pull_request.title, 'chore(brew): update tap to ')`
 
-// tapSkip is the only `if:` a required job that does its own work may carry,
-// and the tap half of aggregatorIf, the only `if:` a required aggregator may
-// carry (see TestEveryJobPicksASideOfTheMergeQueue).
+// tapSkip is the tap half of askedIf, the only `if:` a required job that does
+// its own work may carry, and of aggregatorIf, the only `if:` a required
+// aggregator may carry (see TestEveryJobPicksASideOfTheMergeQueue).
 const tapSkip = "!" + tapUpdate
 
 // tapVerifierJob hosts the check that makes tapSkip safe: required, and never

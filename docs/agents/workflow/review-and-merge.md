@@ -34,6 +34,15 @@ The loop is:
    the squash, and rationale in
    [adversarial-review-loop.md](adversarial-review-loop.md#say-what-the-review-cost-in-the-commit).
 
+**Before every push: `task check`, then the label (#3738).** A session's pull
+request runs no CI unless it asks
+([CI on demand](../../merge-policy.md#pull-request-ci-on-demand)), so the local
+gate is its first witness. To get CI's, add the `ci:run` label (`ci:full` for
+the heavy layer too): labelling starts the run, no push needed. Or land it
+through the train (`task ci:train`). Without either, `test` and `race` are red
+by policy, never skipped. A bot's or a fork's pull request runs automatically;
+any other label runs nothing and repeats the last verdict.
+
 ## The operator direct-landing lane (decided 2026-10-22)
 
 For operator-led chantiers where the queue's wall clock is the bottleneck, the

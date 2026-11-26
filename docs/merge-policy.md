@@ -236,10 +236,11 @@ debounced push (#3737). So each layer gates where it pays:
 
 | layer | pull request | merge queue | light push to `main` | heavy push, nightly, dispatch |
 | --- | --- | --- | --- | --- |
-| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `brand`, `fmt-check` | runs | runs | runs | runs |
+| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `fmt-check` | [on demand](#pull-request-ci-on-demand): runs when labelled `ci:run` or `ci:full`, or opened by a bot or from a fork | runs | runs | runs |
+| `brand` | runs | runs | runs | runs |
 | `race-shard`, `test-e2e` (heavy legs) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
 | `mongo-conformance`, `cloud-e2e` (heavy, no aggregator) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
-| other advisory jobs | runs | skipped | runs | runs |
+| other advisory jobs | on demand, like the light layer | skipped | runs | runs |
 | `revi/review` | runs | mirrored | — | — |
 
 A push to `main` is **light** only behind a **green heavy run** on `main`
@@ -294,8 +295,7 @@ To run the heavy jobs on a pull request — `race-shard` and `test-e2e` for a
 change to concurrency, the race-sensitive engine, or e2e itself;
 `mongo-conformance` for a change to anything Mongo-backed;
 `cloud-e2e` for a change to `charts/` or the cloud stack — add the `ci:full`
-label, then push: a label alone starts no run, since `labeled` is not among
-the triggers.
+label: labelling it starts the run ([on demand](#pull-request-ci-on-demand)).
 A light pull request's green `test` and `race` never ran the heavy legs, so it
 is not admin-mergeable: an admin merge also gives up the queue's rebuild
 against the entries ahead of it, so it owes the heavy legs on the pull request
@@ -319,6 +319,53 @@ four hours. The mode's exit criteria (a regression rate, a flake count, an
 untriaged red `main`) are in the ADR, and ending it puts `race` and
 `mongo-conformance` back in the ruleset and the heavy legs back in the queue,
 in one change.
+
+## Pull request CI on demand
+
+Decided 2026-11-26 (#3738). A pull request run cost 105 runner-minutes and 19
+jobs, about 33 times a day, and for a pull request the
+[train](#the-extended-train-lane-decided-2026-11-25) lands it duplicated the
+local gate. So a session's pull request runs **no CI unless it asks**:
+
+- **The `ci:run` label** runs the light layer; `ci:full` runs it with the
+  heavy layer, as before. **Labelling starts the run** (`labeled` is a
+  trigger of `tests.yml`): no push needed. Re-running an older run does not
+  help — a rerun reads the labels of the event that started it.
+- **A bot's pull request** — its author's account is of type `Bot`, which
+  every GitHub App's is (renovate, tokenbureau, dependabot) — and **a fork's**
+  run it automatically.
+- **Everything else is red, on purpose.** On an unlabelled session pull
+  request every job but `brand` skips, and the required `test` (and the held
+  `race`) **fail** with a message naming this policy and both ways out: add
+  `ci:run`, or land the pull request through the train (`task ci:train`,
+  `scripts/ci/train`), which runs the gate locally. Never a silent skip: a
+  skipped required check counts as a success, and a pull request nothing
+  tested would be green — that red is what lets the merge queue go (#3757)
+  without anything landing ungated by accident.
+
+`labeled` fires for **every** label (`epic:…`, renovate's `dependencies` a
+second after it opens). Such a run must neither start the light layer nor
+stop a real run, and it cannot simply skip: its skipped jobs would write
+check runs under the required names over the verdict of the run before it.
+So a label that is neither `ci:run` nor `ci:full` shares the pull request's
+concurrency group **without cancelling**: it waits behind the run in
+progress, runs nothing, and the `label-verdict` job then reads the newest
+earlier run of `tests.yml` on the same commit that reached a verdict
+(`scripts/ci/label-verdict.sh`) — `test` and `race` repeat it. When it cannot
+answer (an earlier run still in progress, none at all) they are red, and a
+push or a `ci:run` label settles it. A newer commit or `ci:run` still cancels
+that run like any pull request run. On a pull request that did not ask for
+CI, an unrelated label changes nothing: `test` and `race` refuse it as
+before.
+
+The merge queue, a push to `main`, the nightly and a dispatch keep their
+layers. What a requested run runs is still the whole light layer: running
+only what a diff can reach is #3739, which waits on #3758.
+
+**Before pushing**, a session runs `task check` (the
+[review-and-merge](agents/workflow/review-and-merge.md) discipline), then
+adds `ci:run` when it wants CI's witness, or hands the pull request to the
+train.
 
 ## main-watch: a red main is rerun, quarantined or reverted
 
