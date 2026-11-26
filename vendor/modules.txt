@@ -382,10 +382,9 @@ github.com/klauspost/compress/zstd/internal/xxhash
 ## explicit; go 1.11
 github.com/kylelemons/godebug/diff
 github.com/kylelemons/godebug/pretty
-# github.com/labstack/echo/v4 v4.15.3
-## explicit; go 1.25.0
+# github.com/labstack/echo/v4 v4.16.1
+## explicit; go 1.26.0
 github.com/labstack/echo/v4
-github.com/labstack/echo/v4/internal/pathutil
 # github.com/labstack/gommon v0.5.0
 ## explicit; go 1.23.0
 github.com/labstack/gommon/color
@@ -403,7 +402,7 @@ github.com/leaanthony/slicer
 # github.com/leaanthony/u v1.1.1
 ## explicit; go 1.21
 github.com/leaanthony/u
-# github.com/mattn/go-colorable v0.1.14
+# github.com/mattn/go-colorable v0.1.15
 ## explicit; go 1.18
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.22
