@@ -1,11 +1,13 @@
-package bots
+package sandboximages
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
@@ -17,7 +19,8 @@ import (
 // contract: the apt package, the ENV line and the bot's reader must agree, or a
 // run on the image probes « no browser » while a Chromium sits at /usr/bin.
 func TestRgaaAuditSandboxBrowserImageNamesItsChromiumForTheBot(t *testing.T) {
-	raw, err := os.ReadFile("../sandbox/browser/Dockerfile")
+	root := sweepwalk.ModuleRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "sandbox", "browser", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read sandbox/browser/Dockerfile: %v", err)
 	}
@@ -34,7 +37,7 @@ func TestRgaaAuditSandboxBrowserImageNamesItsChromiumForTheBot(t *testing.T) {
 	}
 	// The bot's half of the contract: `prepare` reads that variable when the
 	// operator named no browser, and hands it to the engine as --browser-path.
-	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	wf := compilePlanPhaseBot(t, root, "rgaa-audit")
 	node, ok := wf.Nodes["prepare"].(*ir.ToolNode)
 	if !ok {
 		t.Fatal("the rgaa-audit bot has no `prepare` tool node")

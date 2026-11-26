@@ -1,4 +1,4 @@
-package bots
+package sandboximages
 
 import (
 	"os"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // #2350 — the sec image's deepsec assertion is fail-closed by DEFAULT and
@@ -27,7 +29,7 @@ import (
 // line rather than by a line number.
 func deepsecSanityScript(t *testing.T) (script, pin string) {
 	t.Helper()
-	body, err := os.ReadFile(secImageDockerfile)
+	body, err := os.ReadFile(filepath.Join(sweepwalk.ModuleRoot(t), secImageDockerfile))
 	if err != nil {
 		t.Fatalf("read %s: %v", secImageDockerfile, err)
 	}
@@ -115,7 +117,7 @@ func TestSecImageDeepsecSanityIsFailClosedWithOneHatch(t *testing.T) {
 // passes nothing — every CI build of the published image — gets the
 // fail-closed assertion.
 func TestSecImageDeepsecHatchDefaultsToRequired(t *testing.T) {
-	body, err := os.ReadFile(secImageDockerfile)
+	body, err := os.ReadFile(filepath.Join(sweepwalk.ModuleRoot(t), secImageDockerfile))
 	if err != nil {
 		t.Fatalf("read %s: %v", secImageDockerfile, err)
 	}

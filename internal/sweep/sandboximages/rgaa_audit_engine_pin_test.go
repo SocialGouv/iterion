@@ -1,11 +1,14 @@
-package bots
+package sandboximages
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // The ultra11y engine is pinned in ONE authored place, bots/rgaa-audit/ultra11y.pin,
@@ -15,8 +18,9 @@ import (
 // TestRgaaAuditEnginePinFileIsWellFormed). A copy that drifts is a bot that
 // fingerprints one engine and installs another; this test holds them together.
 func TestRgaaAuditBotDefaultsMatchThePin(t *testing.T) {
-	pin := rgaaReadPin(t)
-	wf := compilePlanPhaseBot(t, "rgaa-audit")
+	root := sweepwalk.ModuleRoot(t)
+	pin := rgaaReadPin(t, root)
+	wf := compilePlanPhaseBot(t, root, "rgaa-audit")
 	for name, want := range map[string]string{
 		"engine_version": pin.Version,
 		"engine_sha256":  pin.SHA256,
@@ -31,7 +35,7 @@ func TestRgaaAuditBotDefaultsMatchThePin(t *testing.T) {
 		}
 	}
 
-	raw, err := os.ReadFile("../Dockerfile.runner-devbox")
+	raw, err := os.ReadFile(filepath.Join(root, "Dockerfile.runner-devbox"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +48,7 @@ func TestRgaaAuditBotDefaultsMatchThePin(t *testing.T) {
 	}
 	// The image installs from the committed lockfile, which the root build
 	// context excludes with scripts/ unless re-included.
-	ignore, err := os.ReadFile("../.dockerignore")
+	ignore, err := os.ReadFile(filepath.Join(root, ".dockerignore"))
 	if err != nil {
 		t.Fatal(err)
 	}

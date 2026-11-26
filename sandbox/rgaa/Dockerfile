@@ -14,7 +14,7 @@
 # The bot fingerprints the engine before running it (size + sha256 of
 # scripts/ultra11y.mjs, against bots/rgaa-audit/ultra11y.pin), so the pin
 # baked here MUST equal the bot's: a drifted image is a refused engine, not
-# a faster one. bots/rgaa_audit_sandbox_rgaa_image_test.go holds the two
+# a faster one. internal/sweep/sandboximages/rgaa_audit_sandbox_rgaa_image_test.go holds the two
 # together; renovate moves them in one PR via the comment below. The
 # bot's per-run `npm install` fallback stays until the bot opts in.
 #

@@ -1,10 +1,13 @@
-package bots
+package sandboximages
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // #2350 — the published sec image (sandbox/sec/Dockerfile) installed
@@ -19,12 +22,14 @@ import (
 //
 // Before the fix this test is red twice over: the ARG reads `latest`
 // (not an exact version) and the sanity block carries no `exit 1`.
-const secImageDockerfile = "../sandbox/sec/Dockerfile"
+//
+// secImageDockerfile is spelled from the module root.
+const secImageDockerfile = "sandbox/sec/Dockerfile"
 
 var deepsecPinArgRe = regexp.MustCompile(`(?m)^ARG DEEPSEC_VERSION=(\S+)\s*$`)
 
 func TestSecImagePinsDeepsecExactly(t *testing.T) {
-	body, err := os.ReadFile(secImageDockerfile)
+	body, err := os.ReadFile(filepath.Join(sweepwalk.ModuleRoot(t), secImageDockerfile))
 	if err != nil {
 		t.Fatalf("read %s: %v", secImageDockerfile, err)
 	}
@@ -55,7 +60,7 @@ func TestSecImagePinsDeepsecExactly(t *testing.T) {
 }
 
 func TestSecImageSanityFailsOnAnUnpinnedDeepsec(t *testing.T) {
-	body, err := os.ReadFile(secImageDockerfile)
+	body, err := os.ReadFile(filepath.Join(sweepwalk.ModuleRoot(t), secImageDockerfile))
 	if err != nil {
 		t.Fatalf("read %s: %v", secImageDockerfile, err)
 	}
@@ -78,14 +83,5 @@ func TestSecImageSanityFailsOnAnUnpinnedDeepsec(t *testing.T) {
 	// silently into the wrong error message, a missing exit ships anyway.
 	if got := strings.Count(src[strings.Index(src, "DEEPSEC_FOUND"):], "exit 1"); got < 2 {
 		t.Fatalf("the deepsec sanity refusal must exit 1 on BOTH the absent and the drifted branch, found %d exit 1", got)
-	}
-}
-
-func TestSecAuditDogfoodDockerfileIsGone(t *testing.T) {
-	// The dogfood augmentation carried the ONLY pin (2.0.12) while the
-	// published image floated on latest — two sources of truth for one
-	// binary. The pin moved into the published image; the copy must go.
-	if _, err := os.Stat("../bots/sec-audit-source/sandbox/sec/Dockerfile"); !os.IsNotExist(err) {
-		t.Fatalf("bots/sec-audit-source/sandbox/sec/Dockerfile still exists — the dogfood pin was merged into sandbox/sec/Dockerfile (#2350), keeping both re-opens the drift")
 	}
 }

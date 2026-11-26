@@ -1,10 +1,13 @@
-package bots
+package sandboximages
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 )
 
 // The rgaa sandbox image class (#2632, decision (a)) is the one place a
@@ -19,7 +22,8 @@ import (
 // Dockerfile's pin and the bot's pin is a refused engine at run time —
 // this test is where it is refused at review time.
 func TestTheRgaaSandboxImageCarriesThePinnedUltra11yOnChromium(t *testing.T) {
-	raw, err := os.ReadFile("../sandbox/rgaa/Dockerfile")
+	root := sweepwalk.ModuleRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "sandbox", "rgaa", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read sandbox/rgaa/Dockerfile: %v — the rgaa image class was declared but its manifest is gone", err)
 	}
@@ -35,7 +39,7 @@ func TestTheRgaaSandboxImageCarriesThePinnedUltra11yOnChromium(t *testing.T) {
 	// The engine, globally installed, at the bot's pin. Three artefacts must
 	// agree: ultra11y.pin (the bot's fingerprint), the ARG default below, and
 	// the renovate comment that keeps them moving together.
-	pin, err := os.ReadFile("rgaa-audit/ultra11y.pin")
+	pin, err := os.ReadFile(filepath.Join(root, "bots", "rgaa-audit", "ultra11y.pin"))
 	if err != nil {
 		t.Fatalf("read rgaa-audit/ultra11y.pin: %v", err)
 	}
