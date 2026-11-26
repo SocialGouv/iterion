@@ -39,6 +39,9 @@ func (s *MemoryStore) ListByUser(_ context.Context, userID string) ([]Token, err
 
 func (s *MemoryStore) Revoke(_ context.Context, id string, at time.Time) error {
 	_, err := s.kit.Mutate(id, func(t *Token) bool {
+		if t.RevokedAt != nil {
+			return false // the first instant stands
+		}
 		t.RevokedAt = &at
 		return true
 	})

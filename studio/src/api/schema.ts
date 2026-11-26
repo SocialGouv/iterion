@@ -9496,6 +9496,7 @@ export interface components {
         patRevokedView: {
             invitations_error?: string;
             invitations_revoked: components["schemas"]["revokedInvitationView"][];
+            invitations_revoked_elsewhere?: number;
         };
         pipelineBoardReadyRequest: {
             ready: boolean;
@@ -13810,6 +13811,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["patRevokedView"];
                 };
+            };
+            /** @description The revoke ended no invitation: no body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
             401: {

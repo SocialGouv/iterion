@@ -530,7 +530,16 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	}
 	for _, t := range toks.Tokens {
 		if t.Fingerprint != "" && t.Fingerprint == oldFingerprint && t.RevokedAt == nil {
-			revoked, err := revokeRemotePAT(ctx, newClient, t.ID)
+			// The replaced token revokes ITSELF: the answer names the
+			// invitations it ended where the revoking credential's pin
+			// reaches their team, and the replaced token's pin is theirs.
+			// One that no longer authenticates (expired) is revoked by the
+			// new token, which then hears the rest counted, not named.
+			revoked, err := revokeRemotePAT(ctx, c, t.ID)
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+				revoked, err = revokeRemotePAT(ctx, newClient, t.ID)
+			}
 			if err != nil {
 				return fmt.Errorf("switched, but revoking the previous CLI token %s failed: %w", t.ID, err)
 			}
@@ -691,7 +700,10 @@ func RemoteOrgsList(ctx context.Context, c *RemoteClient, p *Printer) error {
 // live no longer than it.
 type patRevocation struct {
 	InvitationsRevoked []endedInvitation `json:"invitations_revoked"`
-	InvitationsError   string            `json:"invitations_error"`
+	// InvitationsRevokedElsewhere counts the ones in teams the revoking
+	// credential is not pinned to, which the server does not name to it.
+	InvitationsRevokedElsewhere int    `json:"invitations_revoked_elsewhere"`
+	InvitationsError            string `json:"invitations_error"`
 	// unreadable is why a revoke the server confirmed (2xx) answered a body
 	// this client could not read: the token is revoked all the same, and the
 	// invitations it ended are not known here.
@@ -699,23 +711,31 @@ type patRevocation struct {
 }
 
 type endedInvitation struct {
+	ID     string `json:"id"`
 	Email  string `json:"email"`
 	TeamID string `json:"team_id"`
 	Role   string `json:"role"`
 }
 
-// view is the revocation as `tokens revoke --output json` prints it.
+// view is the revocation as `tokens revoke --output json` prints it. An
+// answer that could not be read carries no invitations_revoked at all: an
+// empty list there would read as "the revoke ended nothing".
 func (r patRevocation) view(tokenID string) map[string]any {
+	v := map[string]any{"revoked": tokenID}
+	if r.unreadable != nil {
+		v["invitations_unreadable"] = r.unreadable.Error()
+		return v
+	}
 	ended := r.InvitationsRevoked
 	if ended == nil {
 		ended = []endedInvitation{}
 	}
-	v := map[string]any{"revoked": tokenID, "invitations_revoked": ended}
+	v["invitations_revoked"] = ended
+	if r.InvitationsRevokedElsewhere > 0 {
+		v["invitations_revoked_elsewhere"] = r.InvitationsRevokedElsewhere
+	}
 	if r.InvitationsError != "" {
 		v["invitations_error"] = r.InvitationsError
-	}
-	if r.unreadable != nil {
-		v["invitations_unreadable"] = r.unreadable.Error()
 	}
 	return v
 }
@@ -752,6 +772,9 @@ func printEndedInvitations(p *Printer, r patRevocation) {
 		for _, inv := range r.InvitationsRevoked {
 			p.Line("  %s (team %s, role %s)", inv.Email, inv.TeamID, inv.Role)
 		}
+	}
+	if n := r.InvitationsRevokedElsewhere; n > 0 {
+		p.Line("%d more pending invitation(s) sent with that token, in teams this credential is not pinned to, ended with it — their team's audit log names them (invitation.deleted, reason minting_pat_revoked)", n)
 	}
 	if r.InvitationsError != "" {
 		p.Line("Warning: %s", r.InvitationsError)

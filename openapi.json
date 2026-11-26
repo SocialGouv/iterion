@@ -7203,6 +7203,9 @@
               "$ref": "#/components/schemas/revokedInvitationView"
             },
             "type": "array"
+          },
+          "invitations_revoked_elsewhere": {
+            "type": "integer"
           }
         },
         "required": [
@@ -12313,6 +12316,9 @@
               }
             },
             "description": "OK"
+          },
+          "204": {
+            "description": "The revoke ended no invitation: no body"
           },
           "401": {
             "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."

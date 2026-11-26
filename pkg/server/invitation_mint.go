@@ -132,13 +132,16 @@ func (s *Server) confirmMintingTokenAfterMint(w http.ResponseWriter, r *http.Req
 	if err == nil {
 		return true
 	}
-	fate, _ := s.revokeUndeliveredInvitation(r, inv, "minting_pat_gone", "")
 	if errors.Is(err, auth.ErrInvitationCredentialGone) {
+		fate, _ := s.revokeUndeliveredInvitation(r, inv, "minting_pat_gone", "")
 		httpError(w, http.StatusUnauthorized,
 			"this personal access token was revoked, or stopped standing, while the invitation for %s was being minted: nothing was sent, and %s",
 			inv.Email, fate)
 		return false
 	}
+	// A standing that could not be READ is not one that dropped: the trail
+	// says which, as the cap confirmations' *_unconfirmed reasons do.
+	fate, _ := s.revokeUndeliveredInvitation(r, inv, "minting_pat_unconfirmed", "")
 	httpError(w, http.StatusInternalServerError,
 		"confirming the personal access token that minted the invitation for %s failed (%v): nothing was sent, and %s", inv.Email, err, fate)
 	return false
@@ -255,11 +258,12 @@ func invitationOrgRoleIn(inv identity.Invitation, orgID string) identity.OrgRole
 }
 
 // invitationAuditMeta is what the audit line of a minted invitation names:
-// its address, its team role, the org role accepting writes, and — for one a
-// personal access token minted — that token, which is what someone answering
-// a leak looks for.
+// its address, its team, its team role, the org role accepting writes, and —
+// for one a personal access token minted — that token, which is what someone
+// answering a leak looks for. The team is what keeps the org trail's row
+// from a credential pinned to another team (orgAuditRowsForPin).
 func invitationAuditMeta(inv identity.Invitation, orgID string) map[string]any {
-	meta := map[string]any{"email": inv.Email, "role": string(inv.Role), "org_role": string(invitationOrgRoleIn(inv, orgID))}
+	meta := map[string]any{"email": inv.Email, "team_id": inv.TeamID, "role": string(inv.Role), "org_role": string(invitationOrgRoleIn(inv, orgID))}
 	if inv.MintedWith != "" {
 		meta["minted_with"] = inv.MintedWith
 	}

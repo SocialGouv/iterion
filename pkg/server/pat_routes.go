@@ -216,15 +216,28 @@ func (s *Server) handleRevokePAT(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	writeJSON(w, patRevokedView{InvitationsRevoked: ended, InvitationsError: sweepErr})
+	// The revoke reaches any token of the account, but a credential pinned
+	// to one team reads no other team's invitations: those it ended are
+	// counted, not named.
+	view := patRevokedView{InvitationsRevoked: []revokedInvitationView{}, InvitationsError: sweepErr}
+	for _, inv := range ended {
+		if id.PinRefusesTeam(inv.TeamID) {
+			view.InvitationsRevokedElsewhere++
+			continue
+		}
+		view.InvitationsRevoked = append(view.InvitationsRevoked, inv)
+	}
+	writeJSON(w, view)
 }
 
 // patRevokedView answers a revoke that ended invitations: the pending ones
-// the token minted, now revoked, and — when the sweep could not finish — why,
+// the token minted, now revoked — named where the caller's own pin reaches
+// their team, counted otherwise — and, when the sweep could not finish, why,
 // the rows it left being refused at accept all the same.
 type patRevokedView struct {
-	InvitationsRevoked []revokedInvitationView `json:"invitations_revoked"`
-	InvitationsError   string                  `json:"invitations_error,omitempty"`
+	InvitationsRevoked          []revokedInvitationView `json:"invitations_revoked"`
+	InvitationsRevokedElsewhere int                     `json:"invitations_revoked_elsewhere,omitempty"`
+	InvitationsError            string                  `json:"invitations_error,omitempty"`
 }
 
 type revokedInvitationView struct {

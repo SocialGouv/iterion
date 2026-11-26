@@ -65,11 +65,11 @@ export default function TokensPanel() {
     if (!deleting) return;
     try {
       const revocation = await revokeMyToken(deleting.id);
-      setEnded(
-        revocation.invitations_revoked.length > 0 || revocation.invitations_error
-          ? { name: deleting.name, revocation }
-          : null,
-      );
+      // A revoke that ended nothing leaves an earlier list up until it is
+      // dismissed: the operator may not have noted who to invite again yet.
+      if (revocation.invitations_revoked.length > 0 || revocation.invitations_error) {
+        setEnded({ name: deleting.name, revocation });
+      }
       setDeleting(null);
       reload();
     } catch (e) {
@@ -110,7 +110,11 @@ export default function TokensPanel() {
         <InlineBanner
           tone="warning"
           layout="inline"
-          title={`Revoking ${ended.name} ended the invitations it sent`}
+          title={
+            ended.revocation.invitations_revoked.length > 0
+              ? `Revoking ${ended.name} ended the invitations it sent`
+              : `Revoking ${ended.name} could not end every invitation it sent`
+          }
           onDismiss={() => setEnded(null)}
         >
           {ended.revocation.invitations_revoked.length > 0 && (

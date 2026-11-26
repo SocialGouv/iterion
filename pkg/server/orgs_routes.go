@@ -1340,7 +1340,7 @@ func (s *Server) handleDeleteOrgInvitation(w http.ResponseWriter, r *http.Reques
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	s.auditOrg(r, orgID, "org_invitation.deleted", "invitation", inviteID, map[string]any{"email": inv.Email})
+	s.auditOrg(r, orgID, "org_invitation.deleted", "invitation", inviteID, map[string]any{"email": inv.Email, "team_id": inv.TeamID})
 	w.WriteHeader(http.StatusNoContent)
 }
 

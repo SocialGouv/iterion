@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 )
@@ -95,10 +96,52 @@ func TestProvisionApprovals_APinnedTokenDecidesItsOwnTeamsRequestsOnly(t *testin
 			t.Fatalf("tb's request is gone after a refused %s: %v", verb, err)
 		}
 	}
+	// Its own team's request passes the pin: the approve reaches the
+	// orchestrator, which this fixture does not build.
+	if code, _, body := f.call(t, http.MethodPost, "/api/orgs/o1/provision-approvals/req-ta/approve", patToken, ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("a ta-pinned PAT approving ta's request: %d %s, want the 503 of the missing orchestrator, past the pin", code, body)
+	}
 	if code, _, body := f.call(t, http.MethodPost, "/api/orgs/o1/provision-approvals/req-ta/reject", patToken, ""); code != http.StatusNoContent {
 		t.Fatalf("a ta-pinned PAT rejecting ta's request: %d %s, want 204", code, body)
 	}
 	if _, err := store.Get(ctx, "req-ta"); err == nil {
 		t.Fatalf("ta's request survived its reject")
+	}
+}
+
+// TestOrgAudit_APinnedTokenReadsNoSiblingTeamsRows: the org trail keeps,
+// from a token pinned to ta, the rows about sibling team tb — the invitation
+// into it and the change of its caps — which the org's lists and the team
+// routes keep from it already. The org admin's session reads them all, and
+// the page offset still counts the whole trail.
+func TestOrgAudit_APinnedTokenReadsNoSiblingTeamsRows(t *testing.T) {
+	f, patToken := pinnedOrgFixture(t)
+	f.s.auditStore = audit.NewMemoryStore()
+	f.s.registerAuditRoutes()
+	for _, team := range []string{"ta", "tb"} {
+		if code, _, body := f.call(t, http.MethodPost, "/api/orgs/o1/invitations", f.user.AccessToken,
+			`{"email":"`+team+`-invitee@example.com","role":"member","team_id":"`+team+`"}`); code != http.StatusOK {
+			t.Fatalf("a session's invitation into %s: %d %s", team, code, body)
+		}
+	}
+	if code, _, body := f.call(t, http.MethodPatch, "/api/orgs/o1/teams/tb/caps", f.user.AccessToken, `{"max_concurrent_runs":3}`); code != http.StatusOK {
+		t.Fatalf("the session setting tb's caps: %d %s", code, body)
+	}
+	waitForTenantAuditRows(t, f.s.auditStore, "o1", "team.caps_updated", 1)
+	waitForTenantAuditRows(t, f.s.auditStore, "o1", "org_invitation.created", 2)
+
+	code, _, all := f.call(t, http.MethodGet, "/api/orgs/o1/audit", f.user.AccessToken, "")
+	if code != http.StatusOK || !strings.Contains(all, "tb-invitee@example.com") || !strings.Contains(all, "team.caps_updated") {
+		t.Fatalf("the org admin's session reading the org trail: %d %s, want tb's rows", code, all)
+	}
+	code, _, pinned := f.call(t, http.MethodGet, "/api/orgs/o1/audit", patToken, "")
+	if code != http.StatusOK || !strings.Contains(pinned, "ta-invitee@example.com") {
+		t.Fatalf("a ta-pinned PAT reading the org trail: %d %s, want ta's rows", code, pinned)
+	}
+	if strings.Contains(pinned, "tb-invitee@example.com") || strings.Contains(pinned, "team.caps_updated") {
+		t.Fatalf("a ta-pinned PAT read sibling team tb's rows from the org trail: %s", pinned)
+	}
+	if !strings.Contains(pinned, `"next_offset":3`) {
+		t.Fatalf("the pinned page's next_offset does not count the whole trail (3 rows): %s", pinned)
 	}
 }

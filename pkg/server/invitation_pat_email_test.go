@@ -187,12 +187,17 @@ func TestInvitations_APersonalAccessTokenOnAnInstanceWithNoMailerMintsNone(t *te
 func TestInvitations_AnEmailTheRelayRefusesTakesTheInvitationBack(t *testing.T) {
 	mailer := &recordingMailer{fail: errors.New("relay down")}
 	f, patToken := invitationMailFixture(t, mailer)
+	f.s.auditStore = audit.NewMemoryStore()
 	code, _, body := f.call(t, http.MethodPost, "/api/teams/ta/invitations", patToken, `{"email":"a@example.com","role":"member"}`)
 	if code != http.StatusBadGateway || !strings.Contains(body, `"error_code":"`+invitationEmailFailedCode+`"`) {
 		t.Fatalf("a refused email: %d %s, want 502 with error_code %s", code, body, invitationEmailFailedCode)
 	}
 	if n := len(invitationsOfTeam(t, f, "ta")); n != 0 {
 		t.Fatalf("an invitation whose email was refused outlived the request (%d rows)", n)
+	}
+	deleted := waitForTenantAuditRows(t, f.s.auditStore, "ta", "invitation.deleted", 1)
+	if deleted[0].Meta["reason"] != "email_delivery_failed" {
+		t.Fatalf("the take-back's audit line names %v, want reason email_delivery_failed", deleted[0].Meta)
 	}
 }
 
