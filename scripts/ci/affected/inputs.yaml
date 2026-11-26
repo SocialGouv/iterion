@@ -44,8 +44,8 @@ global:
 
 packages:
   bots:
-    reads: ["bots/**", "examples/**", "docs/**", "skills/**", "scripts/**", "charts/**", "ci/**", "*.md", ".botz/**", "**/.gitignore", "studio/src/lib/botTaxonomy.ts", "studio/src/lib/chatDock/*.ts", "studio/src/components/ChatDock/AssistantActionOffer.tsx", "studio/e2e/fixtures/bots/**", "pkg/server/server_info.go", "pkg/server/assistant_run_watch.go", "pkg/server/assistant_host_event.go", "pkg/cli/templates/dispatch_bots_default.bot", "pkg/botreplay/testdata/bot-goldens/rgaa-audit/*.json", "e2e/testdata/exhaustive_dsl_coverage.bot", "sandbox/*/Dockerfile", "Dockerfile.runner-devbox", ".dockerignore", ".ultra11yrc.json", "cmd/iterion/**", "e2e/live_test.go", "package.json", "pkg/dsl/**"]
-    why: "the catalogue tests scan `git ls-files` of bots/examples/docs/skills/scripts/charts/ci and the root *.md, walk bots/, examples/ and .botz/, and read the e2e matrix, studio taxonomy, sandbox Dockerfiles and the ultra11y pin scripts; plus paths named literally in catalog_universality_test.go, e2e_coverage_matrix_gate_test.go, rgaa_audit_bot_nodes_test.go, rgaa_audit_engine_contract_test.go"
+    reads: ["pkg/botreplay/testdata/bot-goldens/rgaa-audit/*.json", "scripts/ultra11y-engine/**", "scripts/ultra11y-engine.sh", "scripts/ultra11y-pin.sh", "README.md", "examples/cursors/cursors.bot"]
+    why: "the behaviour tests read bots/ (their own directory, ultra11y.pin included) and compile bundles whose imports stay under bots/; TestRgaaAuditEngineDrivenNodes' golden subtest reads the two rgaa-audit batch goldens of pkg/botreplay, and the rgaa engine-contract tests read and run scripts/ultra11y-engine{,.sh} and scripts/ultra11y-pin.sh. README.md is a symlink target written into a temp repository by delivery_gate_test.go and examples/cursors/cursors.bot a map key of catalog_shared_helpers_test.go — neither is read, the scan names both. The whole-tree catalogue sweeps live in internal/sweep/{catalogcorpus,catalogclaims,publishedtree,e2ematrix,sandboximages} (#3758)"
   charts/iterion:
     reads: ["charts/**", "scripts/chart-kind-wait.sh", "scripts/chart-check-deps.sh", "scripts/chart-render-diff.sh", "Taskfile.yml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "devbox.json", "devbox.lock", "scripts/**"]
     why: "the kind-wait tests read the Taskfile, the workflows and devbox; the deps and render-diff tests run the chart scripts over charts/; plus paths named literally in render_diff_scratch_test.go"
@@ -60,8 +60,8 @@ packages:
     reads: ["docs/auto-maintenance.md", "scripts/auto-maintenance-check.sh"]
     why: "tests read paths named literally in preflight_test.go"
   internal/ciguard:
-    reads: [".github/**", "scripts/**", "ci/**", "Taskfile.yml", "AGENTS.md", "docs/merge-policy.md", "docs/agents/workflow/review-and-merge.md", "Formula/**", "Cask/**", ".release-it.mjs", "**/*_test.go", "CHANGELOG.md", "charts/iterion/Chart.yaml", "internal/mdcode/testdata/committed-reading.txt", "package.json", "docker/**", "openapi.json", "pkg/sandbox/**", "studio/e2e/**", "studio/src/api/schema.ts"]
-    why: "parses the workflows, the gate map, the Taskfile, AGENTS.md, the merge-policy pages, ci/arc-runner and Formula/Cask, runs workflow run steps and scripts, walks every _test.go (native_exec_runner) and stats the paths-ignore files; plus paths named literally in e2e_shards_test.go, gate_map_test.go, native_exec_runner_test.go, openapi_check_test.go"
+    reads: [".github/**", "scripts/**", "ci/**", "Taskfile.yml", "AGENTS.md", "docs/merge-policy.md", "docs/agents/workflow/review-and-merge.md", "docs/agents/workflow/push-to-main.md", "renovate.json", "Formula/**", "Cask/**", ".release-it.mjs", "**/*_test.go", "CHANGELOG.md", "charts/iterion/Chart.yaml", "internal/mdcode/testdata/committed-reading.txt", "package.json", "docker/**", "openapi.json", "pkg/sandbox/**", "studio/e2e/**", "studio/src/api/schema.ts"]
+    why: "parses the workflows, the gate map, the Taskfile, AGENTS.md, the merge-policy pages, ci/arc-runner and Formula/Cask, runs workflow run steps and scripts, walks every _test.go (native_exec_runner) and stats the paths-ignore files; plus paths named literally in e2e_shards_test.go, gate_map_test.go, light_pr_lanes_test.go, native_exec_runner_test.go, openapi_check_test.go, renovate_pins_test.go"
   internal/corpusreading:
     reads: [".release-it.mjs"]
     why: "tests read paths named literally in corpusreading_test.go"
@@ -98,6 +98,50 @@ packages:
   internal/skillshare:
     reads: ["bots/**"]
     why: "the shared-skill tests read the declared copies under bots/*/skills, bots/testdata/shared_skills.txt and git ls-files bots"
+  internal/sweep/authorcorpus:
+    reads: ["**/*.bot", "bots/**", "examples/**", "e2e/testdata/**", "**/testdata/**"]
+    why: "TestE056IsSilentExactlyWhenTheTwoFilesAreOneProgram walks every .bot from sweepwalk.ModuleRoot (workflowfile.SkipWalkDir rules) and converts each with its imported units, prompts and fragments; TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus copies bots/ and examples/ whole into a temp workspace and draws every workflow of them"
+  internal/sweep/authorreading:
+    reads: ["**/*.go"]
+    module: true
+    why: "TestNoServerCodeReadsAnAuthorDocument runs modtypes.Load (go list -export over the module) and follows every call chain into pkg/dsl/author; its direct table names pkg/cli/fmt.go, fmt_author.go, validate_author.go, pkg/dsl/canon/document.go and probecheck/main.go"
+  internal/sweep/catalogclaims:
+    reads: ["bots/**", "docs/agents/bots/bot-authoring.md", "docs/agents/bots/convergence.md", "docs/workflow_authoring_pitfalls.md", "docs/improvement-ratchet.md", "docs/security-bots.md", "docs/references-bootstrap.md", "studio/src/lib/chatDock/contextMessage.ts", "studio/src/lib/chatDock/replyNavigation.ts", "studio/src/components/ChatDock/AssistantActionOffer.tsx", "studio/src/lib/botTaxonomy.ts", "pkg/server/server_info.go", "pkg/server/assistant_run_watch.go", "pkg/server/assistant_host_event.go"]
+    why: "the scaffold-staging guard walks bots/ for .bot/.md plus three doctrine pages; the empty-gate claim globs bots/*/{README.md,skills/*.md,*.bot,lib/*.bot} and docs/improvement-ratchet.md; the deepsec docs test reads two bots/ catalogues, the sec-audit-source manifest and skill, docs/security-bots.md and docs/references-bootstrap.md; the copilot protocol test reads bots/copilot/main.bot and its host owners in studio/ and pkg/server; taxonomy parity reads studio/src/lib/botTaxonomy.ts"
+  internal/sweep/catalogcorpus:
+    reads: ["bots/**", "examples/**", ".botz/**", "scripts/adhoc/*.bot", "pkg/cli/templates/dispatch_bots_default.bot", "studio/e2e/fixtures/bots/**", "e2e/testdata/exhaustive_dsl_coverage.bot", "*.md", "docs/**/*.md", "skills/**", "cmd/iterion/**", "pkg/dsl/**", "internal/sweep/**"]
+    why: "TestMain chdirs into <root>/bots, so the scan cannot follow its paths: the guards glob and walk bots/ and ../examples, route discovery reads botregistry.DefaultPaths (bots, examples, .botz), the dial floor reads ../scripts/adhoc/*.bot and the dispatcher's default .bot, the parse floor the studio e2e fixtures and e2e/testdata/exhaustive_dsl_coverage.bot, and the untrusted-boundary guard every docfences.Files page (root *.md, docs/**/*.md, bots/ and examples/ .md). skills/**, cmd/iterion/**, pkg/dsl/** and internal/sweep/** are scan hits of literals that are not reads (a Join tail \"skills\", the universality violation patterns, a trimmed \"../\" prefix)"
+  internal/sweep/e2ematrix:
+    reads: ["**"]
+    why: "the matrix contract sliced out of bots/e2e-coverage/main.bot opens every file docs/e2e-coverage-matrix.md cites and greps the whole tree (untracked files included) for each bare test name; the plan table is recounted from that matrix and docs/e2e-stabilisation-plan.md"
+  internal/sweep/itertoken:
+    reads: ["**"]
+    why: "TestNoIterExtensionAnywhere greps every tracked file from sweepwalk.ModuleRoot"
+  internal/sweep/mintchokepoint:
+    reads: ["**/*.go", "pkg/auth/**", "pkg/configshare/**", "pkg/forge/**", "pkg/server/**", "pkg/webhooks/**"]
+    why: "the verdict-stamper and primitive-caller guards walk every non-test .go file from sweepwalk.ModuleRoot; the primitive and forge guards read the mint directories pkg/auth, pkg/configshare, pkg/forge, pkg/server and pkg/webhooks by name"
+  internal/sweep/modelseams:
+    reads: ["**/*.go"]
+    why: "the global-lookup restore sweep walks every .go file from sweepwalk.ModuleRoot; the launch-vars and codemode-cell sweeps walk the pkg/, cmd/ and internal/ trees and name cmd/iterion/runner.go, pkg/backend/model/claw_backend.go, pkg/dryrun/executor.go and pkg/runtime/resume.go"
+  internal/sweep/publishedtree:
+    reads: ["bots/**", "examples/**", "docs/**", "skills/**", "scripts/**", "charts/**", "ci/**", "*.md", "**/.gitignore"]
+    why: "TestCatalogNamesNoForeignInfrastructure lists the tracked files of catalogScope (bots, examples, docs, skills, scripts, charts, ci and the root *.md) from sweepwalk.ModuleRoot; the gitignore guard asks check-ignore, which reads every .gitignore on the path"
+  internal/sweep/runtimecatalog:
+    reads: ["bots/**"]
+    why: "the catalogue guards compile and run real bots/*/main.bot nodes, walk every bundle under bots/ for owned-skill parsing and binary resolution, and merge bots/whole-improve-loop/presets"
+  internal/sweep/runtimedocs:
+    reads: ["docs/sandbox.md", "docs/environment-variables.md", "docs/resume.md"]
+    why: "each guard reads one operator page from sweepwalk.ModuleRoot against the production answer it imports"
+  internal/sweep/runtimeseams:
+    reads: ["**/*.go", "pkg/**"]
+    module: true
+    why: "the sandbox command-environment inventory runs modtypes.Load (go list -export over the module); the preset merge-site sweep uses sweepwalk.GoFiles, the simulation sweep walks the module and the subbot-runner sweep walks pkg/"
+  internal/sweep/sandboximages:
+    reads: ["sandbox/browser/Dockerfile", "sandbox/rgaa/Dockerfile", "sandbox/sec/Dockerfile", "Dockerfile.runner-devbox", ".dockerignore", "bots/**"]
+    why: "the image guards read the three sandbox Dockerfiles, Dockerfile.runner-devbox and .dockerignore from sweepwalk.ModuleRoot, and the rgaa-audit and sec-audit bots' main.bot and bots/rgaa-audit/ultra11y.pin; the scan reads the Join tail \"bots\" of the bot helper as the whole bots/ tree"
+  internal/sweep/serversurface:
+    reads: ["cmd/iterion/**", "pkg/cli/**", "pkg/server/**", "pkg/dispatcher/native/http.go", "pkg/dispatcher/manager.go", "docs/**"]
+    why: "the CLI route sweeps read the .go files of cmd/iterion and pkg/cli; routescan.ServedRouteTable derives the served table from pkg/server's registrations, pkg/dispatcher/native/http.go and pkg/dispatcher/manager.go; the REST reference guards read docs/cloud-rest-api.md (the scan reads the Join tail \"docs\" as docs/); the bootstrap guard parses cmd/iterion/server.go"
   internal/sweepwalk:
     why: "every test runs on t.TempDir fixtures; TestModuleRootJudgesTheExecutionTree chdirs into one, so no repository file is read"
   pkg/backend/auxllm:
@@ -113,9 +157,9 @@ packages:
     reads: ["**/*.go", ".mcp.json"]
     why: "the manager construction sweep AST-parses every .go file through sweepwalk.GoFiles; plus paths named literally in config_test.go"
   pkg/backend/model:
-    reads: ["**/*.go", ".mcp.json", "AGENTS.md", "CLAUDE.md", "bots/dep-update-guard/main.bot", "bots/revi-converse/**", "bots/revi-converse/main.bot", "bots/review-pr/**", "bots/review-pr/main.bot", "docs/**", "pkg/backend/delegate/**", "pkg/backend/modelspecs/**", "pkg/backend/tool/**", "pkg/claw/internal/api/**"]
+    reads: [".mcp.json", "AGENTS.md", "CLAUDE.md", "bots/dep-update-guard/main.bot", "bots/revi-converse/**", "bots/review-pr/**", "cmd/iterion/**", "docs/**", "pkg/backend/compatgw/**", "pkg/backend/delegate/**", "pkg/backend/detect/**", "pkg/backend/modelspecs/**", "pkg/backend/tool/**", "pkg/claw/internal/api/**", "pkg/claw/internal/tools/web_search.go"]
     reach: [cmd/iterion, pkg/backend/model]
-    why: "claw_sandbox_env_class_test runs go list -export -deps on ./pkg/backend/model and ./cmd/iterion and type-checks their closure; other tests read pkg/claw, pkg/backend/tool and delegate sources and walk pkg/, cmd/, internal/ for .go; plus paths named literally in claw_ambient_credential_header_test.go, claw_ambient_test.go, claw_vendored_tool_env_test.go, converse_prefix_stability_test.go, human_route_test.go, permission_climb_test.go, planted_endpoint_class_test.go, revi_converse_claw_test.go, review_merge_mcp_test.go, review_pr_mcp_test.go"
+    why: "still wide through its reach: claw_sandbox_env_class_test runs go list -export -deps on ./pkg/backend/model and ./cmd/iterion and type-checks their closure (TestEveryEnvReadIsClassifiedForTheSandbox needs the unexported provider env tables, so it cannot move); the vendored provider/tool env sweeps, the credential-header and planted-endpoint tests read pkg/claw/internal/api, pkg/backend/{tool,delegate,compatgw,detect,modelspecs} and web_search.go by name; the review-pr, revi-converse and dep-update-guard behaviour tests read their bundles. The whole-module walks live in internal/sweep/modelseams (#3758); plus paths named literally in claw_ambient_test.go, claw_sandbox_env_class_test.go, permission_climb_test.go, review_merge_mcp_test.go"
   pkg/backend/tool:
     reads: ["pkg/backend/**"]
     why: "tests read paths named literally in claw_workspace_read_test.go"
@@ -157,8 +201,8 @@ packages:
     reads: ["pkg/claw/testdata/golden/plugin_manifest.json"]
     why: "tests read paths named literally in plugin_test.go"
   pkg/cli:
-    reads: ["**"]
-    why: "TestNoIterExtensionAnywhere runs git grep over every tracked file; validate_author_corpus walks every .bot from the root; diagram_author reads bots/ and examples/"
+    reads: ["bots/**", "connectors/**", "skills/**", "build/**", "examples/cursors/sample.bot", "SKILL.md", "README.md", ".gitignore"]
+    why: "connections_test symlinks ../../connectors/forgejo into its workspaces; the embedded dispatcher catalogue (templates/dispatch_bots, generated by templates:dispatch-bots from nine bots/ bundles) is read by the dispatch tests; plus paths named literally in clean_test.go, connectors_identity_test.go, connectors_test.go, dsl_migrate_more_test.go, dsl_migrate_repo_boundary_test.go, migrate_run_paths_test.go, schedule_test.go, validate_durable_memory_test.go (fixture names joined to the root by the scan: build/, skills/, bots/). The whole-tree greps and corpus benches live in internal/sweep/{itertoken,authorcorpus} (#3758)"
   pkg/cloud/orgsweep:
     reads: ["**/*.go", "pkg/**"]
     why: "purge_completeness_test walks the whole repo and reads every non-test .go file; plus paths named literally in purge_completeness_test.go"
@@ -254,9 +298,8 @@ packages:
     reads: ["**/*.go", "cmd/iterion/server.go", "bots/**", ".gitattributes", ".mcp.json", "pkg/**"]
     why: "usage_cap_launch_vars walks every non-test .go file; the pre-engine refusal inventory parses loop.go; loop_pool reads cmd/iterion/server.go; usage_cap_review_pr compiles bots with their imports; plus paths named literally in bank_lfs_test.go, pre_engine_refusal_nats_test.go, subbot_routing_fold_test.go"
   pkg/runtime:
-    reads: ["**/*.go", "bots/**", "docs/environment-variables.md", "docs/resume.md", "docs/sandbox.md", "sandbox/**", ".devcontainer/**", ".devcontainer/devcontainer.json", ".gitignore", "Dockerfile", "README.md", "SKILL.md", "connectors/jira/connector.yaml", "pkg/**", "skills/**"]
-    module: true
-    why: "the sandbox_command_env tests run modtypes.Load (go list -export over the module); the preset sweep uses sweepwalk.GoFiles; catalog tests read bots/; doc tests read three pages; the image admission test lists sandbox/*/Dockerfile; plus paths named literally in bundle_symlink_test.go, bundle_test.go, devbox_host_lock_test.go, sandbox_host_guard_executed_test.go, sandbox_host_state_floor_test.go, sandbox_image_env_dockerlive_test.go, workdir_throwaway_test.go, worktree_test.go"
+    reads: ["pkg/**", "cmd/**/*.go", "internal/**/*.go", "bots/**", "sandbox/**", ".devcontainer/**", ".gitignore", "Dockerfile", "README.md", "SKILL.md", "connectors/jira/connector.yaml", "skills/**"]
+    why: "still wide: TestTheInContainerCommandInventoryIsReadFromTheCode walks every non-test .go file under pkg/, cmd/ and internal/ from the go.mod root (it renders the unexported devboxInstallSnippet, so it cannot move); transient_outage_test globs ../../bots/*/*.bot, the owned-skills tests read five bots/*/main.bot, sandbox_image_admission_test lists ../../sandbox and stats each <variant>/Dockerfile; plus fixture names the scan joins to the root in bundle_symlink_test.go, bundle_test.go, catalog_regen_scope_test.go (bots/), sandbox_host_guard_executed_test.go, sandbox_host_state_floor_test.go, sandbox_image_env_dockerlive_test.go, workdir_throwaway_test.go (pkg/), worktree_test.go. The module type-check, the catalogue and the page sweeps live in internal/sweep/{runtimeseams,runtimecatalog,runtimedocs} (#3758)"
   pkg/runview:
     reads: ["**/*.go", "studio/src/components/Runs/runSourceMeta.ts", ".mcp.json", "README.md", "SKILL.md", "bots/app-dev/main.bot", "bots/smoke/board_smoke.bot", "bots/whats-next/main.bot", "connectors/**", "connectors/forgejo/**", "pkg/**", "skills/**"]
     why: "the executor-spec sweeps use sweepwalk.GoFiles; source_kind_class reads the studio runSourceMeta.ts; plus paths named literally in bot_identity_test.go, compile_promotion_test.go, executor_workspace_follow_test.go, localconnectors_test.go, resume_claim_test.go, resume_shared_dependency_test.go, subbot_routing_fold_test.go, workflow_path_test.go, workflow_provenance_test.go"
@@ -271,9 +314,8 @@ packages:
     reads: ["**/*.go", "docs/getting-started.md"]
     why: "TestOnlyBaseURLNamesZAISpellsTheZAIHosts parses every tracked .go file; getting_started_wire_ids reads docs/getting-started.md"
   pkg/server:
-    reads: ["**/*.go", "docs/cloud-rest-api-generated.md", "docs/cloud-rest-api.md", "docs/backends.md", "bots/**", "studio/index.html", "scripts/ops/revi-effort-cells.py", ".gitignore", "README.md", "docs/**", "docs/README.md", "docs/cloud-deployment.md", "docs/environment-variables.md", "docs/scripts/**", "pkg/**", "pkg/cli/**", "pkg/pricefeed/testdata/litellm-model-info.json", "scripts/**", "skills/**"]
-    module: true
-    why: "author_reading_guard runs modtypes.Load (go list -export over the module); sweeps walk every non-test .go; docs, bots, studio/index.html and the revi-effort-cells script are read or run by name; plus paths named literally in assistant_authoring_local_test.go, assistant_authoring_test.go, assistant_dependency_transaction_test.go, auth_error_status_test.go, auth_forwarded_test.go, cli_route_reachability_test.go, docs_rest_reference_test.go, marketplace_routes_test.go, pricefeed_litellm_test.go"
+    reads: ["pkg/**", "bots/**", "scripts/**", "skills/**", "openapi.json", "docs/cloud-rest-api-generated.md", "docs/backends.md", "docs/cloud-deployment.md", "docs/environment-variables.md", "studio/index.html", ".gitignore", "README.md"]
+    why: "the sentinel sweeps walk pkg/{auth,identity,pat,forge} (the scan reads filepath.Join(\"..\", root) as pkg/); routescan reads pkg/dispatcher/native/http.go and pkg/dispatcher/manager.go; about 64 behaviour tests load the real bots/ catalogue (botsDirAbs, newDispatchWorld); TestTheGeneratedRESTInventoryIsFresh regenerates docs/cloud-rest-api-generated.md from pkg/server and openapi.json; the gateway doc test reads docs/backends.md, the SPA test studio/index.html, the revi-effort test runs scripts/ops/revi-effort-cells.py; plus fixture names the scan joins to the root in assistant_authoring_test.go (scripts/), assistant_dependency_transaction_test.go (skills/), assistant_authoring_local_test.go, auth_forwarded_test.go, marketplace_routes_test.go. The module type-check and whole-tree sweeps live in internal/sweep/{authorreading,mintchokepoint,serversurface} (#3758)"
   pkg/server/cloudpublisher:
     reads: ["scripts/ops/revi-effort-cells.py", "bots/**", "docs/cloud-admin.md", "docs/cloud-public-exposure-checklist.md", "docs/oauth-forfait.md", "pkg/runview/fork.go", "pkg/runner/subbot.go", "pkg/runner/loop.go", "docs/**", "skills/**"]
     why: "the revi gateway and routing tests stat the script and compile bots; the forfait audit reads three docs pages; runner_pool reads runview/runner sources; plus paths named literally in contributions_dedup_test.go, forfait_audit_grep_test.go"
