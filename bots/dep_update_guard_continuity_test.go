@@ -694,13 +694,13 @@ func runContinuity(t *testing.T, ws, head string, forge http.Handler, over map[s
 		t.Fatalf("continuity output is not continuity_output JSON: %v (%q)", err, raw)
 	}
 	exclusive := 0
-	for _, k := range []string{"carry", "already_gated"} {
+	for _, k := range []string{"carry", "already_gated", "carry_hold"} {
 		if res[k] == true {
 			exclusive++
 		}
 	}
 	if exclusive > 1 {
-		t.Fatalf("continuity answered both carry and already_gated: %v", res)
+		t.Fatalf("continuity answered more than one of carry, already_gated and carry_hold: %v", res)
 	}
 	if s, _ := res["reason"].(string); s == "" {
 		t.Fatalf("continuity omitted its reason: %v", res)
@@ -748,6 +748,24 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 	greenStatus := func(n int) []map[string]any {
 		return []map[string]any{gateStatus("success", "supply-chain audit clean; nothing left to align, build verified"+stamp, reviewURL(n))}
 	}
+	holdOn := func(n int, sha, origin, at string) map[string]any {
+		return vettyReview(n, vettyLogin, gateMarker(sha, fx.id, "hold_security", origin, at))
+	}
+	holdStatus := func(n int) []map[string]any {
+		return []map[string]any{gateStatus("failure", "supply-chain risk: the bump was not applied"+stamp, reviewURL(n))}
+	}
+	wantHold := func(origin, at string) func(t *testing.T, res map[string]any, _ []string) {
+		return func(t *testing.T, res map[string]any, _ []string) {
+			t.Helper()
+			if res["carry_hold"] != true || res["carry"] == true || res["already_gated"] == true ||
+				res["origin_sha"] != origin || res["origin_at"] != at || res["change_id"] != fx.id {
+				t.Errorf("want the hold of %s (%s) carried, got %v", origin[:12], at, res)
+			}
+			if reason, _ := res["reason"].(string); !strings.Contains(reason, "with no new audit") {
+				t.Errorf("the carried hold's reason does not say nothing was audited: %q", reason)
+			}
+		}
+	}
 	other := strings.Repeat("e", 40)
 	origin := strings.Repeat("0a", 20)
 
@@ -763,6 +781,120 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 		over     map[string]string
 		check    func(t *testing.T, res map[string]any, reads []string)
 	}{
+		{
+			// buildkit-operator#49: every Renovate rebase of a held change
+			// bought a full audit. The hold is the change's, so it travels.
+			name:     "a hold on the identical change is carried onto the rebased head",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantHold(fx.x, fresh),
+		},
+		{
+			// A chain of carried holds never extends the age.
+			name:     "a carried hold descends from the ORIGINAL audit",
+			reviews:  []map[string]any{holdOn(1, fx.x, origin, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantHold(origin, fresh),
+		},
+		{
+			// Fail-closed needs no build: a red refuses the merge by itself,
+			// so the gate-only base that keeps a green from travelling does
+			// not keep a hold from travelling.
+			name:     "a hold is carried on a base that requires only the gate",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			rollup:   []map[string]any{{"__typename": "StatusContext", "context": "vetty/deps", "state": "PENDING", "isRequired": true}},
+			check:    wantHold(fx.x, fresh),
+		},
+		{
+			// A red on the head is what a hold paints: it vetoes a green, not
+			// a hold.
+			name:    "an unstamped red on this head does not keep the hold from travelling",
+			reviews: []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{
+				fx.x: holdStatus(1),
+				fx.y: {gateStatus("failure", "review refused to certify", "")},
+			},
+			check: wantHold(fx.x, fresh),
+		},
+		{
+			name: "an edited App hold is not carried",
+			reviews: []map[string]any{func() map[string]any {
+				r := holdOn(1, fx.x, fx.x, fresh)
+				r["lastEditedAt"], r["editor"] = utcAgo(time.Minute), map[string]any{"login": "maintainer-alice"}
+				return r
+			}()},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantNoCarry("was edited after it was created"),
+		},
+		{
+			name:     "a hold older than carry_max_age_h is audited again",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, utcAgo(100*time.Hour))},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantNoCarry("older than carry_max_age_h"),
+		},
+		{
+			name:     "carry_max_age_h=0 carries no hold either",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			over:     map[string]string{"{{vars.carry_max_age_h}}": "0"},
+			check:    wantNoCarry("carry_max_age_h is 0"),
+		},
+		{
+			// Unanimity, both ways: a green and a hold on the same change is
+			// a disagreement only a full audit settles.
+			name:     "a green and a hold on the same change: the full audit",
+			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh), holdOn(2, other, other, fresh)},
+			statuses: map[string][]map[string]any{fx.x: greenStatus(1), other: holdStatus(2)},
+			check:    wantNoCarry("every verdict on it is hold_security"),
+		},
+		{
+			// The verdict half of unanimity alone: a green whose gate the
+			// server refused for a moved head leaves a marker and no status.
+			name:     "a green with no status beside the hold: the full audit",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh), greenOn(2, other, "clean", other, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantNoCarry("every verdict on it is hold_security"),
+		},
+		{
+			// Only the supply-chain hold is the change's: a build hold is about
+			// one base, and a new head is what settles it.
+			name:     "a hold_unstable beside the hold: the full audit",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh), greenOn(2, other, "hold_unstable", other, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantNoCarry("every verdict on it is hold_security"),
+		},
+		{
+			name:    "a hold whose stamp another identity wrote is not carried",
+			reviews: []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: {func() map[string]any {
+				st := holdStatus(1)[0]
+				st["creator"] = map[string]any{"login": "acme-pat-user", "id": 777, "type": "User"}
+				return st
+			}()}},
+			check: wantNoCarry("another identity wrote it"),
+		},
+		{
+			// A hold marker whose stamped status is green: the review and the
+			// gate disagree.
+			name:     "a hold whose stamped status is green is not carried",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: {gateStatus("success", "supply-chain audit clean"+stamp, reviewURL(1))}},
+			check:    wantNoCarry("is success"),
+		},
+		{
+			name:     "a hold another bot published is not carried",
+			reviews:  []map[string]any{vettyReview(1, "renovate[bot]", gateMarker(fx.x, fx.id, "hold_security", fx.x, fresh))},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			check:    wantNoCarry("no hold_security"),
+		},
+		{
+			name:     "a hold history not read whole carries nothing",
+			reviews:  []map[string]any{holdOn(1, fx.x, fx.x, fresh)},
+			statuses: map[string][]map[string]any{fx.x: holdStatus(1)},
+			endless:  true,
+			check:    wantNoCarry("cannot be read whole"),
+		},
 		{
 			name:     "a pure rebase carries the verdict of X",
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
@@ -1183,7 +1315,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 func wantNoCarry(reason string) func(t *testing.T, res map[string]any, reads []string) {
 	return func(t *testing.T, res map[string]any, _ []string) {
 		t.Helper()
-		if res["carry"] == true || res["already_gated"] == true {
+		if res["carry"] == true || res["already_gated"] == true || res["carry_hold"] == true {
 			t.Errorf("want the full audit, got %v", res)
 		}
 		if got, _ := res["reason"].(string); !strings.Contains(got, reason) || !strings.Contains(got, "full audit") {
@@ -1259,14 +1391,15 @@ func TestDepUpdateGuardCommandForcesAFullAudit(t *testing.T) {
 }
 
 // TestDepUpdateGuardContinuityPathSpendsNoTokens walks the compiled graph
-// from continuity along its carry and already_gated edges: no node they can
+// from continuity along its carry, carry_hold and already_gated edges: no node they can
 // reach can call a model, by the engine's own predicate (ir.NodeUsesLLM — a
 // tool node whose recovery ladder has an agent or self-repair rung counts),
 // so a carry and a standby cost 0 LLM tokens and are immune to a provider's
 // quota wall; and both reach arm_automerge, which renews the arming pinned
 // to the new head.
 //
-// Mutations: route `continuity -> security_audit when carry`, or insert an
+// Mutations: route `continuity -> security_audit when carry` (or `when
+// carry_hold`), or insert an
 // agent on either path (an LLM node is reached); give feedback_health a
 // recovery ladder with an agent rung (a tool node that can call a model);
 // route `continuity_standby -> done` (arm_automerge is not reached).
@@ -1279,7 +1412,7 @@ func TestDepUpdateGuardContinuityPathSpendsNoTokens(t *testing.T) {
 	for _, e := range wf.Edges {
 		out[e.From] = append(out[e.From], e)
 	}
-	for _, cond := range []string{"carry", "already_gated"} {
+	for _, cond := range []string{"carry", "already_gated", "carry_hold"} {
 		t.Run(cond, func(t *testing.T) {
 			var start []string
 			for _, e := range out["continuity"] {
@@ -1352,5 +1485,143 @@ func TestDepUpdateGuardGateHistoryHasOneText(t *testing.T) {
 	b := sentinelBlock(t, "post_feedback", historyOpen, historyClose)
 	if a != b {
 		t.Errorf("the gate-history block differs between continuity and post_feedback: a repin would follow another rule than a carry")
+	}
+}
+
+// TestDepUpdateGuardCommandForcesAFullAuditOverAHold: a held change keeps
+// buying a full audit on /vetty — the human gesture that asks whether the
+// hold still stands. The control carries the same history with continuity on.
+//
+// Mutation: drop the early `if not bool(enabled)` exit in continuity (the
+// off case carries the hold).
+func TestDepUpdateGuardCommandForcesAFullAuditOverAHold(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	fx := newContFixture(t)
+	fresh := utcAgo(time.Hour)
+	reviews := []map[string]any{vettyReview(1, vettyLogin, gateMarker(fx.x, fx.id, "hold_security", fx.x, fresh))}
+	statuses := map[string][]map[string]any{fx.x: {gateStatus("failure", "supply-chain risk: the bump was not applied · "+fx.id, reviewURL(1))}}
+	on := &contForge{t: t, head: fx.y, baseRef: "main", reviews: reviews, statuses: statuses}
+	if res := runContinuity(t, fx.ws, fx.y, on, nil); res["carry_hold"] != true {
+		t.Fatalf("control: the hold is not carried with continuity on: %v", res)
+	}
+	off := &contForge{t: t, head: fx.y, baseRef: "main", reviews: reviews, statuses: statuses}
+	res := runContinuity(t, fx.ws, fx.y, off, map[string]string{"{{vars.continuity}}": "false"})
+	wantNoCarry("continuity is off")(t, res, nil)
+	if reads := off.requests(); len(reads) != 0 {
+		t.Errorf("continuity=false read the forge: %v", reads)
+	}
+}
+
+// TestDepUpdateGuardPublishesACarriedHold drives the shipped post_feedback
+// on the carry_hold edge's input: the hold keeps its value and its gate stays
+// red, the marker names the ORIGINAL audit (origin and origin_at unchanged),
+// the comment says it was carried, and the history read again at publish
+// time withdraws it on the disagreements continuity would have refused.
+//
+// Mutations (main.bot post_feedback): stamp the carried hold with this run
+// as its origin (the marker assertions redden); drop the publish-time re-read
+// for a carried hold (the green-published-since case publishes); drop the age
+// term of the withdrawal for it (the expired case publishes); tell a carried
+// hold by a VALID origin only (the malformed-origin case is stamped as a
+// fresh audit).
+func TestDepUpdateGuardPublishesACarriedHold(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	fx := newContFixture(t)
+	origin := strings.Repeat("0a", 20)
+	fresh := utcAgo(2 * time.Hour)
+	stamp := " · " + fx.id
+	holdReview := vettyReview(1, vettyLogin, gateMarker(fx.x, fx.id, "hold_security", origin, fresh))
+	holdStatus := []map[string]any{gateStatus("failure", "supply-chain risk: the bump was not applied"+stamp, reviewURL(1))}
+	in := func(over map[string]string) map[string]string {
+		m := map[string]string{
+			"{{input.verdict}}": `"hold_security"`, "{{input.audit_summary}}": quoted("Not re-audited on this head"),
+			"{{input.audited_sha}}": quoted(fx.y), "{{input.head_sha}}": quoted(fx.y), "{{input.head_id}}": quoted(fx.id),
+			"{{input.origin_sha}}": quoted(origin), "{{input.origin_at}}": quoted(fresh),
+		}
+		for k, v := range over {
+			m[k] = v
+		}
+		return m
+	}
+	// A base that requires only the gate: a carried green would be withdrawn
+	// there, a carried hold is not — it owes no build.
+	gateOnly := []map[string]any{{"__typename": "StatusContext", "context": "vetty/deps", "state": "PENDING", "isRequired": true}}
+
+	t.Run("published red, its origin travelling", func(t *testing.T) {
+		f := &feedbackForge{t: t, head: fx.y, base: "main", reviews: []map[string]any{holdReview},
+			statuses: map[string][]map[string]any{fx.x: holdStatus}, rollup: gateOnly}
+		p, res := runFeedback(t, f, in(nil))
+		gate, _ := p["gate"].(map[string]any)
+		if n, _ := gate["blocking_count"].(float64); n != 1 || res["gate_state"] != "failure" || res["verdict"] != "hold_security" {
+			t.Errorf("a carried hold was not published as a red hold_security: gate %v, result %v", gate, res)
+		}
+		if note, _ := gate["note"].(string); !strings.HasPrefix(note, "supply-chain hold carried from "+origin[:12]) || !strings.HasSuffix(note, stamp) {
+			t.Errorf("the gate note does not say the hold was carried, stamped: %q", note)
+		}
+		summary, _ := p["summary"].(string)
+		want := gateMarker(fx.y, fx.id, "hold_security", origin, fresh)
+		if lines := strings.Split(strings.TrimRight(summary, "\n"), "\n"); lines[len(lines)-1] != want {
+			t.Errorf("the marker restarted or lost the original audit:\n got  %s\n want %s", lines[len(lines)-1], want)
+		}
+		if !strings.Contains(summary, "carried") || !strings.Contains(summary, "/vetty") {
+			t.Errorf("the comment does not say the hold was carried, nor how to buy a fresh audit:\n%s", summary)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		reviews  []map[string]any
+		statuses map[string][]map[string]any
+		over     map[string]string
+		why      string
+	}{
+		{
+			name:     "a green published on the change since withdraws it",
+			reviews:  []map[string]any{holdReview, vettyReview(2, vettyLogin, gateMarker(strings.Repeat("e", 40), fx.id, "clean", strings.Repeat("e", 40), fresh))},
+			statuses: map[string][]map[string]any{fx.x: holdStatus},
+			why:      "every verdict on it is hold_security",
+		},
+		{
+			name: "an edit since withdraws it",
+			reviews: []map[string]any{func() map[string]any {
+				r := vettyReview(1, vettyLogin, gateMarker(fx.x, fx.id, "hold_security", origin, fresh))
+				r["lastEditedAt"] = utcAgo(time.Minute)
+				return r
+			}()},
+			statuses: map[string][]map[string]any{fx.x: holdStatus},
+			why:      "was edited after it was created",
+		},
+		{
+			name:     "an origin past carry_max_age_h withdraws it",
+			reviews:  []map[string]any{holdReview},
+			statuses: map[string][]map[string]any{fx.x: holdStatus},
+			over:     map[string]string{"{{input.origin_at}}": quoted(utcAgo(100 * time.Hour))},
+			why:      "older than carry_max_age_h",
+		},
+		{
+			name:     "a malformed origin is withdrawn, never stamped as a fresh audit",
+			reviews:  []map[string]any{holdReview},
+			statuses: map[string][]map[string]any{fx.x: holdStatus},
+			over:     map[string]string{"{{input.origin_at}}": quoted("yesterday")},
+			why:      "no original audit",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &feedbackForge{t: t, head: fx.y, base: "main", reviews: tc.reviews, statuses: tc.statuses, rollup: gateOnly}
+			p, res := runFeedbackOut(t, f, in(tc.over))
+			if p != nil {
+				t.Fatalf("a carried hold the history no longer lets through was published: %v", p)
+			}
+			if reason, _ := res["skipped_reason"].(string); !strings.Contains(reason, "carried hold was withdrawn") || !strings.Contains(reason, tc.why) {
+				t.Errorf("the run must say the carried hold was withdrawn because %q, got %q", tc.why, reason)
+			}
+			if res["verdict"] != "hold_security" {
+				t.Errorf("a withdrawn hold handed arm_automerge %v, want hold_security (it takes the arming down)", res["verdict"])
+			}
+		})
 	}
 }

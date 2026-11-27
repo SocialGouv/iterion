@@ -123,7 +123,7 @@ func TestDepUpdateGuardContinuityGuarantee_AdversarialForge(t *testing.T) {
 		}
 		// The static pin: no edge from the carry or standby decision reaches
 		// a node that can call a model, run or not.
-		for _, cond := range []string{"carry", "already_gated"} {
+		for _, cond := range []string{"carry", "already_gated", "carry_hold"} {
 			for _, id := range gtReachable(t, w.wf, "continuity", cond) {
 				if n := w.wf.Nodes[id]; n != nil && ir.NodeUsesLLM(n) {
 					t.Errorf("the %s path can reach %s, a node that can call a model", cond, id)
@@ -496,6 +496,66 @@ func TestDepUpdateGuardContinuityGuarantee_AdversarialForge(t *testing.T) {
 		w.wantNotGreen(t, y3)
 	})
 
+	// 9. buildkit-operator#49: thirteen full audits for one hold. Mutants:
+	// route `continuity -> security_audit when carry_hold` (the rebased run
+	// stops at the audit); map the carry_hold edge's verdict to `carried` (a
+	// green lands on the held change); stamp the carried hold with this run
+	// as its origin in post_feedback (the second hop's marker names Y);
+	// drop the early continuity-off exit (the /vetty run carries).
+	t.Run("9 a supply-chain hold is carried with no model node, red, and takes the arming down", func(t *testing.T) {
+		w := newGtWorld(t, gtGate, gtCI)
+		x := w.bump(w.base0, "key20: v99")
+		w.push(x)
+		w.f.setCI(x, "IN_PROGRESS", "")
+		w.launch(x, nil).audit(t, "hold_security")
+		heads := []string{}
+		base := w.base0
+		for i := 0; i < 2; i++ {
+			base = w.moveBase(base, "rebase "+strconv.Itoa(i))
+			y := w.bump(base, "key20: v99")
+			w.push(y)
+			w.f.setCI(y, "IN_PROGRESS", "")
+			// An arming this App placed on the pull request earlier.
+			w.f.mu.Lock()
+			w.f.autoMerge = gtAppLogin
+			w.f.mu.Unlock()
+			r := w.launch(y, nil)
+			if r.stop != "done" || r.decision() != "carry_hold" {
+				t.Fatalf("hop %d: the sync run on a rebase of a held change did not carry the hold: stopped at %s, continuity %v", i+1, r.stop, r.out["continuity"])
+			}
+			want := []string{"prepare", "continuity", "post_feedback", "feedback_health", "arm_automerge", "done"}
+			if !slices.Equal(r.path, want) {
+				t.Errorf("hop %d: the carried hold walked %v, want %v", i+1, r.path, want)
+			}
+			for _, id := range r.path {
+				if n := w.wf.Nodes[id]; n != nil && ir.NodeUsesLLM(n) {
+					t.Errorf("hop %d: the carried hold ran %s, a node that can call a model", i+1, id)
+				}
+			}
+			st := w.f.currentGate(y)
+			if st == nil || st["state"] != "failure" {
+				t.Errorf("hop %d: the gate on %s is not red: %v", i+1, y[:12], st)
+			}
+			if m := w.f.markerOn(y); m == nil || m["verdict"] != "hold_security" || m["origin"] != x {
+				t.Errorf("hop %d: the review on %s is not the hold of %s: marker %v", i+1, y[:12], x[:12], m)
+			}
+			w.f.mu.Lock()
+			standing := w.f.autoMerge
+			w.f.mu.Unlock()
+			if standing != "" {
+				t.Errorf("hop %d: the carried hold left the arming of %s standing", i+1, standing)
+			}
+			w.wantNotGreen(t, y)
+			heads = append(heads, y)
+		}
+		if got := w.f.mergedHead(); got != "" {
+			t.Errorf("merged %s past a carried hold", got[:12])
+		}
+		// /vetty is the human gesture that asks whether the hold still
+		// stands: a full audit, whatever the history carries.
+		w.wantFullAudit(t, w.launch(heads[len(heads)-1], map[string]any{"continuity": false}), "continuity is off")
+	})
+
 	// 8 is asserted at the end of every world above (wantNoToken, from its
 	// cleanup); this row adds the positive control on the channel the token
 	// DOES travel: the git endpoint received it as a header, and the API as
@@ -727,7 +787,7 @@ func (w *gtWorld) launchUntilAt(head string, over map[string]any, pause string, 
 	return r
 }
 
-// decision is continuity's answer: carry, already_gated, or full.
+// decision is continuity's answer: carry, already_gated, carry_hold, or full.
 func (r *gtRun) decision() string {
 	c := r.out["continuity"]
 	switch {
@@ -737,6 +797,8 @@ func (r *gtRun) decision() string {
 		return "carry"
 	case c["already_gated"] == true:
 		return "already_gated"
+	case c["carry_hold"] == true:
+		return "carry_hold"
 	}
 	return "full"
 }
