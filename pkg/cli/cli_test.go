@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -1195,7 +1196,7 @@ func TestInspect_LogSliceNonUTCTimezone(t *testing.T) {
 	// with nothing to mutate.
 	if os.Getenv(tzChildEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
-		cmd.Env = append(os.Environ(), tzChildEnv+"=1", "TZ=Europe/Paris")
+		cmd.Env = append(os.Environ(), hometest.ChildHomeEnv(t), tzChildEnv+"=1", "TZ=Europe/Paris")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("non-UTC child failed: %v\n%s", err, out)

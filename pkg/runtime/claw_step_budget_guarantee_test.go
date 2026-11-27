@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
@@ -374,15 +375,17 @@ func (c guaranteeClient) StreamResponse(_ context.Context, req api.CreateMessage
 }
 
 // guaranteeSandbox spawns the world's runner for a crossing and runs every
-// other exec (the node session's sweep) as written.
-type guaranteeSandbox struct{ dir string }
+// other exec (the node session's sweep) as written. childHome is the
+// hometest.ChildHomeEnv entry each runner starts with, drawn while the test
+// runs: Command has no test to draw one from.
+type guaranteeSandbox struct{ dir, childHome string }
 
 func (s guaranteeSandbox) Driver() string { return "guarantee" }
 
 func (s guaranteeSandbox) Command(ctx context.Context, argv []string, _ sandbox.ExecOpts) *exec.Cmd {
 	if n := len(argv); n >= 2 && argv[n-2] == "iterion" && argv[n-1] == "__claw-runner" {
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestClawStepBudgetGuaranteeRunner$", "-test.count=1")
-		cmd.Env = append(os.Environ(), guaranteeRunnerEnv+"="+s.dir)
+		cmd.Env = append(os.Environ(), s.childHome, guaranteeRunnerEnv+"="+s.dir)
 		return cmd
 	}
 	if len(argv) == 0 {
@@ -597,7 +600,7 @@ func runGuaranteeWorld(t *testing.T, seed int64) guaranteeOutcome {
 	t.Cleanup(func() { _ = cexec.Close() })
 	var executor runtime.NodeExecutor = cexec
 	if plan.Sandbox {
-		box := guaranteeSandbox{dir: dir}
+		box := guaranteeSandbox{dir: dir, childHome: hometest.ChildHomeEnv(t)}
 		cexec.SetSandbox(box)
 		executor = sandboxedExecutor{ClawExecutor: cexec, run: box}
 	}

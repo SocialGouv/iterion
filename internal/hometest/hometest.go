@@ -124,6 +124,23 @@ func Isolate(run func() int) int {
 	return code
 }
 
+// ChildHomeEnv is the ITERION_HOME entry for a test binary that re-executes
+// itself: a fresh directory t owns. Append it after the inherited
+// environment — os/exec keeps the last value of a repeated key:
+//
+//	cmd.Env = append(os.Environ(), hometest.ChildHomeEnv(t), "MY_CHILD=1")
+//
+// The child's Isolate reads the ITERION_HOME it inherits as the operator's
+// real home and fails its run when a test-key store appears there. Inheriting
+// the parent's isolated home, the child would report the store a parallel
+// test of the parent creates in that home. HOME needs no entry: the
+// real-home scan reads it only when ITERION_HOME is empty, which this entry
+// never leaves, and the child's IsolateUserHome replaces it before any test.
+func ChildHomeEnv(t testing.TB) string {
+	t.Helper()
+	return "ITERION_HOME=" + t.TempDir()
+}
+
 // IsolateUserHome points HOME at an empty directory it creates for this test
 // process, runs run, then removes that directory. It returns run's exit code,
 // or 1 when the home cannot be created or is left behind. Wrap the TestMain of

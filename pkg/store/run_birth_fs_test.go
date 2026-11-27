@@ -202,7 +202,7 @@ func TestRunBirthProcessCrash(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestRunBirthCrashHelper$")
-			cmd.Env = append(os.Environ(), "ITERION_TEST_BIRTH_CRASH_ROOT="+root)
+			cmd.Env = append(os.Environ(), childHomeEnv(t), "ITERION_TEST_BIRTH_CRASH_ROOT="+root)
 			if published {
 				cmd.Env = append(cmd.Env, "ITERION_TEST_BIRTH_CRASH_PUBLISHED=1")
 			}

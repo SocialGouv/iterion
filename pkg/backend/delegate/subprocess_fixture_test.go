@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 )
 
 // fixtureTestOutput propagates a shorter testing deadline to a re-executed
-// test binary so its own fixture groups can stop before this parent does.
+// test binary so its own fixture groups can stop before this parent does,
+// and gives it a home of its own (hometest.ChildHomeEnv) after configure
+// shaped its environment.
 func fixtureTestOutput(t *testing.T, args []string, configure func(*exec.Cmd)) ([]byte, error) {
 	t.Helper()
 	var timeout time.Duration
@@ -24,7 +27,14 @@ func fixtureTestOutput(t *testing.T, args []string, configure func(*exec.Cmd)) (
 		timeout = remaining / 2
 	}
 	args = append(append([]string(nil), args...), "-test.timeout="+timeout.String())
-	return fixtureProcessOutput(t, os.Args[0], args, configure)
+	childHome := hometest.ChildHomeEnv(t)
+	return fixtureProcessOutput(t, os.Args[0], args, func(cmd *exec.Cmd) {
+		configure(cmd)
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, childHome)
+	})
 }
 
 // fixtureProcessOutput owns a fixture's process group through Wait. A test
