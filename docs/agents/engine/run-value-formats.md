@@ -105,7 +105,22 @@ inter-format comparison after deletion.
 
 ## Run listings
 
-The run listings read the persisted keys both value formats store identically; how they ask Mongo, the indexes that serve them and their known gaps: [run listings](run-listings.md).
+The run listings (`/api/runs`, `/api/admin/runs`) ask Mongo one indexed
+question per page (`store.RunWindowListingStore`, #3822, #3831): status,
+workflow, `updated_at >= since`, a tenant set and the `(created_at, _id)`
+keyset, newest first, through `created_id_desc`, `tenant_created_id_desc`,
+`tenant_status_created_id_desc` and `tenant_workflow_created_id_desc`. A page
+no index serves in that order (a `since` page, or a status or workflow page no
+tenant leads) reads in finds of at most 100 documents; every other page is one
+find. Known gap (#3863): a tenant set of more than 200 members can still walk,
+past Mongo's `internalQueryMaxScansToExplode`. `EnsureSchema` never drops an
+index: once every replica and runner pool runs #3831, the operator checks that
+`db.runs.getIndexes()` lists `tenant_status_created_id_desc`, then runs
+`db.runs.dropIndex("tenant_status_created")`. Both value formats store every
+listing key as plain BSON (`TestRunListingKeysEncodeIdenticallyInBothValueFormats`);
+each match crosses the decode `LoadRun` uses, and one that does not decode is
+reported per id. Repo, bundle and node filters stay in Go and stop the limit
+pushdown. Equivalence with the id-by-id scan: `TestRunListingWindowNativeMongo`.
 
 ## PR reverse lookup
 
