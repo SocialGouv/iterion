@@ -380,8 +380,8 @@ type dugVerifyResult struct {
 // cgroupRoot defaults to an empty scratch dir, so the CPU budget is nproc
 // and no test reads the host's own cgroup tree.
 type dugVerifyEnv struct {
-	ws, scratch, timeoutS, cpus, cgroupRoot string
-	env                                     []string
+	ws, scratch, timeoutS, cpus, cgroupRoot, memPerJobMiB string
+	env                                                   []string
 }
 
 // runDugVerify executes Vetty's REAL compiled verify_run through `sh -c`,
@@ -397,10 +397,14 @@ func runDugVerify(t *testing.T, command string, e dugVerifyEnv) dugVerifyResult 
 	if e.cgroupRoot == "" {
 		e.cgroupRoot = t.TempDir()
 	}
+	if e.memPerJobMiB == "" {
+		e.memPerJobMiB = "2048"
+	}
 	cmd := command
 	for k, v := range map[string]string{
 		"{{vars.workspace_dir}}": e.ws, "{{vars.scratch_dir}}": e.scratch, "{{vars.verify_timeout_s}}": e.timeoutS,
 		"{{vars.verify_cpus}}": e.cpus, "{{vars.verify_cgroup_root}}": e.cgroupRoot,
+		"{{vars.verify_mem_per_job_mib}}": e.memPerJobMiB,
 	} {
 		cmd = strings.ReplaceAll(cmd, k, v)
 	}
@@ -518,6 +522,7 @@ func TestDepUpdateGuardVerifySizing(t *testing.T) {
 		{"below the quota", "GOMAXPROCS=1 sh -c true"},
 		{"inherited, not forced", "echo GOMAXPROCS=${GOMAXPROCS:-16}"},
 		{"commented out", "# export GOMAXPROCS=16"},
+		{"a diagnostic that prints nproc", "echo \"GOMAXPROCS=$GOMAXPROCS nproc=$(nproc)\""},
 	} {
 		t.Run("not rejected: "+tc.name, func(t *testing.T) {
 			ws, scratch := t.TempDir(), t.TempDir()
@@ -561,6 +566,21 @@ func TestDepUpdateGuardVerifySizing(t *testing.T) {
 		}
 	})
 
+	// The production shape before the sandbox CPU limit: a CPU request, no
+	// CPU limit, an 8Gi memory limit. The memory cap holds the budget to 4.
+	t.Run("GOMAXPROCS=16 with no CPU quota is rejected by the memory cap", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		write(t, scratch, "#!/bin/sh\nset -e\nexport GOMAXPROCS=16\necho build\n")
+		root := cgroup(t, map[string]string{"cgroup.controllers": "cpu memory", "cpu.max": "max 100000", "memory.max": "8589934592"})
+		res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: root})
+		if !res.PrecheckRejected || res.Passed {
+			t.Fatalf("GOMAXPROCS=16 in 8Gi must be rejected, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+		if !strings.Contains(res.PrecheckReason, "memory: cgroup v2 limit ") || !strings.Contains(res.PrecheckReason, "[GOMAXPROCS 16 > ") {
+			t.Errorf("the rejection must name the memory limit and the line, got:\n%s", res.PrecheckReason)
+		}
+	})
+
 	// The budget's sources in order. Each case reads the budget back from the
 	// sizing line every run logs, which also names the source.
 	big := itoa(nproc + 7) // a quota above nproc is bounded by nproc
@@ -583,6 +603,17 @@ func TestDepUpdateGuardVerifySizing(t *testing.T) {
 		{"cgroup v1 without a quota falls to nproc", map[string]string{"cpu/cpu.cfs_quota_us": "-1", "cpu/cpu.cfs_period_us": "100000"},
 			"0", itoa(nproc), "cpu.cfs_quota_us = -1 sets no CPU quota"},
 		{"no cgroup at all falls to nproc", map[string]string{}, "0", itoa(nproc), "no cgroup v2 (cgroup.controllers) nor v1 cpu controller"},
+		{"cgroup v2 memory limit caps a sandbox with no CPU quota", map[string]string{"cgroup.controllers": "cpu memory",
+			"cpu.max": "max 100000", "memory.max": "2147483648"}, "0", "1", "memory: cgroup v2 limit "},
+		{"cgroup v2 memory max is no cap", map[string]string{"cgroup.controllers": "cpu memory", "cpu.max": "max 100000",
+			"memory.max": "max"}, "0", itoa(nproc), "sets no CPU quota (cpu.max is max or absent)"},
+		{"the memory cap only lowers a CPU quota", map[string]string{"cgroup.controllers": "cpu memory", "cpu.max": "200000 100000",
+			"memory.max": "8589934592"}, "0", "2", "cgroup v2 quota "},
+		{"cgroup v1 memory limit caps", map[string]string{"memory/memory.limit_in_bytes": "2147483648"}, "0", "1", "memory: cgroup v1 limit "},
+		{"cgroup v1 unlimited memory is no cap", map[string]string{"memory/memory.limit_in_bytes": "9223372036854771712"},
+			"0", itoa(nproc), "no cgroup v2 (cgroup.controllers) nor v1 cpu controller"},
+		{"the operator override wins over the memory cap", map[string]string{"cgroup.controllers": "cpu memory",
+			"cpu.max": "max 100000", "memory.max": "2147483648"}, "3", "3", "verify_cpus=3, the operator override"},
 	} {
 		t.Run("budget source: "+tc.name, func(t *testing.T) {
 			ws, scratch := t.TempDir(), t.TempDir()

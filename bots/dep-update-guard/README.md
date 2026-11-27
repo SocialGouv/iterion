@@ -401,6 +401,7 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `verify_timeout_s` | int | `1200` | Seconds the deterministic verify may run before it is called red (reported as exit 124, never a crashed node) |
 | `verify_cpus` | int | `0` | CPU budget `verify.sh` is held to: a script forcing `GOMAXPROCS`, `go -p`, `GOFLAGS -p` or a test `-parallel` above it is sent back (OVERSIZED PARALLELISM), and it is exported as the script's `GOMAXPROCS`. `0` reads it from the sandbox (cgroup v2 `cpu.max`, v1 `cpu.cfs_quota_us`, `nproc`); set it when the sandbox pod has a CPU request but no limit, where `nproc` is the node's CPU count |
 | `verify_cgroup_root` | string | `"/sys/fs/cgroup"` | Where `verify_run` reads the cgroup CPU quota from |
+| `verify_mem_per_job_mib` | int | `2048` | Memory one parallel verify job is allowed, in MiB: the CPU budget is also capped at the cgroup memory limit (v2 `memory.max`, v1 `memory.limit_in_bytes`) divided by it, so a sandbox with no CPU limit and 8 Gi holds a forced `GOMAXPROCS=16` to 4; `0` turns the cap off, and `verify_cpus` wins over both |
 
 The studio launch form renders `pr_url` as the primary input and keeps
 `pr_author` hidden (still settable via `--var` / bot_args).

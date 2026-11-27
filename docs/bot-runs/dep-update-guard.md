@@ -9,6 +9,8 @@ required check — and only ever the commit it audited. See
 
 ## 2026-11-27 — 2.13.2: the verify is sized to the sandbox, and scoped to what the bump reaches (#3785, #3884)
 
+- Revi finding R5d07cf on #3885 (medium): with a CPU request and no CPU limit, `cpu.max` reads `max` and the budget fell back to the node's `nproc`, so `GOMAXPROCS=16` could pass on a large node. The budget is now also capped by the cgroup memory limit (v2 `memory.max`, v1 `memory.limit_in_bytes`) at `verify_mem_per_job_mib` (2048 MiB) per job: an 8 Gi sandbox holds it to 4. Production also gained a sandbox CPU limit of 2 the same day (appsets `38bfc6f`), so its default case reads a quota of 2. Revi's second point is fixed too: a diagnostic `echo` that names `nproc` is no longer rejected, because only the value of a parallelism setting is judged. Mutations: the cap not applied, the next token always read, the v1 limit ignored; each went red on its own case.
+
 - Status: **fixed, live pending** (relaunch on iterion#3785). On iterion#3785
   (Renovate `github.com/labstack/echo/v4` v4.16.1 → v4.16.3, `go.mod` /
   `go.sum` / `vendor` only), run `01a21d43-6e72` on v7.40.4: `verify_build`

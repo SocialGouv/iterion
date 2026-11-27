@@ -16,6 +16,11 @@ version: 2.13.2
 ## shipped package imports owes build + vet + the vendor/tidy check, not
 ## the suite, and the verdict says so; otherwise the importing packages'
 ## tests only.
+## The budget is also capped by the cgroup memory limit at
+## verify_mem_per_job_mib (2048 MiB) per job, so a sandbox with a CPU request
+## and no CPU limit still holds GOMAXPROCS=16 to 4 in 8 Gi (Revi R5d07cf);
+## only the VALUE of a parallelism setting is judged, so a diagnostic echo
+## naming nproc passes.
 ## 2.13.1 — the audit honours the repository's own scanner exclusions, and
 ## says what it set aside. Live on iterion#3791 (run 01a21953): a base-image
 ## bump that removed 490 HIGH/CRITICAL was held hold_security on two

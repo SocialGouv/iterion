@@ -192,6 +192,13 @@ vars:
   ## Where verify_run reads the cgroup CPU quota from. The kernel's mount
   ## point; a host mounting cgroupfs elsewhere, or a test, points it there.
   verify_cgroup_root: string = "/sys/fs/cgroup"
+  ## The memory one parallel verify job is allowed, in MiB. The CPU budget is
+  ## also capped at the cgroup memory limit divided by it (v2 memory.max, v1
+  ## memory.limit_in_bytes), so a sandbox with no CPU limit and an 8Gi memory
+  ## limit still holds a forced GOMAXPROCS=16 to 4: a Go package compile or a
+  ## test-binary link of a large module needs on the order of 1-2 GiB. 0 turns
+  ## the memory cap off; verify_cpus, when set, wins over both.
+  verify_mem_per_job_mib: int = 2048
 
 secrets:
   ## Forge API token, mounted read-only as a FILE (path/env only, never
@@ -1954,7 +1961,7 @@ emit(pending, carried, paths, unaccounted, '; '.join(said))
 ## the agent-prepared verify.sh and reports the REAL exit code (v2 —
 ## replaces the v1 `validate` agent whose stable:true was self-reported).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} VERIFY_TIMEOUT_S={{vars.verify_timeout_s}} VERIFY_CPUS={{vars.verify_cpus}} CGROUP_ROOT={{vars.verify_cgroup_root}} python3 -I -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} VERIFY_TIMEOUT_S={{vars.verify_timeout_s}} VERIFY_CPUS={{vars.verify_cpus}} CGROUP_ROOT={{vars.verify_cgroup_root}} VERIFY_MEM_PER_JOB_MIB={{vars.verify_mem_per_job_mib}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -2423,6 +2430,42 @@ def cpu_budget(root, override):
             return n, 'cgroup v1 quota ' + qf + ' = ' + qt + ' over cpu.cfs_period_us = ' + pt
         return n_host, 'nproc = ' + str(n_host) + ', below the cgroup v1 quota ' + qf + ' = ' + qt
     return n_host, 'nproc = ' + str(n_host) + ': no cgroup v2 (cgroup.controllers) nor v1 cpu controller under ' + top
+def memory_budget(root, per_job_mib):
+    # How many parallel jobs the cgroup memory limit holds at per_job_mib
+    # each: v2 memory.max of the own cgroup and its parents (the lowest
+    # wins; max is no limit), else v1 memory.limit_in_bytes (a value near
+    # 2^63 is the kernel's no limit). 0 means no cap.
+    if per_job_mib <= 0:
+        return 0, 'verify_mem_per_job_mib=0, the memory cap is off'
+    top = os.path.normpath(root)
+    per = per_job_mib * 1048576
+    if os.path.isfile(os.path.join(top, 'cgroup.controllers')):
+        rel = '/'
+        for l in (read_text('/proc/self/cgroup') or '').splitlines():
+            if l.startswith('0::'):
+                rel = l[3:].strip() or '/'
+        d = os.path.normpath(os.path.join(top, rel.lstrip('/')))
+        if d != top and not d.startswith(top + os.sep):
+            d = top
+        best = 0
+        where = ''
+        while True:
+            f = os.path.join(d, 'memory.max')
+            t = (read_text(f) or '').strip()
+            if t.isdigit() and int(t) > 0 and (best == 0 or int(t) < best):
+                best = int(t)
+                where = f + ' = ' + t
+            if d == top:
+                break
+            d = os.path.dirname(d)
+        if best:
+            return max(1, best // per), 'memory: cgroup v2 limit ' + where
+        return 0, 'cgroup v2 sets no memory limit'
+    f = os.path.join(top, 'memory', 'memory.limit_in_bytes')
+    t = (read_text(f) or '').strip()
+    if t.isdigit() and 0 < int(t) < (1 << 60):
+        return max(1, int(t) // per), 'memory: cgroup v1 limit ' + f + ' = ' + t
+    return 0, 'no cgroup memory limit'
 def oversized_parallelism(text, budget):
     # Every setting that forces a parallelism above the budget, with its
     # 1-based line: GOMAXPROCS=N anywhere (export, assignment, env prefix),
@@ -2454,13 +2497,21 @@ def oversized_parallelism(text, budget):
                 elif tt.startswith(flag + '='):
                     found.append((flag, tt[len(flag) + 1:].strip(strip), after))
         for name, val, nxt in found:
+            # Only the VALUE counts: the next token is part of it only when
+            # the value opens a command substitution split by a space.
+            src = (val + ' ' + nxt) if (val == chr(36) or val.startswith(chr(36) + '(')) else val
             if val.isdigit():
                 if int(val) > budget:
                     hits.append('line ' + str(no) + ': ' + line.strip()[:200] + '  [' + name + ' ' + val + ' > ' + str(budget) + ']')
-            elif 'nproc' in val + ' ' + nxt or '_NPROCESSORS' in val + ' ' + nxt:
+            elif 'nproc' in src or '_NPROCESSORS' in src:
                 hits.append('line ' + str(no) + ': ' + line.strip()[:200] + '  [' + name + ' from the host CPU count, not the ' + str(budget) + ' CPU budget]')
     return hits
 cpu_n, cpu_src = cpu_budget(os.environ['CGROUP_ROOT'], int(os.environ['VERIFY_CPUS']))
+if int(os.environ['VERIFY_CPUS']) <= 0:
+    mem_n, mem_src = memory_budget(os.environ['CGROUP_ROOT'], int(os.environ['VERIFY_MEM_PER_JOB_MIB']))
+    if mem_n and mem_n < cpu_n:
+        cpu_src = mem_src + ' at ' + os.environ['VERIFY_MEM_PER_JOB_MIB'] + ' MiB per job, below the CPU budget ' + str(cpu_n) + ' (' + cpu_src + ')'
+        cpu_n = mem_n
 oversized = oversized_parallelism(script_src, cpu_n)
 if oversized:
     _o = 'OVERSIZED PARALLELISM: ' + str(len(oversized)) + ' line(s) of ' + script + ' force more parallelism than this sandbox has CPUs: the budget is ' + str(cpu_n) + ', from ' + cpu_src + '. CI runners are bigger than this sandbox and a parallelism copied from CI over-subscribes it (iterion#3785: GOMAXPROCS=16 in a 2-CPU / 8 Gi pod, OOM-killed with exit 137 and no verdict). A Go toolchain >= 1.25 sizes itself to the cgroup quota, and verify_run exports GOMAXPROCS=' + str(cpu_n) + ' to the script: remove these settings, or lower them to ' + str(cpu_n) + ' or less (verify-build skill section 1e). Amend only these lines of ' + script + ':' + chr(10) + chr(10).join(oversized[:20])
