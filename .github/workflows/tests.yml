@@ -1661,9 +1661,12 @@ jobs:
           sudo install -m 0755 /tmp/golangci-lint-2.12.2-linux-amd64/golangci-lint /usr/local/bin/golangci-lint
           golangci-lint version
       - name: Run golangci-lint
-        # Cold package loading exceeded five minutes on the shared runners.
-        # Keep every analyzer enabled within the existing 20-minute job budget.
-        run: golangci-lint run --timeout 10m
+        # Cold package loading exceeded five minutes on the shared runners,
+        # and the self-hosted pods have no Go cache: measured 235–592 s on
+        # green runs (2026-11-26), so ten minutes timed out loaded pods with
+        # zero issues. Keep every analyzer enabled within the 20-minute job
+        # budget.
+        run: golangci-lint run --timeout 15m
 
   brand:
     # The positioning guard: every public surface must carry the product
