@@ -7,6 +7,50 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-27 — 2.13.2: the verify is sized to the sandbox, and scoped to what the bump reaches (#3785, #3884)
+
+- Revi finding R5d07cf on #3885 (medium): with a CPU request and no CPU limit, `cpu.max` reads `max` and the budget fell back to the node's `nproc`, so `GOMAXPROCS=16` could pass on a large node. The budget is now also capped by the cgroup memory limit (v2 `memory.max`, v1 `memory.limit_in_bytes`) at `verify_mem_per_job_mib` (2048 MiB) per job: an 8 Gi sandbox holds it to 4. Production also gained a sandbox CPU limit of 2 the same day (appsets `38bfc6f`), so its default case reads a quota of 2. Revi's second point is fixed too: a diagnostic `echo` that names `nproc` is no longer rejected, because only the value of a parallelism setting is judged. Mutations: the cap not applied, the next token always read, the v1 limit ignored; each went red on its own case.
+
+- Status: **fixed, live pending** (relaunch on iterion#3785). On iterion#3785
+  (Renovate `github.com/labstack/echo/v4` v4.16.1 → v4.16.3, `go.mod` /
+  `go.sum` / `vendor` only), run `01a21d43-6e72` on v7.40.4: `verify_build`
+  (106 min) wrote a `verify.sh` mirroring the repository's CI gate with
+  `GOMAXPROCS=16`; the sandbox pod has `requests cpu=2 memory=4Gi, limits
+  memory=8Gi`; `verify_run` was OOM-killed (`exit status 137`) and the run
+  ended `failed_resumable / AMBIGUOUS_EFFECT` with no verdict. The agent's own
+  summary noted that no package of the repository imports echo: its only
+  consumer is the vendored wails devserver under `//go:build dev`, so no
+  shipped binary compiles it. The sibling x/crypto bump (#3790) finished
+  `clean` but took 3 h 12 and $7.43 at list price (`align` 104 min,
+  `verify_build` 66 min) for a bump that changed no code.
+- The fix. `verify_run` reads the sandbox CPU budget before running the
+  script — the new `verify_cpus` override, else the cgroup v2 `cpu.max` of its
+  cgroup and ancestors, else the v1 `cpu.cfs_quota_us`, else `nproc` — and
+  refuses a script forcing `GOMAXPROCS`, `go -p`, `GOFLAGS -p` or a test
+  `-parallel` above it, or reading one from `nproc`/`getconf`, as the precheck
+  rejection OVERSIZED PARALLELISM (exit 7), naming each line and the budget;
+  it loops back to `verify_build` as `fix_verify`, like a masked exit status.
+  The script is never rewritten. The budget is exported as the script's
+  `GOMAXPROCS`, and the log says so (`VERIFY SIZING:`). The `verify-build`
+  skill gains §1e: never copy CI's parallelism; a module no shipped package
+  imports (proved with `go list -deps`) owes build + vet + the vendor/tidy
+  check, not the suite, and the verdict says so; otherwise the tests of the
+  importing packages; the whole suite only for a toolchain or a widely
+  imported module.
+- Caveat for production. A pod with a CPU request and no CPU limit has no
+  quota (`cpu.max` reads `max`): the budget falls to `nproc`, the node's CPU
+  count, and the guard only bites below it. There, `verify_cpus` is the lever
+  (or a sandbox CPU limit, which Go ≥ 1.25 also honours).
+- Not changed: `align`'s duration. What the skills show that could explain it
+  is out of this change's scope.
+- Proof. Deterministic, on the shipped `verify_run`: rejection above a fake
+  cgroup v2 quota with the line and the budget named, pass at and below it,
+  `-p`, `-p=`, `GOFLAGS -p`, `-parallel` and an nproc/getconf value each
+  rejected, every budget source in order (override, v2 rounded up, v2 bounded
+  by nproc, v2 `max` falling to nproc and not to v1, v1 quota, v1 `-1`, no
+  cgroup), and the exported default replacing an inherited `GOMAXPROCS`.
+  Fifteen mutations of the gate, each seen red on its own assertion.
+
 ## 2026-11-27 — 2.13.1: the audit honours the repository's scanner exclusions, and reports what it set aside (#3791, #3817)
 
 - Status: **fixed, live pending.** On iterion#3791 (Renovate "update docker

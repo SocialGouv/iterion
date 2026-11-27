@@ -56,7 +56,7 @@ func TestVerifyRunLiftsNotCoveredIntoAGreenTail(t *testing.T) {
 				cmd := command
 				for k, v := range map[string]string{"{{vars.workspace_dir}}": ws, "{{vars.scratch_dir}}": scratch, "{{input.workspace_dir}}": ws,
 					"{{input.scratch_dir}}": scratch, "{{vars.verify_timeout_s}}": "1500", "{{vars.matrix_path}}": "docs/e2e-coverage-matrix.md",
-					"{{vars.target}}": "x"} {
+					"{{vars.target}}": "x", "{{vars.verify_cpus}}": "0", "{{vars.verify_cgroup_root}}": t.TempDir(), "{{vars.verify_mem_per_job_mib}}": "2048"} {
 					cmd = strings.ReplaceAll(cmd, k, v)
 				}
 				if i := strings.Index(cmd, "{{"); i >= 0 {
