@@ -119,7 +119,8 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 	// change through SaveRun IS a transition ⇒ stamp it (untyped).
 	if persisted, err := s.loadRunRawContext(ctx, r.ID); err == nil {
 		// Work on a copy: the caller's struct must not observe the
-		// bookkeeping (the Mongo implementation doesn't mutate either).
+		// bookkeeping. Mongo keeps it off r too, except a live merge
+		// claim, which it adopts onto r.
 		rr := *r
 		rr.SpentToolApprovals = persisted.SpentToolApprovals
 		rr.UnresolvedToolApproval = persisted.UnresolvedToolApproval
@@ -204,7 +205,9 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 	// (adversarial gate F7: the FS branch used to trust the caller's
 	// bookkeeping verbatim). A run BORN terminal has episode 0: a
 	// creation is not a transition, and a reactor must not treat an
-	// imported/fixture document as a fresh outcome.
+	// imported/fixture document as a fresh outcome. Its (normalized)
+	// failure code is its own and lands, and writeRunLockedContext gives it a
+	// fresh execution epoch.
 	rr := *r
 	rr.SpentToolApprovals = nil
 	rr.UnresolvedToolApproval = ""

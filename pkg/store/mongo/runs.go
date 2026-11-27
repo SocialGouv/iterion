@@ -501,12 +501,21 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// brand-new document written directly in a terminal status would
 	// count an episode on Mongo and none on FS.
 	statusChanged := bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$status", r.Status}}, r.Status}}
+	// A birth is the insert-only upsert below: no stored row, version 0. It
+	// is not a transition (statusChanged stays false on it, so no episode is
+	// counted and no continuation survives), but it owns what the run is
+	// born with, as the FS twin's create branch does: the document's own
+	// failure code and a fresh execution epoch. Every other computed field
+	// already resolves on the empty pre-image to what that branch writes.
+	birth := formatPreimage == nil && r.CASVersion == 0
+	bornOrChanged := bson.M{"$or": bson.A{birth, statusChanged}}
 	seqBase := bson.M{"$ifNull": bson.A{"$outcome_seq", 0}}
 	// The document's own (normalized) failure code lands on a status
 	// CHANGE — a transition through SaveRun owns its cause (the
-	// publisher rollback re-stamps the prior one this way). On a
-	// same-status save the persisted value wins: a stale copy must not
-	// erase what a park wrote meanwhile.
+	// publisher rollback re-stamps the prior one this way) — and on a
+	// birth: a launch parked on CRED_SLOT_WAIT, a run `iterion migrate
+	// to-cloud` copies. On a same-status save the persisted value wins:
+	// a stale copy must not erase what a park wrote meanwhile.
 	var docCode any = "$$REMOVE"
 	if r.FailureCode != "" {
 		docCode = bson.M{"$literal": string(r.FailureCode)}
@@ -535,13 +544,13 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		"tool_approval_claim":      bson.M{"$cond": bson.A{bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", store.RunStatusRunning}}, r.Status == store.RunStatusRunning}}, bson.M{"$ifNull": bson.A{"$tool_approval_claim", "$$REMOVE"}}, "$$REMOVE"}},
 		"pre_engine_refusal":       bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal", "$$REMOVE"}},
 		"error":                    bson.M{"$cond": bson.A{keepRefusal, "$pre_engine_refusal.message", docError}},
-		"execution_epoch": executionEpochExpr(bson.M{"$or": bson.A{statusChanged,
+		"execution_epoch": executionEpochExpr(bson.M{"$or": bson.A{bornOrChanged,
 			bson.M{"$and": bson.A{bson.M{"$eq": bson.A{"$status", string(store.RunStatusQueued)}}, r.Status == store.RunStatusQueued,
 				bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{"$queued_at", nil}}, bson.M{"$literal": r.QueuedAt}}}}},
 		}}),
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
-		"failure_code":       bson.M{"$cond": bson.A{statusChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
+		"failure_code":       bson.M{"$cond": bson.A{bornOrChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
 		// The launch-frozen contract is IMMUTABLE: once persisted it
 		// wins over whatever the saver carries (a stale full-document
 		// save, or a binary too old to know the field, must not drop
@@ -600,7 +609,6 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	} else {
 		filter["version"] = r.CASVersion
 	}
-	birth := formatPreimage == nil && r.CASVersion == 0
 	// The same preimage/version CAS owns birth identity preservation. Do not
 	// backfill a historical absence, or accept an incoming caller identity.
 	birthID := ""

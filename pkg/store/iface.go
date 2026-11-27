@@ -50,6 +50,15 @@ type RunStore interface {
 	// SaveRun creates a version-zero document or replaces the loaded version.
 	// A successful save advances r.CASVersion. ErrRunConflict means another
 	// writer won; reload and reapply the edit rather than retrying the copy.
+	// Of the store-owned identity it hands back r.CASVersion and r.BirthID,
+	// never the execution epoch: the store mints one at a birth and renews
+	// it on a status change or on a queued run's new queued_at without
+	// reflecting it on r, so reload the run before building a
+	// RunExecutionExpectation or RunOutcomeExpectation from it. Other fields
+	// of r change in place: both twins clear what r's status does not carry
+	// (failure code, end reason, pause pointer, await-answer waits), and
+	// Mongo also restamps updated_at, the tenant and the format stamps and
+	// adopts a live merge claim. Reload for the stored document.
 	SaveRun(ctx context.Context, r *Run) error
 	// ListRuns returns every run id in the store, oldest first. It is a
 	// FULL SCAN on every backend — its cost follows the size of the store,
