@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/memlimit"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runner"
 	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
@@ -325,9 +326,18 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		logger.Info("runner: serving the shared default pool (ITERION_RUNNER_POOL is empty)")
 	}
 
+	// 4c. The fleet registry record the engine floor reads. Built here so
+	//     the loop gets it at construction; written just before the epoch
+	//     claim below.
+	presence, err := natsConn.NewPresence(queue.FleetRoleRunner, runnerID, cfg.Runner.Pool)
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                 natsConn,
+		Presence:             presence,
 		RunnerPool:           cfg.Runner.Pool,
 		PreparedConsumer:     preparedConsumer,
 		DisableStallSelfHeal: cfg.Runner.DisableStallSelfHeal,
@@ -391,6 +401,18 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: build: %w", err)
 	}
 
+	// Join the fleet registry before the claim, so the claim stays the last
+	// fallible boot step. A runner the registry cannot see must not consume:
+	// the engine floor would not count its build. The heartbeat outlives
+	// rootCtx on purpose — it keeps a draining runner's record (draining:
+	// true) until the process exits, and the deferred leave runs after the
+	// loop has returned.
+	membership := newFleetMembership(presence, logger, "runner")
+	defer membership.leave()
+	if err := membership.join(rootCtx); err != nil {
+		return err
+	}
+
 	// Claim only after every fallible dependency and the inert consumer have
 	// been wired. A broken epoch-bump release therefore cannot poison the
 	// durable mark and fence the still-healthy previous generation.
@@ -401,6 +423,9 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	r.SetRolloutState(selfEpoch, highWaterEpoch, natsConn.Superseded())
 	health.Set(r.Health)
 	if natsConn.Superseded() {
+		// A superseded runner never consumes: it leaves the registry now
+		// rather than at exit (the deferred leave is then a no-op).
+		membership.leave()
 		mreg.RolloutEpochRegression.WithLabelValues("runner").Inc()
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("runner: epoch superseded while bootstrapping — staying live but non-ready; no queue consumer started")
 		<-rootCtx.Done()

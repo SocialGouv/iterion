@@ -590,11 +590,13 @@ No drill has run against this chart's copy yet.
 | Dead-letter queue (shared, and one per pool) | `ITERION_RUNS_DLQ`, `ITERION_RUNS_POOL_<pool>_DLQ` | Limits, `MaxAge` 7 days | `DefaultDLQMaxAge` |
 | Run leases | KV `iterion-run-locks` | TTL 60 s, refreshed every 20 s by the holder | `DefaultLockTTL`; `HeartbeatInterval` in [pkg/runner/loop.go](../pkg/runner/loop.go) |
 | Runner-generation high-water mark | KV `iterion-runner-rollout` | No TTL; one integer, re-created at `config.rollout.runnerEpoch` by the first process that claims (the server, at reseed step 3) | [pkg/queue/nats/rollout.go](../pkg/queue/nats/rollout.go) |
+| Fleet registry | KV `iterion-fleet-presence` | TTL 60 s, every live server and runner rewrites its record every 15 s — nothing to restore, the fleet re-registers within one heartbeat | `DefaultPresenceTTL`, [pkg/queue/nats/presence.go](../pkg/queue/nats/presence.go) |
 
-Every stream and bucket is `CreateOrUpdate`d at boot: a shared connection
-(the server, a shared runner) creates the shared stream pair and both KV
+Every stream and bucket is `CreateOrUpdate`d at boot (the run-lease bucket
+is created, never retuned): a shared connection
+(the server, a shared runner) creates the shared stream pair and the three KV
 buckets (`EnsureSchema`); a pool runner's connection creates its pool's
-stream pair and both KV buckets; the server's runner-pool reconciler
+stream pair and the three KV buckets; the server's runner-pool reconciler
 creates the stream pair of every declared pool (`EnsurePoolSchema`). An
 empty JetStream is a valid starting state, and that is the whole reseed.
 

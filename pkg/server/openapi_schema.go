@@ -327,6 +327,10 @@ func routeSchemas() map[string]routeOp {
 		// stored readings after a provider reset the ledger cannot see.
 		"DELETE /api/admin/usage-readings/{fingerprint}": {response: usageReadingsClearedView{}},
 
+		// The fleet registry (super-admin) — every live server and runner
+		// record, and the engine floor they produce.
+		"GET /api/admin/fleet": {response: adminFleetView{}},
+
 		// Platform runtime settings (super-admin) — DB-backed overrides of the
 		// operational env vars, effective without restart. Each GET returns the
 		// stored record + resolved effective + origin; each PUT applies MERGE

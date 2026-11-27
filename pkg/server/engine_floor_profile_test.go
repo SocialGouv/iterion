@@ -31,7 +31,7 @@ func pushProfileBundle(requires string) string {
 func TestAdminBotsPush_RefusesAProfileTwoBundleWithoutAFloor(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ProfileSince[2]+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ProfileSince[2] + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ProfileSince[2] + "+abc123")
 
 	w := adminBotsPutQuery(s, admin, "needy", "", pushProfileBundle(""))
 	if w.Code != http.StatusConflict {

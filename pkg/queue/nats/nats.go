@@ -46,6 +46,9 @@ const (
 	SubjectHeartFmt  = "iterion.heartbeat.%s"
 	KVRunLocks       = "iterion-run-locks"
 	KVRolloutEpochs  = "iterion-runner-rollout"
+	// KVFleetPresence is the fleet registry (presence.go): one record per
+	// live server and runner process, expired by the bucket TTL.
+	KVFleetPresence = "iterion-fleet-presence"
 	// JetStream KV keys cannot contain '/', so this is the KV-safe spelling
 	// of the logical `epoch/high-water` rollout key.
 	RunnerEpochHighWaterKey = "epoch.high-water"
@@ -112,17 +115,20 @@ const (
 
 // Config carries the connection settings for the cloud queue.
 type Config struct {
-	URL             string        // nats://host:port — required
-	StreamName      string        // default StreamRuns
-	DLQStream       string        // default StreamRunsDLQ
-	KVBucket        string        // default KVRunLocks
-	RolloutKVBucket string        // default KVRolloutEpochs (persistent, no TTL)
-	StreamReplicas  int           // default 1
-	ConsumerName    string        // default ConsumerRunners
-	MaxAge          time.Duration // default 24h
-	DLQMaxAge       time.Duration // default 7d
-	MaxDeliver      int           // default DefaultStreamMaxRetry (8)
-	AckWait         time.Duration // default DefaultAckWait (10m)
+	URL             string // nats://host:port — required
+	StreamName      string // default StreamRuns
+	DLQStream       string // default StreamRunsDLQ
+	KVBucket        string // default KVRunLocks
+	RolloutKVBucket string // default KVRolloutEpochs (persistent, no TTL)
+	// PresenceKVBucket is the fleet registry; its bucket TTL is PresenceTTL.
+	PresenceKVBucket string        // default KVFleetPresence
+	PresenceTTL      time.Duration // default DefaultPresenceTTL (60s)
+	StreamReplicas   int           // default 1
+	ConsumerName     string        // default ConsumerRunners
+	MaxAge           time.Duration // default 24h
+	DLQMaxAge        time.Duration // default 7d
+	MaxDeliver       int           // default DefaultStreamMaxRetry (8)
+	AckWait          time.Duration // default DefaultAckWait (10m)
 	// SchemaMismatchDelay is the delayed-Nak interval used by runners during
 	// mixed-schema rollouts. It also contributes to RedeliveryWindow so the
 	// orphan sweeper never races a legitimately bouncing message.
@@ -166,6 +172,8 @@ type Conn struct {
 	js             jetstream.JetStream
 	kv             jetstream.KeyValue
 	rolloutKV      epochKV
+	presenceKV     presenceKV
+	presenceKeys   presenceKeyLister
 	cfg            Config
 	logger         *iterlog.Logger
 	highWaterEpoch uint64
@@ -308,7 +316,8 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 			nc.Close()
 			return nil, err
 		}
-		c.kv, c.rolloutKV = res.runLocks, res.rollout
+		c.kv, c.rolloutKV, c.presenceKV = res.runLocks, res.rollout, res.presence
+		c.presenceKeys = streamKeyLister(jsStreamSubjects(js), cfg.PresenceKVBucket)
 	} else if err := c.EnsureSchema(ctx); err != nil {
 		nc.Close()
 		return nil, err
@@ -417,9 +426,12 @@ func (c *Conn) EnsureSchema(ctx context.Context) error {
 	slog.Info("jetstream schema pinned",
 		"stream", c.cfg.StreamName, "dlq", c.cfg.DLQStream,
 		"kv_bucket", c.cfg.KVBucket, "rollout_kv_bucket", c.cfg.RolloutKVBucket,
+		"presence_kv_bucket", c.cfg.PresenceKVBucket,
 		"replicas", c.cfg.StreamReplicas)
 	c.kv = resources.runLocks
 	c.rolloutKV = resources.rollout
+	c.presenceKV = resources.presence
+	c.presenceKeys = streamKeyLister(jsStreamSubjects(c.js), c.cfg.PresenceKVBucket)
 
 	return nil
 }
@@ -433,6 +445,7 @@ type schemaManager interface {
 type schemaResources struct {
 	runLocks jetstream.KeyValue
 	rollout  jetstream.KeyValue
+	presence jetstream.KeyValue
 }
 
 func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
@@ -462,10 +475,11 @@ func ensureSchema(ctx context.Context, js schemaManager, cfg Config) (schemaReso
 	return ensureKVs(ctx, js, cfg)
 }
 
-// ensureKVs brings up the two SHARED KV buckets — the run-lease bucket
-// (per-run keys, pool-agnostic) and the rollout-epoch bucket. Both the
-// shared EnsureSchema and the pool-scoped Connect path need exactly
-// these; the streams differ between the two, the buckets do not.
+// ensureKVs brings up the three SHARED KV buckets — the run-lease bucket
+// (per-run keys, pool-agnostic), the rollout-epoch bucket and the fleet
+// registry. Both the shared EnsureSchema and the pool-scoped Connect path
+// need exactly these; the streams differ between the two, the buckets do
+// not.
 func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResources, error) {
 	// Never rewrite the shared lease TTL beneath existing holders. A changed
 	// configuration requires draining holders and coordinating bucket migration.
@@ -491,7 +505,21 @@ func ensureKVs(ctx context.Context, js schemaManager, cfg Config) (schemaResourc
 		return schemaResources{}, fmt.Errorf("queue/nats: rollout kv %s: %w", cfg.RolloutKVBucket, err)
 	}
 
-	return schemaResources{runLocks: kv, rollout: rolloutKV}, nil
+	// The registry holds only records every live process rewrites each
+	// quarter TTL, so CreateOrUpdate may retune its TTL in place: a record
+	// written under the old TTL is rewritten under the new one within a
+	// heartbeat.
+	presenceKV, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:   cfg.PresenceKVBucket,
+		TTL:      cfg.PresenceTTL,
+		History:  1,
+		Replicas: cfg.StreamReplicas,
+	})
+	if err != nil {
+		return schemaResources{}, fmt.Errorf("queue/nats: fleet registry kv %s: %w", cfg.PresenceKVBucket, err)
+	}
+
+	return schemaResources{runLocks: kv, rollout: rolloutKV, presence: presenceKV}, nil
 }
 
 // PublishRun submits a RunMessage onto the iterion.queue.runs subject.
@@ -1231,6 +1259,18 @@ func applyDefaults(c Config) Config {
 			// without adding a second operator knob.
 			c.RolloutKVBucket = c.KVBucket + "-rollout"
 		}
+	}
+	if c.PresenceKVBucket == "" {
+		// Same isolation rule as the rollout bucket: another installation
+		// on the same NATS account keeps its own fleet.
+		if c.KVBucket == KVRunLocks {
+			c.PresenceKVBucket = KVFleetPresence
+		} else {
+			c.PresenceKVBucket = c.KVBucket + "-presence"
+		}
+	}
+	if c.PresenceTTL == 0 {
+		c.PresenceTTL = DefaultPresenceTTL
 	}
 	if c.StreamReplicas == 0 {
 		c.StreamReplicas = DefaultStreamReplicas

@@ -132,6 +132,8 @@ matches plan §C.2:
 | Subject | `iterion.queue.runs` | Where the publisher writes |
 | DLQ subject | `iterion.queue.runs.dlq` | DLQ park subject |
 | KV bucket | `iterion-run-locks` | Distributed lease per run id |
+| KV bucket | `iterion-runner-rollout` | Durable epoch high-water mark (no TTL) |
+| KV bucket | `iterion-fleet-presence` | Fleet registry: one record per live server and runner (build, epoch, pool, draining), TTL 60 s, refreshed every 15 s — what the bot-push engine floor reads ([platform-bots.md](platform-bots.md)) |
 | Durable consumer | `iterion-runners` | The pull-consumer the runner pool drains |
 
 Pinned semantics:

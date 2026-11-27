@@ -303,6 +303,13 @@ neither, in which case `kubectl port-forward` and probe from your machine.)
 `{"status":"stalled","idle_for":"7m12s"}` means the consume loop is wedged
 and the liveness probe is about to restart the pod. `{"status":"draining",
 "busy":true}` means it is finishing a run and will not take new work.
+`"presence_paused":true` (status still `ok`) means the loop holds its fetches
+because the fleet registry (NATS KV `iterion-fleet-presence`) has not stored
+this runner's record recently: a runner the bot-push engine floor cannot see
+takes no work. It resumes within 2 s of the next heartbeat that lands, and
+the stall detector skips its samples meanwhile; readiness deliberately
+ignores it, so a registry outage does not pull the whole fleet out of
+service.
 
 **A run keeps resuming after every deploy.** That is the runner's drain
 ceiling, not a probe: see `config.runner.drainMode` above and

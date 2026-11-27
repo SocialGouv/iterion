@@ -14,7 +14,7 @@ import (
 func TestAdminBotsPush_RefusesAProfileTwoBundleWithAFloorBelowTheRelease(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ProfileSince[2]+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ProfileSince[2] + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ProfileSince[2] + "+abc123")
 
 	w := adminBotsPutQuery(s, admin, "lowfloor", "", pushProfileBundle(">= 0.0.1"))
 	if w.Code != http.StatusConflict {

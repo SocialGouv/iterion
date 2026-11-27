@@ -33,7 +33,7 @@ func TestAPushWhoseSourceIsCutShortIsRefused(t *testing.T) {
 	t.Setenv(parser.ReadBudgetEnv, strconv.Itoa(budget))
 	push := func(slug, query string) *httptest.ResponseRecorder {
 		s, editor, _ := newBotSourceTestServer(t)
-		s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.200.0+abc123"}}
+		s.fleet = liveRunners("v3.200.0+abc123")
 		body, _ := json.Marshal(botSourcePutReq{Files: files})
 		r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/"+slug+query, strings.NewReader(string(body))).WithContext(auth.WithIdentity(context.Background(), editor))
 		r.SetPathValue("id", "t1")
@@ -65,7 +65,7 @@ func TestAForcedPushPastAShortSourceIsToldEveryGuardItPassed(t *testing.T) {
 	manifest := "name: floorbot\nversion: 1.0.0\nrequires:\n  iterion: \">= 9.9.9\"\n"
 	t.Setenv(parser.ReadBudgetEnv, strconv.Itoa(budget))
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.200.0+abc123"}}
+	s.fleet = liveRunners("v3.200.0+abc123")
 	body, _ := json.Marshal(botSourcePutReq{Files: map[string]string{"main.bot": main, "child.bot": child, "lib/big.bot": big, "lib/k.bot": k, "manifest.yaml": manifest}})
 	r := httptest.NewRequest("PUT", "/api/teams/t1/bot-sources/short?force=1", strings.NewReader(string(body))).WithContext(auth.WithIdentity(context.Background(), editor))
 	r.SetPathValue("id", "t1")

@@ -56,6 +56,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
 	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/pricefeed"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -463,6 +464,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		logger.WithFields(map[string]any{"self_epoch": selfEpoch, "high_water_epoch": highWaterEpoch}).Error("server: epoch regression detected — staying live in diagnostic-only mode; background workers and run publication are fenced")
 	}
 
+	// This replica's fleet registry record: the server compiles a bot at
+	// launch and its epoch decides which runners can take what it
+	// publishes, so the engine floor counts every live server. Joined in
+	// the claim callback below, left at exit.
+	serverHost, _ := os.Hostname()
+	presence, err := natsConn.NewPresence(queue.FleetRoleServer, serverHost, "")
+	if err != nil {
+		return fmt.Errorf("server: %w", err)
+	}
+	membership := newFleetMembership(presence, logger, "server")
+	defer membership.leave()
+
 	// AES-GCM master key for sealing BYOK + OAuth credentials at
 	// rest. Built early so the publisher can pick up the BYOK store.
 	if cfg.Auth.SecretsKeys != "" && cfg.Auth.SecretsKey != "" {
@@ -831,13 +844,25 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		RunnerEpoch:           selfEpoch,
 		HighWaterEpoch:        highWaterEpoch,
 		Superseded:            natsConn.Superseded(),
+		FleetRegistry:         natsConn,
 		ClaimRunnerEpoch: func() (uint64, bool, error) {
 			wasSuperseded := natsConn.Superseded()
+			// Join before the claim, which stays the last fallible boot
+			// step; a generation already superseded at Connect never
+			// serves launches, so it never joins.
+			if !wasSuperseded {
+				if err := membership.join(rootCtx); err != nil {
+					return 0, false, err
+				}
+			}
 			if err := natsConn.ClaimRunnerEpoch(rootCtx); err != nil {
 				return 0, false, err
 			}
 			self, highWater := natsConn.RunnerEpoch()
 			superseded := natsConn.Superseded()
+			if superseded {
+				membership.leave()
+			}
 			if superseded && !wasSuperseded {
 				mreg.RolloutEpochRegression.WithLabelValues("server").Inc()
 				logger.WithFields(map[string]any{"self_epoch": self, "high_water_epoch": highWater}).Error("server: epoch superseded while bootstrapping — entering diagnostic-only mode")

@@ -308,7 +308,7 @@ func TestBundleValidationChecksAFragmentThroughEverySibling(t *testing.T) {
 func TestDeleteBotSourceFileKeepsTheGuards(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ImportSince + "+abc123")
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	files := map[string]string{
 		"main.bot":      "import \"lib/nodes.bot\"\n\nworkflow main:\n  entry: worker\n  worker -> done\n",
@@ -353,7 +353,7 @@ func TestDeleteBotSourceFileKeepsTheGuards(t *testing.T) {
 func TestBotSourceFileRoutesCheckWhatTheyChange(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ImportSince + "+abc123")
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	files := map[string]string{
 		"main.bot":      "workflow main:\n  entry: done\n",

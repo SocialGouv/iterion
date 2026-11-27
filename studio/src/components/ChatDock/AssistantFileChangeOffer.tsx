@@ -361,6 +361,11 @@ export default function AssistantFileChangeOffer({
       setPreview(result.files);
       setRecovery(result.recovery ?? []);
       setState("saved");
+      // A save the engine-floor guard passed with a warning (part of the
+      // deployment unseen, a floor it could not order) says so, as a push does.
+      for (const warning of result.warnings ?? []) {
+        addToast(warning, "warning");
+      }
       if (activeTarget) {
         if (await reloadActiveFile()) {
           addToast(

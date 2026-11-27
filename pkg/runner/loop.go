@@ -1391,6 +1391,12 @@ type Config struct {
 	// probes. A superseded runner is never passed to Run by the entrypoint.
 	HighWaterEpoch uint64
 	Superseded     bool
+	// Presence is this runner's record in the fleet registry
+	// (natsq.Presence), which the engine floor reads to learn which builds
+	// can execute a new launch. The loop fetches only while the record is
+	// Fresh, and Shutdown marks it draining once fetching has stopped. Nil
+	// (local runs, tests) skips both.
+	Presence FleetPresence
 	// DrainMode governs SIGTERM handling. "complete" (default, the
 	// lame-duck posture): stop fetching new runs but let the in-flight run
 	// finish naturally before exiting — a rolling deploy interrupts
@@ -1575,6 +1581,12 @@ type Runner struct {
 	// set at the top of Shutdown.
 	draining atomic.Bool
 	lastTick atomic.Int64
+	// presencePaused is set while the loop holds its fetches because the
+	// fleet registry has not stored this runner's record recently
+	// (presenceAllowsFetch). The probes report it, and the stall detector
+	// abstains while it holds: a loop that does not pull is no witness of
+	// whether the consumer delivers.
+	presencePaused atomic.Bool
 
 	// logWriters maps an in-flight run to its RunLogStore batching
 	// writer so the store's LogPositionFn hook (logWriterTotal) can
@@ -1819,6 +1831,15 @@ func (r *Runner) Run(ctx context.Context) error {
 		default:
 		}
 
+		if !r.presenceAllowsFetch() {
+			select {
+			case <-time.After(presencePauseDelay):
+			case <-loopCtx.Done():
+				return loopCtx.Err()
+			}
+			continue
+		}
+
 		delivery, err := r.consumer.Fetch(loopCtx, r.cfg.FetchWait)
 		if err != nil {
 			if errors.Is(err, natsq.ErrNoMessage) {
@@ -1889,6 +1910,10 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
+	// Only now is the runner draining in the registry's sense: it takes no
+	// new run, so the engine floor may stop counting its build. Recorded
+	// off this path — the drain below never waits on the registry.
+	r.markDraining()
 	if cur == nil {
 		return nil
 	}

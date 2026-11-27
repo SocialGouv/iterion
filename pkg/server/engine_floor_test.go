@@ -3,14 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/botsource"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -18,17 +19,32 @@ import (
 // deployment's engine cannot run, instead of storing it and letting the first
 // launch die on an expression the runner's evaluator does not have.
 
-// fakeBuildObserver stands in for the Mongo store's ObservedRunnerBuilds — the
-// runners' own report, read off the runs they stamped.
-type fakeBuildObserver struct {
-	builds []string
-	err    error
-	since  time.Time
+// fakeFleet stands in for the live fleet registry (natsq.Conn.FleetMembers).
+type fakeFleet struct {
+	members []queue.FleetMember
+	err     error
 }
 
-func (f *fakeBuildObserver) ObservedRunnerBuilds(_ context.Context, since time.Time, _ int) ([]string, error) {
-	f.since = since
-	return f.builds, f.err
+func (f *fakeFleet) FleetMembers(context.Context) ([]queue.FleetMember, error) {
+	return f.members, f.err
+}
+
+// liveRunners is a registry holding one live, fetching runner per build, at
+// the epoch of a server built without one (0): every one can take a launch.
+func liveRunners(builds ...string) *fakeFleet {
+	f := &fakeFleet{}
+	for i, b := range builds {
+		f.members = append(f.members, runnerMember(fmt.Sprintf("runner-%d", i), b, 0, false))
+	}
+	return f
+}
+
+func runnerMember(instance, build string, epoch uint64, draining bool) queue.FleetMember {
+	return queue.FleetMember{Role: queue.FleetRoleRunner, Instance: instance, Build: build, Epoch: epoch, Draining: draining}
+}
+
+func serverMember(instance, build string, epoch uint64) queue.FleetMember {
+	return queue.FleetMember{Role: queue.FleetRoleServer, Instance: instance, Build: build, Epoch: epoch}
 }
 
 // pinServerBuild pins this process's declared build so the floor is decidable
@@ -94,7 +110,7 @@ func adminBotsPutQuery(s *Server, id auth.Identity, slug, query, body string) *h
 func TestAdminBotsPush_RefusesABundleTheFleetCannotRun(t *testing.T) {
 	pinServerBuild(t, "v3.116.4+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v99.0.0", "v3.112.7+abc123"}}
+	s.fleet = liveRunners("v99.0.0", "v3.112.7+abc123")
 
 	w := adminBotsPutQuery(s, admin, "needy", "", pushBundle(">= 3.112.14"))
 	if w.Code != http.StatusConflict {
@@ -122,7 +138,7 @@ func TestAdminBotsPush_RefusesABundleTheFleetCannotRun(t *testing.T) {
 func TestAdminBotsPush_ForceOverridesButWarns(t *testing.T) {
 	pinServerBuild(t, "v3.116.4+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.112.7+abc123"}}
+	s.fleet = liveRunners("v3.112.7+abc123")
 
 	w := adminBotsPutQuery(s, admin, "needy", "force=1", pushBundle(">= 3.112.14"))
 	if w.Code != http.StatusOK {
@@ -148,7 +164,7 @@ func TestAdminBotsPush_ForceOverridesButWarns(t *testing.T) {
 func TestAdminBotsPush_RefusesAnUndecodableManifest(t *testing.T) {
 	pinServerBuild(t, "v3.116.4+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.116.4+deadbeef"}}
+	s.fleet = liveRunners("v3.116.4+deadbeef")
 
 	body, _ := json.Marshal(map[string]any{"files": map[string]string{
 		botsource.MainBotFile: "workflow main:\n  entry: done\n",
@@ -169,7 +185,7 @@ func TestAdminBotsPush_RefusesAnUndecodableManifest(t *testing.T) {
 func TestAdminBotsPush_AdmitsWhatTheFleetCanRun(t *testing.T) {
 	pinServerBuild(t, "v3.116.4+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v3.116.4+deadbeef"}}
+	s.fleet = liveRunners("v3.116.4+deadbeef")
 
 	for i, requires := range []string{">= 3.112.14", ""} {
 		body := pushBundle(requires)
@@ -190,56 +206,5 @@ func TestAdminBotsPush_AdmitsWhatTheFleetCanRun(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("push with requires %q = %d %s, want 200", requires, w.Code, w.Body.String())
 		}
-	}
-}
-
-// The server's OWN build is part of the floor: it compiles the bot at launch,
-// so a server below the requirement is as blocking as an old runner. With no
-// observed runner at all (a fresh deployment) it is the whole floor — which is
-// what keeps the check from silently abstaining.
-func TestEngineFloor_TakesTheMinimumOfServerAndRunners(t *testing.T) {
-	pinServerBuild(t, "v3.116.4+deadbeef")
-	s, _, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v0.0.1"}}
-	build, sources := s.engineFloor(context.Background())
-	if build != "v0.0.1" {
-		t.Fatalf("floor = %q, want the OLDEST build — a run can land on any pod", build)
-	}
-	if len(sources) == 0 {
-		t.Fatal("the floor must say where it came from")
-	}
-
-	s.runnerBuilds = &fakeBuildObserver{builds: nil}
-	build, _ = s.engineFloor(context.Background())
-	if build != "v3.116.4+deadbeef" {
-		t.Fatalf("floor with no observed runner = %q, want this server's own build", build)
-	}
-}
-
-// A build the floor cannot order (a `dev` server, a fork) must not silently
-// drop out of the minimum and leave an ORDERABLE peer as the answer: an
-// unorderable participant makes the whole floor unknown, which the push guard
-// reports rather than passes.
-func TestEngineFloor_AnUnorderableParticipantIsNotDropped(t *testing.T) {
-	pinServerBuild(t, "v3.116.4+deadbeef")
-	s, _, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v99.0.0", "some-fork-build"}}
-	build, _ := s.engineFloor(context.Background())
-	if orderableBuild(build) {
-		t.Fatalf("floor = %q (orderable), want an unorderable answer: one pod of the fleet carries a build nothing can order", build)
-	}
-}
-
-// The lookback the observer is asked for must be a bounded, recent window —
-// a build that last ran a month ago is not evidence about today's fleet.
-func TestEngineFloor_AsksForARecentWindow(t *testing.T) {
-	pinServerBuild(t, "v3.116.4+deadbeef")
-	s, _, _ := adminBotsServer(t)
-	obs := &fakeBuildObserver{builds: []string{"v3.116.4"}}
-	s.runnerBuilds = obs
-	s.engineFloor(context.Background())
-	age := time.Since(obs.since)
-	if age < time.Hour || age > 30*24*time.Hour {
-		t.Fatalf("observer asked for runs since %v ago, want a bounded recent window", age)
 	}
 }

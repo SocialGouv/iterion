@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/queue"
 )
 
 // A bundle and the engine that executes it move independently on a
@@ -21,21 +21,12 @@ import (
 // A manifest may now declare the engine it needs (`requires.iterion`), and
 // this file is what holds a push against the deployment's actual build.
 
-// runnerBuildObserver is the store capability that answers "what build is
-// actually EXECUTING runs here" — implemented by the Mongo store over the
-// `runner_version` each runner stamps on the runs it takes. Absent in local
-// mode, where server and engine are one process and appinfo answers already.
-type runnerBuildObserver interface {
-	ObservedRunnerBuilds(ctx context.Context, since time.Time, limit int) ([]string, error)
+// FleetRegistry is the live fleet the engine floor reads: one presence record
+// per server and runner process (natsq.Conn.FleetMembers), kept fresh by each
+// process's heartbeat and expired by the registry TTL when a process dies.
+type FleetRegistry interface {
+	FleetMembers(ctx context.Context) ([]queue.FleetMember, error)
 }
-
-// engineFloorLookback bounds how far back a runner build counts as evidence
-// about TODAY's fleet. Long enough that a quiet weekend still reports, short
-// enough that an image retired last month does not veto a push.
-const engineFloorLookback = 7 * 24 * time.Hour
-
-// engineFloorSample caps the runs read per resolution.
-const engineFloorSample = 200
 
 // serverBuild names this process's own build. A var so a test can pin it:
 // `go test` binaries carry appinfo.Version = "dev", which is deliberately
@@ -43,44 +34,151 @@ const engineFloorSample = 200
 // test and every refusal assertion would pass for the wrong reason.
 var serverBuild = appinfo.FullVersion
 
-// engineFloor is the build a bundle must satisfy to run anywhere on this
-// deployment: the MINIMUM over this server's own build and every runner build
-// observed recently.
+// engineFloorReading is what the floor resolution concludes.
+type engineFloorReading struct {
+	// build is the floor: the lowest build among the participants.
+	build string
+	// sources says where the floor's number came from, and what the
+	// registry held that did not count — a refusal quotes it.
+	sources []string
+	// unchecked names a half of the deployment the floor could not see. A
+	// push that passes says so: its requirement was checked against part of
+	// the deployment only, never silently against all of it.
+	unchecked []string
+}
+
+// engineFloor is the build a bundle must satisfy to run on any process that
+// can take a run launched NOW — the minimum over:
 //
-// Both halves matter, and in both directions. The server COMPILES the bot at
-// launch, so a server below the requirement blocks just as hard as an old
-// runner; the runners EVALUATE it, and on cloud they are the half that lags
-// (`:edge` server, digest-pinned runners). The minimum is the honest answer
-// because a queued run lands on whichever pod takes it.
+//   - this server's own build, always;
+//   - every live server of the fleet registry: a server COMPILES the bot at
+//     launch, and one in its lame-duck window still answers the requests
+//     routed to it;
+//   - every live runner that can take a new launch: not draining (a draining
+//     runner has stopped fetching) and at or above the lowest live server's
+//     epoch (a runner below a publisher's epoch refuses that publisher's
+//     every message — the queue/nats rollout fence).
 //
-// Returns the floor build plus the sources it was taken from, so a refusal can
-// say where its number came from. A build no component can order (a `dev`
-// server, a fork's naming scheme) is returned AS the floor rather than skipped:
-// dropping it would let an orderable peer answer for a fleet that also carries
-// something nobody can compare, and the caller reports "could not check"
-// instead of passing.
-func (s *Server) engineFloor(ctx context.Context) (build string, sources []string) {
+// The registry, not the runs of the past week: what the guard protects is
+// the next launch, so a pod finishing its last run, or gone since, must not
+// refuse a push the processes that will execute it can run.
+//
+// A build no component can order (a `dev` server, a fork's naming scheme) is
+// returned AS the floor rather than skipped: dropping it would let an
+// orderable peer answer for a fleet that also carries something nobody can
+// compare, and the caller reports "could not check" instead of passing.
+func (s *Server) engineFloor(ctx context.Context) engineFloorReading {
 	self := serverBuild()
-	build, sources = self, []string{"server " + self}
-	if s.runnerBuilds == nil {
-		return build, sources
+	if s.fleet == nil {
+		return engineFloorReading{build: self, sources: []string{"this server " + self}}
 	}
-	observed, err := s.runnerBuilds.ObservedRunnerBuilds(ctx, time.Now().UTC().Add(-engineFloorLookback), engineFloorSample)
+	members, err := s.fleet.FleetMembers(ctx)
 	if err != nil {
-		// Observational: a floor that could not read the fleet is still the
-		// server's own build, and the log says the fleet half is missing.
-		s.logWarn("engine floor: could not read the runner builds (%v) — the requirement check sees only this server's build %s", err, self)
-		return build, sources
-	}
-	for _, v := range observed {
-		if lower(v, build) {
-			build, sources = v, []string{"runner " + v}
+		s.logWarn("engine floor: could not read the fleet registry (%v) — the requirement check sees only this server's build %s", err, self)
+		return engineFloorReading{
+			build:     self,
+			sources:   []string{"this server " + self},
+			unchecked: []string{fmt.Sprintf("the fleet registry could not be read (%v), so no runner was checked", err)},
 		}
 	}
-	if len(observed) > 0 && build == self {
-		sources = append(sources, fmt.Sprintf("%d runner build(s) observed, none older", len(observed)))
+	return floorOverFleet(self, s.cfg.RunnerEpoch, members)
+}
+
+// floorParticipant is one process whose build the floor counts.
+type floorParticipant struct {
+	label string
+	build string
+}
+
+// floorOverFleet applies the floor rule to one registry snapshot. selfEpoch
+// is this server's own epoch: it publishes, whatever the registry holds of
+// it. A record of a role this build does not know is counted — a
+// participant nobody understands is not dropped from the minimum.
+func floorOverFleet(self string, selfEpoch uint64, members []queue.FleetMember) engineFloorReading {
+	publisherEpoch := selfEpoch
+	for _, m := range members {
+		if m.Role == queue.FleetRoleServer && m.Epoch < publisherEpoch {
+			publisherEpoch = m.Epoch
+		}
 	}
-	return build, sources
+	participants := []floorParticipant{{label: "this server", build: self}}
+	var draining, fenced []string
+	runners := 0
+	for _, m := range members {
+		who := m.Role + " " + m.Instance
+		switch {
+		case m.Role == queue.FleetRoleRunner && m.Draining:
+			draining = append(draining, who+" "+m.Build)
+		case m.Role == queue.FleetRoleRunner && m.Epoch < publisherEpoch:
+			fenced = append(fenced, fmt.Sprintf("%s %s (epoch %d)", who, m.Build, m.Epoch))
+		default:
+			if m.Role == queue.FleetRoleRunner {
+				runners++
+			}
+			participants = append(participants, floorParticipant{label: who, build: m.Build})
+		}
+	}
+
+	rd := engineFloorReading{build: self}
+	for _, p := range participants {
+		if lower(p.build, rd.build) {
+			rd.build = p.build
+		}
+	}
+	// The holders are every participant the ordering ranks equal to the
+	// floor — another commit of the same version holds it as much — and,
+	// for a floor nothing can order, every participant nothing can order:
+	// each one is a reason the check cannot run.
+	unorderedFloor := !orderableBuild(rd.build)
+	var holders []string
+	for _, p := range participants {
+		if (unorderedFloor && !orderableBuild(p.build)) || (!unorderedFloor && sameBuildRank(p.build, rd.build)) {
+			holders = append(holders, p.label)
+		}
+	}
+	rd.sources = []string{
+		fmt.Sprintf("%s held by %s", rd.build, joinCapped(holders, 3)),
+		fmt.Sprintf("%d live runner(s) can take a new launch", runners),
+	}
+	if len(draining) > 0 {
+		rd.sources = append(rd.sources, "not counted, draining: "+joinCapped(draining, 3))
+	}
+	if len(fenced) > 0 {
+		rd.sources = append(rd.sources, fmt.Sprintf("not counted, below the publishers' epoch %d: %s", publisherEpoch, joinCapped(fenced, 3)))
+	}
+	if runners == 0 {
+		rd.unchecked = append(rd.unchecked, "no live runner can take a new launch (none registered, or every one draining or below the publishers' epoch), so no runner was checked")
+	}
+	return rd
+}
+
+// uncheckedWarnings is what a push carries when part of the deployment went
+// unseen: one warning per gap, naming the requirement. verdict is what the
+// requirement got from the part that was seen — "passed" on a pass, "went
+// unverified" when the floor could not be ordered.
+func (rd engineFloorReading) uncheckedWarnings(requirement, verdict string) []string {
+	var out []string
+	for _, gap := range rd.unchecked {
+		out = append(out, fmt.Sprintf("requires.iterion %q %s, and besides %s", strings.TrimSpace(requirement), verdict, gap))
+	}
+	return out
+}
+
+// sameBuildRank reports whether two builds rank equal for the floor: equal
+// by bundle.CompareVersions when both order, else the same string.
+func sameBuildRank(a, b string) bool {
+	if c, ok := bundle.CompareVersions(a, b); ok {
+		return c == 0
+	}
+	return a == b
+}
+
+// joinCapped joins the first n items and counts the rest.
+func joinCapped(items []string, n int) string {
+	if len(items) <= n {
+		return strings.Join(items, ", ")
+	}
+	return fmt.Sprintf("%s (+%d more)", strings.Join(items[:n], ", "), len(items)-n)
 }
 
 // lower reports whether build a must replace the current floor b. An
@@ -182,22 +280,25 @@ func (s *Server) requiresFloorGap(ctx context.Context, bs botsource.BotSource, s
 		}
 		return requiresFloorOutcome{}
 	}
-	floor, sources := s.engineFloor(ctx)
-	verdict, reason := bundle.CheckManifestEngine(m, floor)
+	floor := s.engineFloor(ctx)
+	sources := strings.Join(floor.sources, "; ")
+	verdict, reason := bundle.CheckManifestEngine(m, floor.build)
 	switch verdict {
 	case bundle.EngineOK:
-		return requiresFloorOutcome{warnings: nil}
+		// A pass over part of the deployment says which part it missed.
+		return requiresFloorOutcome{warnings: floor.uncheckedWarnings(m.Requires.Iterion, "passed")}
 	case bundle.EngineUnknown:
-		// Never a silent pass: the operator learns the check did not run.
-		return requiresFloorOutcome{warnings: []string{fmt.Sprintf("%s (floor from %s) — the engine requirement could not be checked, so this push is unverified",
-			reason, strings.Join(sources, ", "))}}
+		// Never a silent pass: the operator learns the check did not run,
+		// and which half of the deployment went unseen besides.
+		return requiresFloorOutcome{warnings: append([]string{fmt.Sprintf("%s (floor from %s) — the engine requirement could not be checked, so this push is unverified",
+			reason, sources)}, floor.uncheckedWarnings(m.Requires.Iterion, "went unverified")...)}
 	}
 	if forced {
 		return requiresFloorOutcome{warnings: []string{fmt.Sprintf("FORCED past the engine-requirement guard: %s (floor from %s) — a launch of %q will be refused on any pod below the requirement",
-			reason, strings.Join(sources, ", "), bs.Slug)}}
+			reason, sources, bs.Slug)}}
 	}
-	return requiresFloorOutcome{refusal: fmt.Sprintf("bot %q: %s (floor from %s). Bump the runner image and restart the server first (docs/platform-bots.md § Shipping a baked-catalog change), or push anyway with --force",
-		bs.Slug, reason, strings.Join(sources, ", "))}
+	return requiresFloorOutcome{refusal: fmt.Sprintf("bot %q: %s (floor from %s). Roll the runners and servers that hold the floor first (docs/platform-bots.md § Shipping a baked-catalog change), or push anyway with --force",
+		bs.Slug, reason, sources)}
 }
 
 // syntaxFloorGap is what a bundle's sources use that its manifest's floor

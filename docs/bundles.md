@@ -397,10 +397,12 @@ Four surfaces honour it, all through the same predicate
 | `iterion run` / `resume`, studio, dispatcher, subbot children | refused before a worktree or sandbox is created; run ends `failed` with `BOT_REQUIRES_NEWER_ENGINE` |
 | cloud runner | refused before the first node; run ends `failed` (never `failed_resumable`) with `BOT_REQUIRES_NEWER_ENGINE`, the delivery is **acked** so no redelivery repeats the same arithmetic |
 
-The push guard's floor is the **minimum** of the server's own build and every
-runner build observed on runs in the last 7 days (`Run.runner_version`) — a
-queued run lands on whichever pod takes it, and the server is the half that
-compiles the bot.
+The push guard's floor is the **minimum** over the processes that can take a
+run launched now, read from the live fleet registry: every live server (the
+half that compiles the bot) and every live runner that is not draining and sits
+at or above the lowest live server's epoch — a queued run lands on whichever of
+them takes it ([platform-bots.md](platform-bots.md), the `requires.iterion`
+section).
 
 **Where the contract is deliberately NOT enforced.** Installing or packing a
 bundle for an engine you do not have yet is legitimate — you install, then

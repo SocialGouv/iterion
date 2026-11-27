@@ -54,6 +54,11 @@ type Health struct {
 	Superseded     bool   `json:"superseded"`
 	Epoch          uint64 `json:"epoch"`
 	HighWaterEpoch uint64 `json:"high_water_epoch"`
+	// PresencePaused reports that the loop has stopped fetching because the
+	// fleet registry has not stored this runner's record recently. Readiness
+	// does not read it: a registry outage would otherwise pull the whole
+	// fleet out of service at once.
+	PresencePaused bool `json:"presence_paused"`
 	// SinceLastTick is the age of the last consume-loop iteration.
 	// Meaningless while Busy (the loop is blocked on the run by design).
 	SinceLastTick time.Duration `json:"-"`
@@ -76,6 +81,7 @@ func (r *Runner) Health() Health {
 		Superseded:     r.cfg.Superseded,
 		Epoch:          r.cfg.RunnerEpoch,
 		HighWaterEpoch: r.cfg.HighWaterEpoch,
+		PresencePaused: r.presencePaused.Load(),
 		StaleAfter:     r.livenessStaleAfter(),
 	}
 	// Run stamps a tick before anything else, so a non-zero tick IS the
@@ -139,6 +145,7 @@ type healthBody struct {
 	Draining       bool   `json:"draining"`
 	Epoch          uint64 `json:"epoch"`
 	HighWaterEpoch uint64 `json:"high_water_epoch"`
+	PresencePaused bool   `json:"presence_paused"`
 	IdleFor        string `json:"idle_for,omitempty"`
 }
 
@@ -192,6 +199,7 @@ func writeHealth(w http.ResponseWriter, code int, status string, h Health) {
 		Draining:       h.Draining,
 		Epoch:          h.Epoch,
 		HighWaterEpoch: h.HighWaterEpoch,
+		PresencePaused: h.PresencePaused,
 	}
 	if h.Started && !h.Busy {
 		body.IdleFor = h.SinceLastTick.Round(time.Second).String()

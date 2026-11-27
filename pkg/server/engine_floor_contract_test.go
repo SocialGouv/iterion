@@ -30,7 +30,7 @@ func pushContractBundle(requires string) string {
 func TestAdminBotsPush_RefusesABundleWithAContractWithoutAFloor(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ContractSince+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ContractSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ContractSince + "+abc123")
 
 	w := adminBotsPutQuery(s, admin, "contracted", "", pushContractBundle(""))
 	if w.Code != http.StatusConflict {

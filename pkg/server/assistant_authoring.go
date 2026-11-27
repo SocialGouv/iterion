@@ -104,6 +104,9 @@ type authoringChangeResponse struct {
 	Saved      bool                      `json:"saved"`
 	Validation authoringValidationResult `json:"validation"`
 	Recovery   []authoringRecovery       `json:"recovery,omitempty"`
+	// Warnings is what a saved commit passed with: the engine-floor guard's
+	// warnings, exactly as a push route returns them.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type authoringValidationCheck struct {
@@ -451,7 +454,7 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 		writeJSON(w, authoringChangeResponse{Files: previews, Version: target.version, Saved: false, Validation: validation})
 		return
 	}
-	version, recovery, err := s.commitAuthoring(r, target, previews, resolved)
+	version, recovery, warnings, err := s.commitAuthoring(r, target, previews, resolved)
 	if err != nil {
 		// A typed refusal of the write (the engine floor the edit's syntax
 		// asks for) carries its code, like a refusal of the preview: the
@@ -464,7 +467,7 @@ func (s *Server) handleAuthoringChange(w http.ResponseWriter, r *http.Request, c
 		s.authoringError(w, r, err)
 		return
 	}
-	writeJSON(w, authoringChangeResponse{Files: previews, Version: version, Saved: true, Validation: validation, Recovery: recovery})
+	writeJSON(w, authoringChangeResponse{Files: previews, Version: version, Saved: true, Validation: validation, Recovery: recovery, Warnings: warnings})
 }
 
 func validateAuthoringChangesShape(changes []authoringFileChange, limits authoringLimits) error {
@@ -1081,27 +1084,27 @@ func validateChangedAuthoringManifest(files map[string]string, previews []author
 	return nil
 }
 
-func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previews []authoringPreviewFile, resolved []resolvedAuthoringFile) (int, []authoringRecovery, error) {
+func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previews []authoringPreviewFile, resolved []resolvedAuthoringFile) (int, []authoringRecovery, []string, error) {
 	if target.files != nil {
 		for _, preview := range previews {
 			if preview.Operation == "create" {
-				return 0, nil, authoringForbiddenError{"file creation is unavailable for cloud bot sources"}
+				return 0, nil, nil, authoringForbiddenError{"file creation is unavailable for cloud bot sources"}
 			}
 		}
 		bs, err := s.botSources.GetBySlug(store.WithTenant(r.Context(), target.teamID), target.teamID, target.slug)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		if bs.Version != target.version {
-			return 0, nil, authoringConflictError{"bot source changed before commit"}
+			return 0, nil, nil, authoringConflictError{"bot source changed before commit"}
 		}
 		if bs.ID != target.id {
-			return 0, nil, authoringConflictError{"bot source changed before commit: the bot was deleted and re-created (a new id), and this commit was decided on the old one"}
+			return 0, nil, nil, authoringConflictError{"bot source changed before commit: the bot was deleted and re-created (a new id), and this commit was decided on the old one"}
 		}
 		files := cloneAuthoringStringMap(bs.Files)
 		for _, p := range previews {
 			if p.Scope != bundle.AuthoringScopeBundle {
-				return 0, nil, errors.New("cloud workspace files are not writable without a connected repository")
+				return 0, nil, nil, errors.New("cloud workspace files are not writable without a connected repository")
 			}
 			files[p.Path] = p.After
 		}
@@ -1109,7 +1112,7 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		bs.Version = target.version
 		bs.UpdatedBy = target.userID
 		if err := bs.Validate(); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		// The same floor guard as every push route: an edit that introduces
 		// a syntax with a floor the manifest does not reach (a profile,
@@ -1117,7 +1120,7 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		// runner that cannot parse it. No force on this path: the assistant
 		// edits the manifest like any file.
 		if gap := bundleSyntaxFloorGap(bs); gap != nil {
-			return 0, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: gap.refusal(bs.Slug)}
+			return 0, nil, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: gap.refusal(bs.Slug)}
 		}
 		// The requires half of the same guard, run exactly as the push
 		// routes run it: an edit that raises requires.iterion above this
@@ -1126,9 +1129,14 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		// half cannot fire here — the change shape is replace-only (create
 		// is refused for cloud), so the manifest never leaves the file set —
 		// hence no stored bundle handed over.
-		if out := s.requiresFloorGap(r.Context(), bs, nil, false); out.refusal != "" {
-			return 0, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: out.refusal}
+		// What it passes with warnings (a floor that could not be ordered, a
+		// half of the deployment the registry did not show) is returned with
+		// the commit, as the push routes return it: never stored in silence.
+		floor := s.requiresFloorGap(r.Context(), bs, nil, false)
+		if floor.refusal != "" {
+			return 0, nil, nil, authoringValidationFailure{Code: "bot_engine_floor", Message: floor.refusal}
 		}
+		floorWarnings := floor.warnings
 		// The store write every bot-source update goes through: pinned to the
 		// version the previews were read at, each file it replaces held to
 		// the bytes the assistant's snapshot read (its expected_sha256).
@@ -1138,10 +1146,10 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 		}
 		out, _, err := s.storeBotSource(r.Context(), target.teamID, target.userID, bs, presented, "")
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		s.auditBotSource(r, target.teamID, "updated", out)
-		return out.Version, nil, nil
+		return out.Version, nil, floorWarnings, nil
 	}
 	paths := make([]string, len(resolved))
 	for i, file := range resolved {
@@ -1149,7 +1157,7 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 	}
 	locks, err := acquireAuthoringLocalLocks(r.Context(), paths)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer closeAuthoringLocalLocks(locks)
 
@@ -1159,10 +1167,10 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 	// into a write.
 	freshTarget, err := s.resolveAuthoringTarget(r, target.editorPath)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	if freshTarget.files != nil {
-		return 0, nil, authoringForbiddenError{"local authoring target changed source kind before commit"}
+		return 0, nil, nil, authoringForbiddenError{"local authoring target changed source kind before commit"}
 	}
 	for i, preview := range previews {
 		var declared bundle.AuthoringEditableFile
@@ -1173,42 +1181,42 @@ func (s *Server) commitAuthoring(r *http.Request, target *authoringTarget, previ
 			declared, ok = freshTarget.replaceable(preview.Scope, preview.Path)
 		}
 		if !ok {
-			return 0, nil, authoringForbiddenError{fmt.Sprintf("%s:%s left the live authoring perimeter before commit", preview.Scope, preview.Path)}
+			return 0, nil, nil, authoringForbiddenError{fmt.Sprintf("%s:%s left the live authoring perimeter before commit", preview.Scope, preview.Path)}
 		}
 		file, content, available, reason, err := freshTarget.readDeclared(declared)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		if preview.Operation == "create" {
 			if available {
-				return 0, nil, authoringFileExistsError{fmt.Sprintf("%s:%s already exists", preview.Scope, preview.Path)}
+				return 0, nil, nil, authoringFileExistsError{fmt.Sprintf("%s:%s already exists", preview.Scope, preview.Path)}
 			}
 			if reason != "declared_missing_local_file" {
-				return 0, nil, authoringForbiddenError{fmt.Sprintf("%s:%s is not a declared missing local file", preview.Scope, preview.Path)}
+				return 0, nil, nil, authoringForbiddenError{fmt.Sprintf("%s:%s is not a declared missing local file", preview.Scope, preview.Path)}
 			}
 			if err := freshTarget.validateCreateDestination(declared, file.abs); err != nil {
-				return 0, nil, err
+				return 0, nil, nil, err
 			}
 		} else {
 			if !available || content != preview.Before {
-				return 0, nil, authoringConflictError{fmt.Sprintf("%s:%s changed before commit", preview.Scope, preview.Path)}
+				return 0, nil, nil, authoringConflictError{fmt.Sprintf("%s:%s changed before commit", preview.Scope, preview.Path)}
 			}
 		}
 		if filepath.Clean(file.abs) != locks[i].path {
-			return 0, nil, authoringConflictError{"authoring destination changed while acquiring its lock"}
+			return 0, nil, nil, authoringConflictError{"authoring destination changed while acquiring its lock"}
 		}
 		if err := locks[i].verify(); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 	}
 	if _, err := freshTarget.validateChanges(r.Context(), previews); err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	// Prepare every candidate before exposing any bytes. Publication moves the
 	// current inode into recovery and checks that actual displaced object;
 	// no read-then-unconditional-overwrite remains at the live destination.
 	rec, err := s.publishAuthoringLocal(r.Context(), locks, previews, true)
-	return 0, rec, err
+	return 0, rec, nil, err
 }
 
 func (s *Server) rollbackAuthoring(transactions []*authoringLocalTransaction) []string {

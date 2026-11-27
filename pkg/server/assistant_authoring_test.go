@@ -535,7 +535,7 @@ func TestAuthoringCreateCommitRechecksTheLiveManifest(t *testing.T) {
 	if err := os.WriteFile(manifestPath, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.commitAuthoring(req, target, previews, resolved); err == nil || !strings.Contains(err.Error(), "left the live authoring perimeter") {
+	if _, _, _, err := s.commitAuthoring(req, target, previews, resolved); err == nil || !strings.Contains(err.Error(), "left the live authoring perimeter") {
 		t.Fatalf("commit after declaration removal = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(s.cfg.WorkDir, "scripts", "new.json")); !errors.Is(err, os.ErrNotExist) {

@@ -133,6 +133,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/fleet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/admin/fleet */
+        get: operations["getAdminFleet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/forge/oauth-apps": {
         parameters: {
             query?: never;
@@ -7995,6 +8012,18 @@ export interface components {
             timeout: number;
             type: string;
         };
+        FleetMember: {
+            build: string;
+            draining: boolean;
+            epoch: number;
+            instance: string;
+            pool?: string;
+            role: string;
+            /** Format: date-time */
+            seen_at: string;
+            /** Format: date-time */
+            started_at: string;
+        };
         ForgeConnection: {
             /** Format: date-time */
             access_token_expires_at?: string;
@@ -9055,6 +9084,15 @@ export interface components {
             sessions_deleted: number;
             sso_links_removed: number;
             user: components["schemas"]["UserView"];
+        };
+        adminFleetFloorView: {
+            build: string;
+            sources: string[];
+            unchecked?: string[];
+        };
+        adminFleetView: {
+            floor: components["schemas"]["adminFleetFloorView"];
+            members: components["schemas"]["FleetMember"][];
         };
         adminForgeOAuthAppReq: {
             client_id: string;
@@ -10339,6 +10377,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["credentialUsageListView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAdminFleet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["adminFleetView"];
                 };
             };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */

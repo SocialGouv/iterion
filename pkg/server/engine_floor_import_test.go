@@ -28,7 +28,7 @@ func pushMultiFileBundle(requires string) string {
 func TestAdminBotsPush_RefusesABundleThatImportsWithoutAFloor(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ImportSince + "+abc123")
 
 	w := adminBotsPutQuery(s, admin, "multi", "", pushMultiFileBundle(""))
 	if w.Code != http.StatusConflict {
