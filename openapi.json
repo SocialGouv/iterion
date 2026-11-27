@@ -1898,6 +1898,46 @@
         ],
         "type": "object"
       },
+      "FleetMember": {
+        "properties": {
+          "build": {
+            "type": "string"
+          },
+          "draining": {
+            "type": "boolean"
+          },
+          "epoch": {
+            "type": "integer"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "pool": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "seen_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "instance",
+          "build",
+          "epoch",
+          "draining",
+          "started_at",
+          "seen_at"
+        ],
+        "type": "object"
+      },
       "ForgeConnection": {
         "properties": {
           "access_token_expires_at": {
@@ -5360,6 +5400,48 @@
           "run_notes_reattributed",
           "config_share_deliveries_scrubbed",
           "audit_events_scrubbed"
+        ],
+        "type": "object"
+      },
+      "adminFleetFloorView": {
+        "properties": {
+          "build": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unchecked": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "build",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "adminFleetView": {
+        "properties": {
+          "floor": {
+            "$ref": "#/components/schemas/adminFleetFloorView"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/FleetMember"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "members",
+          "floor"
         ],
         "type": "object"
       },
@@ -9012,6 +9094,33 @@
           }
         },
         "summary": "GET /api/admin/credentials/usage",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/fleet": {
+      "get": {
+        "operationId": "getAdminFleet",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/adminFleetView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone."
+          },
+          "403": {
+            "description": "The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route."
+          }
+        },
+        "summary": "GET /api/admin/fleet",
         "tags": [
           "admin"
         ]

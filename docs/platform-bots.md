@@ -242,16 +242,31 @@ from:
 ```
 bot "branch-improve-loop": bot requires iterion >= 3.112.14 but this build is
 v3.112.7+abc123 — upgrade the engine (or the image this bot runs on), or relax
-the manifest's requires.iterion (floor from runner v3.112.7+abc123). Bump the
-runner image and restart the server first (docs/platform-bots.md § Shipping a
-baked-catalog change), or push anyway with --force
+the manifest's requires.iterion (floor from v3.112.7+abc123 held by runner
+iterion-runner-5c9d-ab12cd34; 6 live runner(s) can take a new launch). Roll the
+runners and servers that hold the floor first (docs/platform-bots.md § Shipping
+a baked-catalog change), or push anyway with --force
 ```
 
-The floor is the **minimum** of this server's own build and every runner build
-observed on runs in the last 7 days (`Run.runner_version`, the build each
-runner stamps on what it executes). Both halves count: the
-server compiles the bot at launch, the runners evaluate it, and a queued run
-lands on whichever pod takes it.
+The floor is the **minimum** over the processes that can take a run launched
+now, read from the live **fleet registry** (NATS KV `iterion-fleet-presence`,
+one record per server and runner process, refreshed every 15 s and expired
+60 s after its last write):
+
+- this server's own build, and every live server's — a server compiles the bot
+  at launch, and one in its lame-duck window still answers requests;
+- every live runner that can take a new launch — **not draining** (a draining
+  runner has stopped fetching and only finishes the run it holds) and at or
+  above the **lowest live server's epoch** (a runner below a publisher's epoch
+  refuses every message that publisher stamps).
+
+So a roll does not hold pushes hostage: the moment the previous generation is
+draining or fenced by the new epoch, a bot requiring the new build passes. The
+response names the gap when part of the deployment went unseen — the registry
+could not be read, or no live runner can take a launch — and the push passes on
+the servers' builds alone, with that warning. `GET /api/admin/fleet`
+(super-admin, `iterion remote api GET /api/admin/fleet`) returns the records and
+the floor they produce.
 
 `--force` is the escape hatch — pushing ahead of a rollout is legitimate — and
 is never silent: the response carries the overridden requirement as a warning.

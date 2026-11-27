@@ -432,7 +432,7 @@ func TestPerFileFixturesParse(t *testing.T) {
 func TestPuttingABotSourceFileRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ImportSince + "+abc123")
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
 	files := map[string]string{
@@ -535,7 +535,7 @@ func TestRenderingABotInOneFileShowsTheFileWhenTheWriterWouldFoldIt(t *testing.T
 func TestPuttingAWholeBundleRefusesAWriteThatFoldsAStoredValue(t *testing.T) {
 	pinServerBuild(t, "v"+parser.ImportSince+"+deadbeef")
 	s, editor, _ := newBotSourceTestServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + parser.ImportSince + "+abc123"}}
+	s.fleet = liveRunners("v" + parser.ImportSince + "+abc123")
 	edCtx := auth.WithIdentity(context.Background(), editor)
 	stored := "dsl: 2\n\ntool t:\n  description: \"probe\"\n  command: |\n    line one\n    line\r two\n"
 	files := map[string]string{

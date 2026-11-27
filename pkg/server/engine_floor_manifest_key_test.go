@@ -39,7 +39,7 @@ func pushTaxonomyBundle(requires string) string {
 func TestAdminBotsPush_RefusesAManifestKeyFloorBelowItsRelease(t *testing.T) {
 	pinServerBuild(t, "v"+bundle.CatalogTaxonomySince+"+deadbeef")
 	s, admin, _ := adminBotsServer(t)
-	s.runnerBuilds = &fakeBuildObserver{builds: []string{"v" + bundle.CatalogTaxonomySince + "+abc123"}}
+	s.fleet = liveRunners("v" + bundle.CatalogTaxonomySince + "+abc123")
 	below := floortest.Below(t, bundle.CatalogTaxonomySince)
 
 	w := adminBotsPutQuery(s, admin, "grouped", "", pushTaxonomyBundle(">= "+below))

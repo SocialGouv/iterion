@@ -56,6 +56,7 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `DELETE` | `/api/admin/dlq/{seq}` | platform admin | no |
 | `GET` | `/api/admin/dlq/{seq}` | platform admin | no |
 | `POST` | `/api/admin/dlq/{seq}/replay` | platform admin | no |
+| `GET` | `/api/admin/fleet` | platform admin | yes |
 | `GET` | `/api/admin/forge/oauth-apps` | platform admin | yes |
 | `POST` | `/api/admin/forge/oauth-apps` | platform admin | yes |
 | `DELETE` | `/api/admin/forge/oauth-apps/{app_id}` | platform admin | yes |

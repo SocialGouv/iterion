@@ -298,7 +298,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/retrypolicy` | the shared "should this failed run be retried, and when?" contract — the after-the-failure counterpart to pkg/schedgate's before-the-launch gate. | — |
 | `pkg/reviewtopology` | resolves the review topology for review-loop bots (review-pr, evolve) and injects the resolved review_mode var into a run's inputs when the target… | — |
 | `pkg/routing` | evaluates a run's launch-frozen RoutingPolicy against its terminal state. | — |
-| `pkg/runner` | implements the cloud-mode iterion runner pod. | — |
+| `pkg/runner` | implements the cloud-mode iterion runner pod. | `FleetPresence` |
 | `pkg/runops` | owns the capability-gated, read-only operations used by assistant and MCP transports to inspect runs. | — |
 | `pkg/runshell` | spawns interactive post-mortem shells in preserved run worktrees (the studio's "Open shell" on a failed run). | — |
 | `pkg/runtime` | — conflict handling for the deferred squash merge. | `AmbiguousEffect`, `CapabilityDenial`, `Compactor`, `EffectiveBackendResolver`, `EffectiveFallbackResolver`, `EffectiveToolSurfaceResolver`, `InventedValues`, `NodeExecutor`, `OutputCorrector`, `OutputCorrectorWithUsage`, `ReviewCompanion`, `SecretScrubber`, `UndecidedRouteReporter` |
@@ -322,7 +322,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `pkg/secrets` | seals and unseals sensitive values (BYOK API keys, OAuth credentials, OIDC client secrets) at rest. | `ApiKeyStore`, `BotSecretBindingStore`, `GatewayKeyLookup`, `GenericSecretStore`, `KeyedSealer`, `OAuthPendingStore`, `OAuthStore`, `RunSecretsStore`, `Sealer` |
 | `pkg/secure/hostfold` | folds a URL hostname to the name a dial resolves. | — |
 | `pkg/secure/httpdial` | the single source of truth for iterion's SSRF guard: resolving an operator/admin-supplied host to a safe IP and dialing only that pinned IP… | `HostResolver` |
-| `pkg/server` | Admin team console: the super-admin surface for team-scoped settings an org admin must not touch. | `BoardMCPTokenStore`, `ForgePublishTokenStore`, `QueueBackend` |
+| `pkg/server` | Admin team console: the super-admin surface for team-scoped settings an org admin must not touch. | `BoardMCPTokenStore`, `FleetRegistry`, `ForgePublishTokenStore`, `QueueBackend` |
 | `pkg/server/cloudpublisher` | wires runview.LaunchPublisher on top of NATS + Mongo so the cloud-mode `iterion server` can hand work off to the runner pool instead of executing… | `BudgetFloorSource`, `RunnerPoolResolver`, `TeamResolver` |
 | `pkg/server/projects` | manages the studio's per-user project registry. | — |
 | `pkg/sessionboard` | models the per-run "Session board": a small, declarative dashboard the studio renders on a run's Tasks tab. | `Emitter`, `Evaluator`, `Observer`, `Store` |

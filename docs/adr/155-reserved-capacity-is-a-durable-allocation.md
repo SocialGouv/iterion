@@ -17,6 +17,13 @@ Issue: SocialGouv/iterion#950
 > open and proceed without a ledger. The ledger returns to the table only if a
 > live reservation appears.
 > The decision and units below keep the original design.
+>
+> **Status note — 2026-11-27.** The engine floor no longer reads run history:
+> `ObservedRunnerBuilds` and `engineFloorLookback` are gone (#3848), replaced
+> by the live fleet registry (`FleetMembers`, NATS KV `iterion-fleet-presence`).
+> Unit 6 (#2973) takes its fleet observation from there: "no observer wired",
+> "observer error" and "empty observation" in decision 10 map to no registry,
+> a registry read error and no live runner that can take a launch.
 
 ## Context
 

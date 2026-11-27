@@ -394,6 +394,10 @@ func (s *Server) routes() {
 	// readings after a provider reset the ledger cannot see.
 	s.registerAdminUsageReadingsRoutes()
 
+	// The fleet registry (super-admin): every live server and runner, and
+	// the engine floor a bot push is held against.
+	s.registerAdminFleetRoutes()
+
 	// Platform bot overrides (super-admin): the DB-backed form of the baked
 	// bot catalog, so iterating on a native bot needs no image rollout.
 	s.registerAdminBotRoutes()

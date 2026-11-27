@@ -432,7 +432,10 @@ func (r *Runner) pollPending(ctx context.Context) {
 				inflowKnown = true
 			}
 			hasWork := sample.Pending > 0 || sample.AckPending > 0
-			stalled, edge := tr.observe(hasWork, progress, time.Now())
+			stalled, edge, observed := tr.sample(r.presencePaused.Load(), hasWork, progress, time.Now())
+			if !observed {
+				continue
+			}
 			r.cfg.Metrics.NATSStalled.Set(stalledGaugeValue(stalled))
 			switch edge {
 			case stallOnset:
@@ -570,6 +573,22 @@ func stalledGaugeValue(stalled bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// sample feeds one poll to the tracker. A poll taken while this runner's
+// loop is paused on its fleet-registry record carries no information: the
+// loop pulls nothing, so the deliveries it does not see say nothing about the
+// consumer. Like a failed sample it is skipped (observed false) — the episode
+// clock neither advances nor resets and a raised stall stays raised. Without
+// the skip, a fleet-wide pause (the registry unwritable) reads as the wedge on
+// every pod, each recreating the shared consumer over its own pause; and
+// reading the pause as progress instead would clear a real wedge's alarm.
+func (s *stallTracker) sample(paused, hasWork, progress bool, now time.Time) (stalled bool, edge stallEdge, observed bool) {
+	if paused {
+		return s.stalled, stallNone, false
+	}
+	stalled, edge = s.observe(hasWork, progress, now)
+	return stalled, edge, true
 }
 
 // observe records one sample and returns whether the tracker is in the

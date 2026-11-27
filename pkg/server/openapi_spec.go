@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/platformcfg"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -123,6 +125,7 @@ func BuildOpenAPISpec() (map[string]any, error) {
 		PlatformCredentialsSettings: platformcfg.NewMemoryStore[platformcfg.PlatformCredentials](),
 		Store:                       runStore,
 		ModelPrefs:                  modelprefs.NewMemStore(),
+		FleetRegistry:               specNoFleet{},
 	}
 
 	s := New(cfg, iterlog.New(iterlog.LevelError, nil))
@@ -136,6 +139,12 @@ func BuildOpenAPISpec() (map[string]any, error) {
 	}
 	return doc, nil
 }
+
+// specNoFleet is an empty fleet registry: it only makes the fleet route
+// register. Never read here.
+type specNoFleet struct{}
+
+func (specNoFleet) FleetMembers(context.Context) ([]queue.FleetMember, error) { return nil, nil }
 
 // specNoopSealer is a non-functional secrets.Sealer used only to satisfy the
 // routes() gate during offline spec generation. It is never called.

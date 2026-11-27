@@ -58,6 +58,16 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.RolloutKVBucket != KVRolloutEpochs {
 		t.Errorf("RolloutKVBucket: got %q want %q", got.RolloutKVBucket, KVRolloutEpochs)
 	}
+	if got.PresenceKVBucket != KVFleetPresence {
+		t.Errorf("PresenceKVBucket: got %q want %q", got.PresenceKVBucket, KVFleetPresence)
+	}
+	if got.PresenceTTL != DefaultPresenceTTL {
+		t.Errorf("PresenceTTL: got %v want %v", got.PresenceTTL, DefaultPresenceTTL)
+	}
+	// Another installation on the same NATS account keeps its own fleet.
+	if other := applyDefaults(Config{KVBucket: "other-locks"}); other.PresenceKVBucket != "other-locks-presence" {
+		t.Errorf("PresenceKVBucket beside a custom lock bucket: got %q want %q", other.PresenceKVBucket, "other-locks-presence")
+	}
 	if got.StreamReplicas != DefaultStreamReplicas {
 		t.Errorf("StreamReplicas: got %d want %d", got.StreamReplicas, DefaultStreamReplicas)
 	}
@@ -103,6 +113,8 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 		DLQStream:           "Y",
 		KVBucket:            "Z",
 		RolloutKVBucket:     "R",
+		PresenceKVBucket:    "P",
+		PresenceTTL:         90 * time.Second,
 		StreamReplicas:      3,
 		ConsumerName:        "C",
 		MaxAge:              1 * time.Hour,
@@ -144,8 +156,8 @@ func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
 	if len(wantStreams) != 0 {
 		t.Errorf("missing stream configs: %v", wantStreams)
 	}
-	if len(recorder.kvs) != 2 {
-		t.Fatalf("KV configs: got %d want 2", len(recorder.kvs))
+	if len(recorder.kvs) != 3 {
+		t.Fatalf("KV configs: got %d want 3", len(recorder.kvs))
 	}
 	for _, kv := range recorder.kvs {
 		if got := kv.Replicas; got != 3 {
@@ -157,6 +169,10 @@ func TestEnsureSchema_ConfiguresReplicas(t *testing.T) {
 	}
 	if recorder.kvs[1].TTL != 0 {
 		t.Errorf("rollout KV TTL = %s, want no TTL", recorder.kvs[1].TTL)
+	}
+	// The registry expires a dead process's record by the bucket TTL.
+	if got := recorder.kvs[2]; got.Bucket != KVFleetPresence || got.TTL != DefaultPresenceTTL || got.History != 1 {
+		t.Errorf("fleet registry KV = %+v, want %s with TTL %s and history 1", got, KVFleetPresence, DefaultPresenceTTL)
 	}
 }
 

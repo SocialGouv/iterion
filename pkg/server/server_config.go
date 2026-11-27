@@ -525,6 +525,11 @@ type Config struct {
 	// server starts any background worker or accepts traffic. It returns the
 	// final durable rollout state for this process. Nil is the local-mode path.
 	ClaimRunnerEpoch func() (highWater uint64, superseded bool, err error)
+	// FleetRegistry is the live fleet the engine floor reads — one record
+	// per server and runner process (natsq.Conn.FleetMembers). Nil in local
+	// mode, where server and engine are one process and this build answers
+	// for both halves (engine_floor.go).
+	FleetRegistry FleetRegistry
 
 	// TrustedProxyCIDRs is the allowlist of CIDR ranges whose forwarded
 	// client address we believe — X-Forwarded-For, RFC 7239 Forwarded and

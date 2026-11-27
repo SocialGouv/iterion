@@ -82,6 +82,8 @@ export interface AssistantAuthoringResult {
   saved: boolean;
   validation?: AssistantAuthoringValidation;
   recovery?: AssistantAuthoringRecovery[];
+  /** What a saved commit passed with (engine-floor warnings), as a push returns them. */
+  warnings?: string[];
 }
 
 export interface AssistantAuthoringGitCommitResult {
