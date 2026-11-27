@@ -86,7 +86,13 @@ func (s *Store) CreateRunWithValueFormat(ctx context.Context, spec store.RunCrea
 	return r, nil
 }
 func (s *Store) loadRunValueRecord(ctx context.Context, id string, opts ...options.Lister[options.FindOneOptions]) (store.Run, error) {
-	result := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), opts...)
+	return s.loadRunValueRecordFrom(ctx, s.runs, id, opts...)
+}
+
+// loadRunValueRecordFrom is loadRunValueRecord on a clone of the runs
+// collection — one with its own read preference.
+func (s *Store) loadRunValueRecordFrom(ctx context.Context, runs *mongo.Collection, id string, opts ...options.Lister[options.FindOneOptions]) (store.Run, error) {
+	result := runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), opts...)
 	raw, err := result.Raw()
 	if err != nil {
 		if err == mongo.ErrNoDocuments {

@@ -169,7 +169,11 @@ Pinned semantics:
   and the attempt's rank — the DLQ park still applies on the last
   delivery; a `running` doc written more recently than the runner's
   adoption floor (a lapsed-but-alive pod may still be unwinding) is
-  re-offered after the floor's remainder. On the LAST permitted delivery
+  re-offered after the floor's remainder. A run handed back keeps its
+  capacity places until `continuation_until` (`ITERION_REDELIVERY_HOLD_TTL`,
+  10 min), longer than these delays; its redelivery re-asserts them before
+  it resumes, and one the ledger could not prove is re-offered after 30 s,
+  never resumed unproven ([byok.md](byok.md#concurrency-ceiling--what-counts)). On the LAST permitted delivery
   that young doc is Term'd instead and the log says so — JetStream would
   not re-offer it anyway — and the orphan sweeper below owns it from
   there; nothing is written over a possibly-live writer.

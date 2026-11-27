@@ -4438,8 +4438,17 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// One read of the durable retry for the park's words and its arming,
 	// so the row never promises a wake the store cannot arm.
 	retryStore := store.AsRunRetryStore(p.store)
+	// A store that hosts the capacity park writes the parked launch and its
+	// armed retry in the one persist: no reader ever sees the park without
+	// its retry, and no failure between two writes strands it.
+	parker := store.AsCapacityParker(p.store)
+	save := p.store.SaveRun
 	if refusal != nil {
 		parkRunOnCredSlot(r, refusal, retryStore)
+		if parker != nil {
+			park := launchCapacityPark(r, refusal)
+			save = func(ctx context.Context, r *store.Run) error { return parker.SaveParkedLaunchRun(ctx, r, park) }
+		}
 	}
 	launchStatus = r.Status
 	// PersistLaunchRun, not a PersistLaunch closure over r: a scheduler's
@@ -4447,7 +4456,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// advances r.CASVersion in place — so the replay has to start from the
 	// run as it stood before the first attempt, or it offers a version the
 	// rolled-back document never reached and refuses the launch.
-	if err := store.PersistLaunchRun(ctx, r, p.store.SaveRun); err != nil {
+	if err := store.PersistLaunchRun(ctx, r, save); err != nil {
 		return runview.LaunchSubmission{}, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 	persisted = true
@@ -4466,10 +4475,34 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	}
 
 	if refusal != nil {
-		// A parked row nothing wakes is a stuck run: an arming that fails
-		// leaves the deferred choke point above to mark the row
-		// LAUNCH_FAILED, which the caller re-does.
-		if err := p.armCredSlotRetry(ctx, retryStore, r, refusal); err != nil {
+		if parker == nil {
+			// A parked row nothing wakes is a stuck run: an arming that fails
+			// leaves the deferred choke point above to mark the row
+			// LAUNCH_FAILED, which the caller re-does.
+			if err := p.armCredSlotRetry(ctx, retryStore, r, refusal); err != nil {
+				return runview.LaunchSubmission{}, err
+			}
+		} else {
+			p.logger.Warn("cloudpublisher: run %s PARKED — %v; retry armed with the park, then asked again every %s until a slot frees or the run's max_wait passes", r.ID, refusal, CredSlotProbeInterval)
+		}
+		parked = true
+		if p.metrics != nil {
+			p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusFailedResumable)).Inc()
+		}
+		return runview.LaunchSubmission{Status: store.RunStatusFailedResumable, FailureCode: store.FailureCredSlotWait}, nil
+	}
+
+	// C3 (ADR-167): the slots are re-asserted right before the message is
+	// published — a launch that stalled between its admission and here past
+	// the ledger's grace may have lost one, or had it adopted. One gone and
+	// none free parks the persisted run instead of publishing it.
+	reasserted, lostSlot, err := p.reassertLaunchSlots(ctx, runID, heldSlots)
+	heldSlots = reasserted
+	if err != nil {
+		return runview.LaunchSubmission{}, err
+	}
+	if lostSlot != nil {
+		if err := p.parkQueuedLaunch(ctx, r, lostSlot); err != nil {
 			return runview.LaunchSubmission{}, err
 		}
 		parked = true
@@ -4520,6 +4553,9 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		// runner's fine spend table keys in the lease's fingerprint space
 		// through it. Nil on a run no lease serves.
 		CredPlan: creds.plan,
+		// What this launch's admission reserved, by the identity of each
+		// entry (ADR-167): the runner re-asserts them on a redelivery.
+		Capacity: capacityHoldsOf(heldSlots),
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
 		// can group siblings and so a future event-based aggregator
@@ -4780,13 +4816,31 @@ func publishInstant(now time.Time, marker time.Time, grant *credpool.Grant) time
 }
 
 func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, wf *ir.Workflow, cs *runview.CompiledSource) (retErr error) {
-	body, err := marshalAttemptIR(wf, spec.FilePath, spec.Source, spec.BundleDir)
-	if err != nil {
-		return err
-	}
-	var hash string
-	if cs != nil {
-		hash = cs.Hash
+	// The program this attempt runs: a frozen re-admission republishes the
+	// parked delivery's IR byte for byte, under the identity the envelope
+	// records (runview.FrozenResume); any other resume publishes what the run
+	// service compiled.
+	var body []byte
+	var hash, workflowName string
+	if spec.Frozen != nil {
+		if spec.Frozen.Envelope == nil {
+			return fmt.Errorf("cloudpublisher: resume %s: %w: no envelope", spec.RunID, runview.ErrFrozenProgramStale)
+		}
+		if spec.Force {
+			return fmt.Errorf("cloudpublisher: resume %s: a frozen-program re-admission is never forced", spec.RunID)
+		}
+		body = append([]byte(nil), spec.Frozen.Envelope.IR...)
+		hash, workflowName = spec.Frozen.Envelope.WorkflowHash, spec.Frozen.Envelope.WorkflowName
+	} else {
+		var err error
+		body, err = marshalAttemptIR(wf, spec.FilePath, spec.Source, spec.BundleDir)
+		if err != nil {
+			return err
+		}
+		if cs != nil {
+			hash = cs.Hash
+		}
+		workflowName = wf.Name
 	}
 	// Capture the prior status so we can roll back to the right
 	// resumable state if publish fails — the user could be resuming
@@ -4805,6 +4859,14 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// in the same status would otherwise be claimed below.
 	if err := spec.ExpectOrigin.Verify(prior); err != nil {
 		return fmt.Errorf("cloudpublisher: %w", err)
+	}
+	// A frozen re-admission republishes the program its record binds on THIS
+	// document, before the claim: once the flip moves the attempt marker the
+	// record no longer names the run's attempt.
+	if spec.Frozen != nil {
+		if err := spec.Frozen.Bind(prior); err != nil {
+			return fmt.Errorf("cloudpublisher: resume %s: %w", spec.RunID, err)
+		}
 	}
 	priorStatus := prior.Status
 	if spec.ExpectedStatus != "" && priorStatus != spec.ExpectedStatus {
@@ -5200,7 +5262,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		V:                queue.SchemaVersion,
 		Contributions:    contributions,
 		RunID:            spec.RunID,
-		WorkflowName:     wf.Name,
+		WorkflowName:     workflowName,
 		WorkflowHash:     hash,
 		ExecutionContext: prior.ExecutionContext.Clone(),
 		IRCompiled:       body,
@@ -5218,8 +5280,10 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		BundleDEK:  creds.dek,
 		// Re-resolved by the resume surface like credentials are re-sealed:
 		// the resumed attempt runs the CURRENT stored bundle, consistently
-		// across the compile above and the runner-side materialization.
-		BotBundle:      queueBotBundleRef(spec.BotBundle),
+		// across the compile above and the runner-side materialization —
+		// except a frozen re-admission, which runs the bundle its parked
+		// delivery ran (resumeBotBundle).
+		BotBundle:      resumeBotBundle(spec),
 		SandboxImage:   p.effectiveSandboxImage(ctx),
 		AutoMemory:     spec.AutoMemory,
 		AmbientContext: spec.AmbientContext,
@@ -5256,6 +5320,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// the launch stamps (#2288): the resumed attempt's donors may be
 		// different donors, and the plan must name THESE credentials.
 		CredPlan: creds.plan,
+		// What this resume's own admission reserved (ADR-167), never the
+		// run document's stamp: the runner re-asserts them on a redelivery.
+		Capacity: capacityHoldsOf(heldSlots),
 		// Never inside the millisecond of the instant this delivery's
 		// identity follows — the run's marker, or the lease its grant
 		// opened — so the identity comparisons that read the pair never
@@ -5343,6 +5410,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	// stands in for it. Leaving the older pair whole is also coherent on the
 	// other side: it describes a revision this attempt is not executing, so a
 	// forced resume clearing it is doing exactly its job.
+	//
+	// A frozen re-admission records nothing here: its CompiledSource carries
+	// the envelope's hash and no files (RecordedSourcesOf answers ""), and the
+	// run's recorded pair already describes the program it republishes — the
+	// binding holds the hashes equal.
 	if cs != nil {
 		if srcText, srcFiles := runtime.RecordedSourcesOf(cs.Main, cs.Files); srcText != "" {
 			if serr := p.store.SetRunRecordedSource(ctx, spec.RunID, srcText, srcFiles, hash); serr != nil && p.logger != nil {

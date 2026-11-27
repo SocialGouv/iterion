@@ -200,7 +200,7 @@ func gatewayAliveRunsReport(runs []store.Run, subjectOf map[string]string) gatew
 		}
 		bots := map[string]map[string]bool{}
 		for i := range runs {
-			if !runs[i].SpendsCredential(subject) {
+			if !runs[i].StampsCapacity(subject) {
 				continue
 			}
 			root := roots[runs[i].ID]

@@ -76,7 +76,7 @@ func (s *Store) CommitToolApprovalContinuation(ctx context.Context, id string, c
 	if cp.InteractionID != "" {
 		set["status"] = store.RunStatusPausedWaitingHuman
 		set["execution_epoch"] = store.NewExecutionEpoch()
-		for _, key := range []string{"finished_at", "failure_code", "continuation_state", "await_answers_waits", "pre_engine_refusal"} {
+		for _, key := range []string{"finished_at", "failure_code", "continuation_state", "continuation_until", "await_answers_waits", "pre_engine_refusal"} {
 			unset[key] = ""
 		}
 	}

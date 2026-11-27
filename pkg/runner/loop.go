@@ -46,7 +46,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	"github.com/SocialGouv/iterion/pkg/credusage"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
-	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/errtrack"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
@@ -398,6 +397,29 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			logFmt:       "runner: run %s is parked on the %s code %q — dropping the redelivery, NOT auto-resuming (the same step would fail identically; an operator resume with changed inputs re-queues it)",
 			logArgs:      []any{msg.RunID, origin, code},
 		}
+	case queue.DropOperatorPausedHoldsCapacity:
+		// The pause released the places this message's admission reserved:
+		// resuming here would run the run on places nobody holds for it. The
+		// operator's resume re-admits it.
+		return preconditionOutcome{
+			finalStatus: string(run.Status),
+			op:          "ack-operator-paused-holds-capacity",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s was paused by an operator and this delivery carries the capacity places its admission reserved — dropping it, NOT resuming (the pause released them; an operator resume re-admits the run)",
+			logArgs:     []any{msg.RunID},
+		}
+	case queue.DropRetryArmed:
+		// The retry sweeper owns the run's future: its re-admission resumes
+		// it. A redelivery resuming it here would run beside that retry.
+		return preconditionOutcome{
+			finalStatus: string(run.Status),
+			op:          "ack-retry-armed",
+			action:      actionAck,
+			level:       logInfo,
+			logFmt:      "runner: run %s is parked with its retry armed (%q) — dropping the redelivery, the retry sweeper resumes it",
+			logArgs:     []any{msg.RunID, run.FailureCode},
+		}
 	case queue.DropSettled:
 		return preconditionOutcome{
 			finalStatus: string(run.Status),
@@ -406,6 +428,17 @@ func dispositionForStatus(msg *queue.RunMessage, run *store.Run) preconditionOut
 			level:       logInfo,
 			logFmt:      "runner: run %s already in status %s — dropping stale delivery",
 			logArgs:     []any{msg.RunID, run.Status},
+		}
+	}
+	if !admission.Proceeds() {
+		// A drop this switch does not word is still a drop: never executed.
+		return preconditionOutcome{
+			finalStatus: string(run.Status),
+			op:          "ack-admission-drop",
+			action:      actionAck,
+			level:       logWarn,
+			logFmt:      "runner: run %s dropped on admission (%s) in status %s",
+			logArgs:     []any{msg.RunID, admission.Drop, run.Status},
 		}
 	}
 	if admission.AsResume {
@@ -769,7 +802,7 @@ func (r *Runner) adoptRunningUnderLock(msg *queue.RunMessage, preRun *store.Run,
 	changed, cerr := r.cfg.Store.UpdateRunOutcome(casCtx, msg.RunID,
 		store.RunStatusFailedResumable,
 		fmt.Sprintf("promoted from running under the delivery's lock: no lease holder, last doc write %s ago (admission-time orphan)", age.Round(time.Second)),
-		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
+		store.RunOutcomeMeta{Code: store.FailureProcessOrphaned, Continuation: store.ContinuationRedeliveryPending, ContinuationUntil: r.transitUntil(now), ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
 		[]store.RunStatus{store.RunStatusRunning})
 	if cerr != nil {
 		// The CAS itself failed (store outage). Fall through unchanged:
@@ -1424,7 +1457,12 @@ type Config struct {
 	// terminationGracePeriodSeconds is the hard external one and must be set
 	// >= DrainTimeout + margin for the cap to checkpoint cleanly. 0 → 8h.
 	DrainTimeout time.Duration
-	Logger       *iterlog.Logger
+	// RedeliveryHoldTTL is the length of the capacity transit this runner
+	// writes when it hands a run back to the queue
+	// (store.RedeliveryHoldTTLFromEnv, read at boot). 0 →
+	// store.DefaultRedeliveryHoldTTL.
+	RedeliveryHoldTTL time.Duration
+	Logger            *iterlog.Logger
 	// MemoryStore, when non-nil, backs the agents' workspace-memory
 	// tools with a shared store (the cloud Mongo store) instead of the
 	// pod's ephemeral filesystem. nil → local filesystem memory.
@@ -2160,6 +2198,26 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 	}
 
+	// The capacity guard (loop_capacity.go): a delivery whose message carries
+	// its admission's places proves them under the lock, before anything
+	// executes, on the status the transit write finds. Every exit below
+	// dispatches through rec, so the transit's end knows whether the queue
+	// hands the delivery back.
+	rec := &nakRecorder{jsDelivery: delivery}
+	capacity, capacityOut, capacityProceeds := r.capacityAtPickup(runCtx, msg, delivery.NumDelivered(), logger)
+	if capacity != nil {
+		defer func() {
+			capacity.endUnlessRedelivered(rec.nakked && r.maxDeliver() > 0 && delivery.NumDelivered() < r.maxDeliver())
+		}()
+		runCtx = withCapacityGuard(runCtx, capacity)
+	}
+	if !capacityProceeds {
+		logAt(logger, capacityOut.level, capacityOut.logFmt, capacityOut.logArgs...)
+		finalStatus = capacityOut.finalStatus
+		dispatchPrecondition(logger, rec, capacityOut, msg.RunID)
+		return
+	}
+
 	// The lease is held by the heartbeat through the engine's teardown and
 	// the runner's post-engine steps, within LeaseUnwindCeiling once the run
 	// can be resumed, and let go before the terminal Ack/Nak below: the
@@ -2167,6 +2225,12 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// landing after the Ack/Nak would log a spurious already-acked error.
 	var usage *metricsEmitter
 	err := r.executeHoldingLease(runCtx, runCancel, msg, pre.preRun, lock, delivery, &usage)
+	if capacity != nil {
+		if status, handled := capacity.afterEngine(runCtx, err, rec, usage); handled {
+			finalStatus = status
+			return
+		}
+	}
 
 	if err != nil && !codemodeQuotaQueuedAt(msg).IsZero() {
 		// A newer flip can land during pre-engine work. Even a preflight
@@ -2186,14 +2250,14 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 		}
 		logAt(logger, out.level, out.logFmt, out.logArgs...)
 		finalStatus = out.finalStatus
-		dispatchPrecondition(logger, delivery, out, msg.RunID)
+		dispatchPrecondition(logger, rec, out, msg.RunID)
 		return
 	}
 
 	var unapplied *unappliedQuotaUsageRefusal
 	if errors.As(err, &unapplied) {
 		var interim bool
-		finalStatus, interim = r.finishUnappliedQuotaUsageRefusal(runCtx, msg, unapplied, delivery, logger)
+		finalStatus, interim = r.finishUnappliedQuotaUsageRefusal(runCtx, msg, unapplied, rec, logger)
 		if finalStatus == "quota_not_applied" || finalStatus == "quota_refusal_release_failed" {
 			r.recordPoolSpend(msg, usage, err, interim)
 		}
@@ -2236,7 +2300,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// retry re-publishes and acquires afresh, and a DLQ'd run never comes
 	// back. Reporting `interim` there would strand the donor's slot and
 	// committed allowance until the 12h lease TTL.
-	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, delivery, msg, usage, logger); handled {
+	if handled, retryStatus := r.parkUsageLimitRetry(runCtx, err, rec, msg, usage, logger); handled {
 		r.recordPoolSpend(msg, usage, err, false)
 		fireOutcome()
 		finalStatus = retryStatus
@@ -2276,13 +2340,21 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// and without inventing an episode. A Nak into nothing (last
 	// permitted delivery of an ErrRunInterrupted, exempt from DLQ)
 	// stays unknown, which is honest: nobody owns that run's future.
+	//
+	// The promote also starts the run's capacity transit (ADR-167 C1): the
+	// run keeps the places its admission reserved until the instant written
+	// here, at this runner's clock, so the redelivery finds them held.
 	if isNakAction(outcome.action) && redeliverable && r.cfg.Store != nil {
 		bg, cancel := context.WithTimeout(context.WithoutCancel(runCtx), 10*time.Second)
 		sctx := store.WithIdentity(bg, msg.TenantID, msg.OwnerID)
-		if _, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
-			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
-			[]store.RunStatus{store.RunStatusFailedResumable}); serr != nil {
+		until := r.transitUntil(time.Now())
+		changed, serr := r.cfg.Store.UpdateRunOutcome(sctx, msg.RunID, store.RunStatusFailedResumable, "",
+			store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending, ContinuationUntil: until, ExactQueuedAt: codemodeQuotaQueuedAt(msg)},
+			[]store.RunStatus{store.RunStatusFailedResumable})
+		if serr != nil {
 			logger.Warn("runner: continuation promote for %s: %v", msg.RunID, serr)
+		} else if changed && capacity != nil {
+			capacity.own(until, nil)
 		}
 		cancel()
 		// A DELAYED redelivery leaves the run parked for minutes with
@@ -2295,7 +2367,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	r.recordDeliveryEnd(msg, err, outcome.finalStatus, released)
 	logAt(logger, outcome.level, outcome.logFmt, outcome.logArgs...)
 	finalStatus = outcome.finalStatus
-	dispatchExecOutcome(logger, delivery, outcome, msg.RunID)
+	dispatchExecOutcome(logger, rec, outcome, msg.RunID)
 }
 
 // recordRedeliveryDeferred puts a delayed redelivery on the run's
@@ -3183,6 +3255,11 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 			r.cfg.Logger.Warn("runner: run %s: the resume's published_at %q does not parse — its claim of a queued run is by status alone: %v", msg.RunID, msg.PublishedAtRFC, perr)
 		}
 	}
+	if capacity := capacityGuardFrom(ctx); capacity != nil {
+		// The claim proves the places on the document it claims from, and an
+		// interruption starts the transit at the engine's own park write.
+		engineOpts = append(engineOpts, runtime.WithResumeClaimGuard(capacity.claimGuard), runtime.WithOnResumablePark(capacity.onResumablePark))
+	}
 	if msg.Resume != nil && msg.Resume.ReceiptID != "" {
 		// The publisher already consumed ExpectedStatus in its exact CAS to
 		// queued. The runner claims queued, but must retain the durable
@@ -3266,6 +3343,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 
 	var runErr error
 	if msg.Resume != nil {
+		// A clone and a bundle that outlasted a quarter of the capacity hold
+		// refresh it before the engine loads the run (loop_capacity.go). Its
+		// refusal is recorded by the delivery's guard, which parks the run or
+		// re-offers the delivery.
+		if err := r.capacityBeforeEngine(ctx); err != nil {
+			return err
+		}
 		runErr = engine.ResumeWithHostInputs(ctx, msg.RunID, msg.Resume.Answers, msg.Resume.HostInputs)
 	} else {
 		// The #1757 input check, runner side: the wire check for the launch
@@ -3450,20 +3534,15 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 		}
 		raw = fetched
 	}
-	file, err := ast.UnmarshalFile(raw)
+	wf, err := runview.DecodeTransportWorkflow(raw)
+	var unloadable *runview.TransportIRUnloadable
+	if errors.As(err, &unloadable) {
+		return nil, fmt.Errorf("runner: %w: %s", ErrIRUnloadable, unloadable.Detail)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("runner: %w: decode IR: %v", ErrIRUnloadable, err)
+		return nil, fmt.Errorf("runner: %w", err)
 	}
-	cr := ir.Compile(file)
-	if cr.HasErrors() {
-		errs := compileErrors(cr.Diagnostics)
-		return nil, fmt.Errorf("runner: %w: compile IR: %d error(s): %s", ErrIRUnloadable, len(errs), summariseDiagnostics(errs))
-	}
-	cr.Workflow.SourceSnapshot, err = runview.SourceSnapshotFromTransport(raw)
-	if err != nil {
-		return nil, fmt.Errorf("runner: decode source snapshot: %w", err)
-	}
-	return cr.Workflow, nil
+	return wf, nil
 }
 
 // ErrIRUnloadable marks a RunMessage whose compiled IR this runner cannot
@@ -3480,33 +3559,6 @@ var ErrIRUnloadable = errors.New("the IR does not load on this runner")
 // object and reaches the same verdict — so the delivery is acked and the run
 // fails resumable; a resume republishes the run's current program.
 var ErrIRDigestMismatch = fmt.Errorf("%w: the stored IR is not the program its message published", ErrIRUnloadable)
-
-// compileErrors keeps the diagnostics that blocked the load: the compiler
-// appends warnings and errors in compile order, so an unfiltered head of
-// the list can be three warnings while the error sits further down.
-func compileErrors(diags []ir.Diagnostic) []ir.Diagnostic {
-	errs := make([]ir.Diagnostic, 0, len(diags))
-	for _, d := range diags {
-		if d.Severity == ir.SeverityError {
-			errs = append(errs, d)
-		}
-	}
-	return errs
-}
-
-// summariseDiagnostics keeps the first few compiler messages for a verdict
-// an operator can read on the run, without the whole list.
-func summariseDiagnostics(diags []ir.Diagnostic) string {
-	parts := make([]string, 0, 3)
-	for i, d := range diags {
-		if i == 3 {
-			parts = append(parts, fmt.Sprintf("… (%d more)", len(diags)-3))
-			break
-		}
-		parts = append(parts, fmt.Sprintf("%s %s", d.Code, d.Message))
-	}
-	return strings.Join(parts, "; ")
-}
 
 // failUnloadableIR writes the verdict a mute runner never wrote: the run
 // goes failed_resumable with a typed code — resumable, because a resume

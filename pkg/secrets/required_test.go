@@ -1,6 +1,10 @@
 package secrets
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
 
 func TestUnresolvedRequired(t *testing.T) {
 	cases := []struct {
@@ -66,6 +70,11 @@ func TestRequiredSecretsError(t *testing.T) {
 	want := `secret "forge_token" is declared required by the workflow but resolves to nothing for this team/bot`
 	if err.Error() != want {
 		t.Fatalf("got %q, want %q", err.Error(), want)
+	}
+	// Typed, text unchanged: an automatic resume tells it apart from a
+	// transient through any wrapper.
+	if !errors.Is(fmt.Errorf("resume: %w", err), ErrRequiredSecretUnresolved) {
+		t.Fatalf("RequiredSecretsError is not ErrRequiredSecretUnresolved: %v", err)
 	}
 	// Multiple names are joined.
 	err = RequiredSecretsError([]string{"a", "b"}, "this workspace")

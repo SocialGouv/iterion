@@ -108,6 +108,21 @@ func seedCapacityListing(t *testing.T, s store.RunStore) map[string]store.Run {
 	seedCapacityRun(t, s, capacityForeign, "cap-foreign", store.RunStatusRunning, onGateway("fp-c", gwA))
 	keep("cap-foreign", capacityForeign, store.RunStatusRunning, []string{"fp-c"}, []string{gwA})
 
+	// A run in its redelivery transit holds its stamp until the instant its
+	// writer stamped, and the listing carries the two fields that say so.
+	until := store.TransitInstant(time.Now().Add(5 * time.Minute))
+	seedCapacityRun(t, s, capacityTeam, "cap-transit", store.RunStatusFailedResumable, onGateway("fp-a", gwA))
+	teamCtx := store.WithIdentity(context.Background(), capacityTeam, "_test")
+	promoteTransitIn(t, s, teamCtx, "cap-transit", until)
+	keep("cap-transit", capacityTeam, store.RunStatusFailedResumable, []string{"fp-a"}, []string{gwA})
+	transit := want["cap-transit"]
+	transit.ContinuationState = store.ContinuationRedeliveryPending
+	transit.ContinuationUntil = &until
+	want["cap-transit"] = transit
+	// Past its instant, the transit holds nothing.
+	seedCapacityRun(t, s, capacityTeam, "cap-transit-expired", store.RunStatusFailedResumable, onGateway("fp-a", gwA))
+	promoteTransitIn(t, s, teamCtx, "cap-transit-expired", time.Now().Add(-time.Minute))
+
 	// Neither parked, paused, ended nor deleted runs hold anything.
 	seedCapacityRun(t, s, capacityTeam, "cap-parked", store.RunStatusFailedResumable, onGateway("fp-a", gwA))
 	seedCapacityRun(t, s, capacityTeam, "cap-paused", store.RunStatusPausedWaitingHuman, onGateway("fp-a", gwA))
@@ -195,6 +210,6 @@ func capacityView(r store.Run) string {
 	if r.ContentBoundary != nil {
 		key = fmt.Sprintf("%+v", *r.ContentBoundary)
 	}
-	return fmt.Sprintf("{tenant=%s bot=%s status=%s parent=%s node=%s fps=%v subjects=%v marker=%q boundary=%s}",
-		r.TenantID, r.BotID, r.Status, r.ParentRunID, r.ParentNodeID, r.CredFingerprints, r.CapacitySubjects, r.CapacityStampedFor, key)
+	return fmt.Sprintf("{tenant=%s bot=%s status=%s continuation=%q until=%v parent=%s node=%s fps=%v subjects=%v marker=%q boundary=%s}",
+		r.TenantID, r.BotID, r.Status, r.ContinuationState, r.ContinuationUntil, r.ParentRunID, r.ParentNodeID, r.CredFingerprints, r.CapacitySubjects, r.CapacityStampedFor, key)
 }

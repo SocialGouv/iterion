@@ -319,6 +319,9 @@ func (r *Runner) subbotRunnerUnder(tree *subbotRoot, msg *queue.RunMessage, pare
 		child.Vars = req.Vars
 		child.Resume = nil
 		child.BotBundle = nil
+		// The parent's places are the parent's: a child resumed in this
+		// process re-asserts none of them.
+		child.Capacity = nil
 		childContext := msg.ExecutionContext.Clone()
 		if childContext != nil {
 			// A child keeps the policy and store/business-store declarations,

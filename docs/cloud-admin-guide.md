@@ -390,7 +390,10 @@ A replay is only a delivery, so it is refused (409, the copy kept) when a
 runner would drop the message on admission: the run cancelled, finished,
 failed, waiting for an answer, rewound for an explicit resume, queued again
 since the message was published, or parked on a code no redelivery changes —
-`DLQ_PARKED` included, the code every park writes. A parked run is recovered
+`DLQ_PARKED` included, the code every park writes. A message that carries its
+admission's capacity places (`capacity.holds`) is also refused on an
+operator-paused run (the pause released them) and on a run whose retry is armed
+(the retry sweeper resumes it). A parked run is recovered
 by **resuming** it (`POST /api/runs/{id}/resume`, `iterion remote runs
 resume`), which re-queues it as a new attempt at the current schema version;
 discard the parked copy afterwards. The refusal names the way out.

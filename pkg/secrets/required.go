@@ -36,11 +36,26 @@ func UnresolvedRequired(required []string, resolved map[string]bool) []string {
 	return missing
 }
 
+// ErrRequiredSecretUnresolved is what every RequiredSecretsError is
+// (errors.Is): a declared required secret resolves to nothing. It needs a
+// person — a secret stored or bound again — so an automatic resume that meets
+// it stops rather than retrying into the same refusal.
+var ErrRequiredSecretUnresolved = errors.New("a required secret resolves to nothing")
+
+// requiredSecretsError is RequiredSecretsError's value: its text names every
+// missing secret, and it is ErrRequiredSecretUnresolved.
+type requiredSecretsError struct{ msg string }
+
+func (e *requiredSecretsError) Error() string { return e.msg }
+
+func (e *requiredSecretsError) Unwrap() error { return ErrRequiredSecretUnresolved }
+
 // RequiredSecretsError formats the launch-blocking error naming every
 // unresolved required secret. `scope` describes the resolution context so the
 // operator knows where the lookup came up empty (e.g. "this team/bot" for a
 // cloud launch, "this workspace" for a local run). Returns nil when nothing is
 // missing so callers can `if err := RequiredSecretsError(...); err != nil`.
+// The error is ErrRequiredSecretUnresolved.
 func RequiredSecretsError(missing []string, scope string) error {
 	if len(missing) == 0 {
 		return nil
@@ -52,5 +67,5 @@ func RequiredSecretsError(missing []string, scope string) error {
 	for i, name := range missing {
 		parts[i] = fmt.Sprintf("secret %q is declared required by the workflow but resolves to nothing for %s", name, scope)
 	}
-	return errors.New(strings.Join(parts, "; "))
+	return &requiredSecretsError{msg: strings.Join(parts, "; ")}
 }

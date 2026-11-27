@@ -52,7 +52,13 @@ func (s *Store) CreateChildRun(ctx context.Context, id, workflowName, parentRunI
 // not-found, never a leak. Refuses documents written by a future
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
-	r, err := s.loadRunValueRecord(ctx, id, options.FindOne().SetProjection(bson.M{codemodeScratchField: 0}))
+	return s.loadRunFrom(ctx, s.runs, id)
+}
+
+// loadRunFrom is LoadRun on a clone of the runs collection — the ledger's
+// judgments read the primary (primaryRuns) whatever the URI prefers.
+func (s *Store) loadRunFrom(ctx context.Context, runs *mongo.Collection, id string) (*store.Run, error) {
+	r, err := s.loadRunValueRecordFrom(ctx, runs, id, options.FindOne().SetProjection(bson.M{codemodeScratchField: 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +345,13 @@ func writeOnceString(field, incoming string) bson.M {
 }
 
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	return s.saveRun(ctx, r, nil)
+}
+
+// saveRun is SaveRun, and with a park SaveParkedLaunchRun: the same
+// replacement with the park's retry armed and its continuation in a second
+// stage of the one update.
+func (s *Store) saveRun(ctx context.Context, r *store.Run, park *store.CapacityPark) error {
 	if _, err := store.CheckRunFormatReplacement(ctx, r, r); err != nil {
 		return err
 	}
@@ -401,9 +414,17 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 			MergeStatus    store.MergeStatus `bson:"merge_status"`
 			MergeClaimedAt time.Time         `bson:"merge_claimed_at"`
 			SchemaVersion  int               `bson:"v"`
+			RetryState     struct {
+				Attempts int `bson:"attempts"`
+			} `bson:"retry_state"`
 		}
 		if err := bson.Unmarshal(previousRaw, &cur); err != nil {
 			return err
+		}
+		// The budget is read on the pre-image the final write is fenced to
+		// (its version), so the check and the write are one decision.
+		if park != nil && park.Charge && cur.RetryState.Attempts >= park.MaxAttempts {
+			return fmt.Errorf("store/mongo: park run %s: %d of %d attempts spent: %w", r.ID, cur.RetryState.Attempts, park.MaxAttempts, store.ErrCapacityParkBudgetSpent)
 		}
 		formatPreimage = &store.Run{ID: r.ID, FormatVersion: cur.FormatVersion, BirthID: cur.BirthID, DataProtocol: header.Protocol}
 		if r.BirthID != "" && r.BirthID != cur.BirthID {
@@ -476,6 +497,8 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	}
 	delete(doc, "outcome_seq")
 	delete(doc, "continuation_state")
+	delete(doc, "continuation_until")
+	delete(doc, frozenProgramField)
 	delete(doc, "failure_code")
 	delete(doc, "pre_engine_refusal")
 	delete(doc, resumePauseHandoffField)
@@ -491,6 +514,12 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	delete(doc, "trust")
 	delete(doc, "repo_sha_expected")
 	delete(doc, "fork_author_subject")
+	if park != nil {
+		// The retry state is the armings' (retryArmingSet), never the
+		// saver's: the persisted one is kept and the park's arming lands on
+		// it.
+		delete(doc, retryStateField)
+	}
 	doc["version"] = r.CASVersion + 1
 	terminalInc := 0
 	switch r.Status {
@@ -550,7 +579,13 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		}}),
 		"outcome_seq":        bson.M{"$cond": bson.A{statusChanged, bson.M{"$add": bson.A{seqBase, terminalInc}}, seqBase}},
 		"continuation_state": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}},
+		// The transit instant is the continuation's: kept and cleared with it.
+		"continuation_until": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_until", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{bornOrChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
+		// The frozen program is the capacity park's (ParkRunOnCapacity), bound
+		// to the attempt it found: a saver's copy never writes it, and the
+		// stored one survives the save whatever the copy carries.
+		frozenProgramField: bson.M{"$ifNull": bson.A{"$" + frozenProgramField, "$$REMOVE"}},
 		// The launch-frozen contract is IMMUTABLE: once persisted it
 		// wins over whatever the saver carries (a stale full-document
 		// save, or a binary too old to know the field, must not drop
@@ -587,6 +622,9 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 		// Only the persisted marker has authority across metadata saves.
 		computed[resumePauseHandoffField] = bson.M{"$ifNull": bson.A{"$" + resumePauseHandoffField, "$$REMOVE"}}
 	}
+	if park != nil {
+		computed[retryStateField] = bson.M{"$ifNull": bson.A{"$" + retryStateField, "$$REMOVE"}}
+	}
 	// $literal shields the document from aggregation-expression
 	// evaluation: without it, any string VALUE starting with "$" is
 	// parsed as a field path (silently dropped or substituted by
@@ -597,6 +635,15 @@ func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
 	// stored pre-image.
 	pipeline := mongo.Pipeline{
 		{{Key: "$replaceWith", Value: bson.M{"$mergeObjects": bson.A{computed, bson.M{"$literal": doc}}}}},
+	}
+	if park != nil {
+		// The park's arming reads the replaced document — its stamp is this
+		// launch's — in the same write. The park states its code itself: the
+		// computed failure_code above keeps a create's code only on a status
+		// change, and a parked launch is born failed_resumable.
+		armed := retryArmingSet(park.RetryAfter, time.Time{}, park.Reason, string(park.Code), park.Charge, r.UpdatedAt)
+		armed["failure_code"] = bson.M{"$literal": string(park.Code)}
+		pipeline = append(pipeline, bson.D{{Key: "$set", Value: armed}})
 	}
 	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID}))
 	f, err := store.NormalizeValueFormat(r.FormatVersion)
@@ -1235,56 +1282,96 @@ func (s *Store) SetRunBudgetSnapshot(ctx context.Context, id string, b *store.Ru
 	return nil
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
-// fingerprint — a credential's, or a capacity subject — model-idle or not
-// (see store.RunStore): the query form of store.Run.SpendsCredential.
-// Deliberately NO tenant filter — a platform key and a shared gateway serve
-// every tenant on one ceiling.
+// CountAliveRunsWithCredFingerprint counts the runs that hold fingerprint —
+// a credential's, or a capacity subject — now: queued, running or in their
+// redelivery transit, model-idle or not (see store.RunStore): the query form
+// of store.Run.SpendsCredential. Deliberately NO tenant filter — a platform
+// key and a shared gateway serve every tenant on one ceiling.
 func (s *Store) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
-	n, err := s.runs.CountDocuments(ctx, spendsCredentialFilter(fingerprint, excludeRunID))
+	n, err := s.runs.CountDocuments(ctx, spendsCredentialFilter(fingerprint, excludeRunID, time.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("store/mongo: count runs by cred fingerprint: %w", err)
 	}
 	return int(n), nil
 }
 
-// holdingStatuses is the query form of store.RunStatus.HoldsCredentialSlot:
-// the statuses whose runs hold the credentials and capacity subjects their
-// stamp names. Derived from store.AllRunStatuses, never spelled here, and
-// read by every filter that mirrors the holder predicate
-// (spendsCredentialFilter, ListAliveRunsForCapacity), so they move together.
-func holdingStatuses() []string {
+// holdsCapacityBranches is the query form of store.Run.HoldsCapacity at now,
+// one branch per arm: a status that holds (store.RunStatus.HoldsCredentialSlot,
+// derived from store.AllRunStatuses, never spelled here), and the redelivery
+// transit whose instant is still ahead (store.Run.InCapacityTransit). Read by
+// every filter that mirrors the holder predicate (spendsCredentialFilter,
+// ListAliveRunsForCapacity), so they move together. The transit branch names
+// the partial filter of the capacity_transit index, which serves it.
+func holdsCapacityBranches(now time.Time) []bson.M {
 	holding := make([]string, 0, 2)
 	for _, st := range store.AllRunStatuses {
 		if st.HoldsCredentialSlot() {
 			holding = append(holding, string(st))
 		}
 	}
-	return holding
+	return []bson.M{
+		{"status": bson.M{"$in": holding}},
+		{
+			"status":             string(store.RunStatusFailedResumable),
+			"continuation_state": string(store.ContinuationRedeliveryPending),
+			"continuation_until": bson.M{"$gt": now.UTC()},
+		},
+	}
+}
+
+// rootedHolderFilter is the top-level $or of every holder branch crossed with
+// every alternative clause, each branch carrying the common clauses itself:
+// a rooted $or, which the planner serves branch by branch, each from its own
+// index — nested under a conjunction, the transit branch falls back to the
+// status index or a scan.
+func rootedHolderFilter(alternatives []bson.M, now time.Time, common bson.M) bson.M {
+	var branches bson.A
+	for _, alt := range alternatives {
+		for _, holder := range holdsCapacityBranches(now) {
+			branch := bson.M{}
+			for k, v := range common {
+				branch[k] = v
+			}
+			for k, v := range alt {
+				branch[k] = v
+			}
+			for k, v := range holder {
+				branch[k] = v
+			}
+			branches = append(branches, branch)
+		}
+	}
+	return bson.M{"$or": branches}
 }
 
 // spendsCredentialFilter selects the runs that spend the credential with this
-// fingerprint, or the capacity subject of that name, excludeRunID aside: the
-// query form of store.Run.SpendsCredential, read by the alive-run count and,
-// narrowed (credSlotAdoptableFilter), by the slot ledger's adoption. The two
-// arms of the $or are the predicate's two stamps; the namespaces are
-// disjoint, so a value matches one arm at most. No tenant filter — a
-// platform key and a shared gateway serve every tenant on one cap.
-func spendsCredentialFilter(fingerprint, excludeRunID string) bson.M {
-	filter := notDeleted(bson.M{
-		"$or": bson.A{
-			bson.M{"cred_fingerprints": fingerprint},
-			bson.M{"capacity_subjects": fingerprint},
-		},
-		"status": bson.M{"$in": holdingStatuses()},
-	})
+// fingerprint, or the capacity subject of that name, at now, excludeRunID
+// aside: the query form of store.Run.SpendsCredential, read by the alive-run
+// count and, narrowed (credSlotAdoptableFilter), by the slot ledger's
+// adoption. Four branches: the predicate's two stamps (the namespaces are
+// disjoint, so a value matches one at most) by its two holder arms. No tenant
+// filter — a platform key and a shared gateway serve every tenant on one cap.
+func spendsCredentialFilter(fingerprint, excludeRunID string, now time.Time) bson.M {
+	return spendsCredentialFilterWith(fingerprint, excludeRunID, now, nil)
+}
+
+// spendsCredentialFilterWith is spendsCredentialFilter with extra clauses
+// every branch carries.
+func spendsCredentialFilterWith(fingerprint, excludeRunID string, now time.Time, extra bson.M) bson.M {
+	common := notDeleted(bson.M{})
 	if excludeRunID != "" {
-		filter["_id"] = bson.M{"$ne": excludeRunID}
+		common["_id"] = bson.M{"$ne": excludeRunID}
 	}
-	return filter
+	for k, v := range extra {
+		common[k] = v
+	}
+	return rootedHolderFilter([]bson.M{
+		{"cred_fingerprints": fingerprint},
+		{"capacity_subjects": fingerprint},
+	}, now, common)
 }
 
 func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
@@ -1361,7 +1448,9 @@ func (s *Store) RecordNodeServed(ctx context.Context, id, nodeID string, served 
 //   - continuation_state is preserved on a same-status rewrite unless
 //     the writer states one (an untyped rewrite of an already-parked
 //     run must not erase a live retry_armed), and cleared on a genuine
-//     state change without a statement.
+//     state change without a statement. continuation_until follows it:
+//     written with a stated redelivery_pending that carries one, removed
+//     by any other statement.
 //
 // Free-text values ride under $literal — in a pipeline stage a string
 // value is an EXPRESSION, and an operator-supplied error message
@@ -1470,11 +1559,18 @@ func statusTransitionSet(status store.RunStatus, runErr string, meta store.RunOu
 		set["outcome_seq"] = bson.M{"$cond": bson.A{statusChanged,
 			bson.M{"$add": bson.A{seqBase, 1}}, seqBase}}
 	}
-	if meta.Continuation != "" {
+	switch {
+	case meta.Continuation == store.ContinuationRedeliveryPending && !meta.ContinuationUntil.IsZero():
 		set["continuation_state"] = bson.M{"$literal": string(meta.Continuation)}
-	} else {
+		set["continuation_until"] = store.TransitInstant(meta.ContinuationUntil)
+	case meta.Continuation != "":
+		set["continuation_state"] = bson.M{"$literal": string(meta.Continuation)}
+		set["continuation_until"] = "$$REMOVE"
+	default:
 		set["continuation_state"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
 			bson.M{"$ifNull": bson.A{"$continuation_state", "$$REMOVE"}}}}
+		set["continuation_until"] = bson.M{"$cond": bson.A{statusChanged, "$$REMOVE",
+			bson.M{"$ifNull": bson.A{"$continuation_until", "$$REMOVE"}}}}
 	}
 	// A `final` continuation says nobody on the platform owns the run's
 	// future; an armed retry says the sweeper does. The two cannot both
@@ -1867,6 +1963,7 @@ type queuedFlipPriorDoc struct {
 	EndReason         store.RunEndReason         `bson:"end_reason"`
 	OutcomeSeq        int64                      `bson:"outcome_seq"`
 	ContinuationState store.ContinuationState    `bson:"continuation_state"`
+	ContinuationUntil *time.Time                 `bson:"continuation_until"`
 	FinishedAt        *time.Time                 `bson:"finished_at"`
 	WorkflowSource    string                     `bson:"workflow_source"`
 	WorkflowSources   []store.WorkflowSourceFile `bson:"workflow_sources"`
@@ -1913,7 +2010,7 @@ func (s *Store) flipToQueued(ctx context.Context, id string, from store.RunStatu
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.Before).
 		SetProjection(bson.M{"status": 1, "queued_at": 1, "error": 1, "failure_code": 1, "end_reason": 1,
-			"outcome_seq": 1, "continuation_state": 1, "finished_at": 1,
+			"outcome_seq": 1, "continuation_state": 1, "continuation_until": 1, "finished_at": 1,
 			"workflow_source": 1, "workflow_sources": 1, "workflow_hash": 1})
 	var before queuedFlipPriorDoc
 	metadataResult, err := s.findOneAndUpdateRunMetadata(ctx, id, filter, versionRunUpdate(statusTransitionPipeline(set)), opts)
@@ -1964,6 +2061,7 @@ func (s *Store) RevertQueuedFlip(ctx context.Context, id string, flip store.Queu
 	field("end_reason", prior.EndReason, prior.EndReason == "")
 	field("outcome_seq", prior.OutcomeSeq, prior.OutcomeSeq == 0)
 	field("continuation_state", prior.ContinuationState, prior.ContinuationState == "")
+	field("continuation_until", prior.ContinuationUntil, prior.ContinuationUntil == nil)
 	field("finished_at", prior.FinishedAt, prior.FinishedAt == nil)
 	field("workflow_source", prior.WorkflowSource, prior.WorkflowSource == "")
 	field("workflow_sources", prior.WorkflowSources, len(prior.WorkflowSources) == 0)
@@ -2080,7 +2178,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		set := bson.M{"status": string(store.RunStatusPausedWaitingHuman), "checkpoint": bson.M{"$literal": whole}, "updated_at": now,
 			"version":         bson.M{"$add": bson.A{bson.M{"$ifNull": bson.A{"$version", 0}}, 1}},
 			"execution_epoch": executionEpochExpr(bson.M{"$ne": bson.A{"$status", string(store.RunStatusPausedWaitingHuman)}}),
-			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE", resumePauseHandoffField: "$$REMOVE"}
+			"finished_at":     "$$REMOVE", "failure_code": "$$REMOVE", "continuation_state": "$$REMOVE", "continuation_until": "$$REMOVE", "await_answers_waits": "$$REMOVE", "pre_engine_refusal": "$$REMOVE", "tool_approval_claim": "$$REMOVE", resumePauseHandoffField: "$$REMOVE"}
 		// A fresh exact pause re-arms the approval cycle: its own claim/spend
 		// identity is the durable continuation of the cycle it replaces, so a
 		// marker an earlier ambiguous dispatch left (the force-resume path)

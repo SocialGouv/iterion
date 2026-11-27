@@ -108,7 +108,10 @@ consumer died stayed `Ready` forever, consuming nothing.
 
 `/readyz` is the drain signal: a runner in its lame-duck can hold a pod for
 up to `config.runner.drainTimeout` (8h), and `kubectl get pods` should
-distinguish it from a fresh one.
+distinguish it from a fresh one. A run the drain interrupts is handed back to
+the queue and keeps its capacity places until `continuation_until`
+(`ITERION_REDELIVERY_HOLD_TTL`), so the pod that picks the redelivery up finds
+them held ([resume.md](resume.md#a-redelivered-run-keeps-its-capacity-places-until-continuation_until)).
 
 ## The shutdown sequence (server)
 

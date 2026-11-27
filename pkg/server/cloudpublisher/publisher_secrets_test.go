@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -331,6 +332,8 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 		t.Fatal("expected SubmitLaunch to fail for an unresolved required secret")
 	} else if !strings.Contains(err.Error(), "test_e2e_canary") {
 		t.Fatalf("error should name the secret, got %q", err.Error())
+	} else if !errors.Is(err, secrets.ErrRequiredSecretUnresolved) {
+		t.Fatalf("the launch refusal is not secrets.ErrRequiredSecretUnresolved: %v", err)
 	}
 	// No run record persisted, nothing published.
 	if _, err := st.LoadRun(ctx, "run-canary"); err == nil {
@@ -387,6 +390,10 @@ func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T
 		t.Fatal("expected SubmitResume to fail for an unresolved required secret")
 	} else if !strings.Contains(err.Error(), "test_e2e_canary") {
 		t.Fatalf("error should name the secret, got %q", err.Error())
+	} else if !errors.Is(err, secrets.ErrRequiredSecretUnresolved) || !runview.ResumeNeedsOperator(err) {
+		// The retry sweeper ends its automation on it (runview.ResumeNeedsOperator):
+		// the refusal must stay typed through every wrapper.
+		t.Fatalf("the resume refusal is not a typed secrets.ErrRequiredSecretUnresolved: %v", err)
 	}
 	run, err := st.LoadRun(ctx, "run-resume")
 	if err != nil {

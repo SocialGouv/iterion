@@ -44,6 +44,7 @@ func (s *FilesystemRunStore) RecordPreEngineRefusal(ctx context.Context, id stri
 		transitionRunStatus(run, q.TargetStatus(), q.Message, q.Outcome())
 		if q.Disposition != PreEngineFinalVerdict {
 			run.ContinuationState = ""
+			run.ContinuationUntil = nil
 		}
 	}
 	run.Error = q.Message

@@ -33,6 +33,7 @@ func (s *Store) RecordPreEngineRefusal(ctx context.Context, id string, q store.P
 	set := statusTransitionSet(q.TargetStatus(), q.Message, q.Outcome(), now)
 	if q.Disposition != store.PreEngineFinalVerdict {
 		set["continuation_state"] = "$$REMOVE"
+		set["continuation_until"] = "$$REMOVE"
 	}
 	if q.Disposition == store.PreEngineRetryPending {
 		pending := bson.M{"$eq": bson.A{"$status", string(store.RunStatusQueued)}}

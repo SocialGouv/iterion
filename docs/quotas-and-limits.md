@@ -344,7 +344,21 @@ lives on the key itself: `max_concurrent_runs`
 atomic reservation at launch and resume, and a full key **parks** a launch
 (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes)
 rather than denying it — an operator's resume on a full key answers 429
-(`credential_at_capacity`), whichever surface resumes it.
+(`credential_at_capacity`), whichever surface resumes it. A run the queue
+hands back for a redelivery keeps its places until `continuation_until`
+(`ITERION_REDELIVERY_HOLD_TTL`, runners only), and the redelivery proves them
+before it resumes: one lost meanwhile parks the run on `CRED_SLOT_WAIT` — free
+for an infrastructure cause, one attempt of its retry budget otherwise
+([byok.md](byok.md#concurrency-ceiling--what-counts)). A redelivery never
+resumes an operator-paused run that held capped places, nor a run whose retry
+is armed. A run parked that way after it started resumes, once a slot frees,
+the program it was parked with rather than its bot's current one — no
+`--force`, no refusal for a bot changed during the wait; a stored bot deleted
+meanwhile still ends the wait
+([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)).
+An automatic retry that meets a refusal only a person lifts (an undecided
+effect, a scratch or a lineage that does not travel, an artifact contract, a
+required secret that resolves to nothing) stops at its first due, named.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
@@ -964,7 +978,8 @@ accounting lives in the Mongo counters above.
 | `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
 | `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
 | `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
-| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed` / `slot_wait` / `window_wait` / `release_deferred`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total`; `window_wait` is a due row held until the usage window its record names, spending no attempt; `release_deferred` is a run released on its credential window's answer whose resume was refused for a transient reason, re-armed on the ordinary backoff without spending an attempt ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
+| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed` / `slot_wait` / `window_wait` / `release_deferred`, and the annotations `frozen_readmitted` / `frozen_stale` / `frozen_unavailable`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total`; `window_wait` is a due row held until the usage window its record names, spending no attempt; `release_deferred` is a run released on its credential window's answer whose resume was refused for a transient reason, re-armed on the ordinary backoff without spending an attempt ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)). The `frozen_*` results annotate a capacity park's frozen program and are counted beside the pass's own result, never instead of it: `frozen_readmitted` a parked program republished, `frozen_stale` a record that no longer binds its run, `frozen_unavailable` a record whose envelope is gone or corrupt — both ignored, the run resuming its bot's current program ([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)) |
+| `iterion_capacity_frozen_program_total` | `source` (`capacity`), `outcome` (`written` / `not_started` / `freeze_failed` / `hash_mismatch`) | What a runner's capacity park did with the program of the delivery it parked: `written` a started run parked with its program frozen for its re-admission, `not_started` a run that never started (its re-admission takes the current bot), `freeze_failed` and `hash_mismatch` a started run parked without its program — its re-admission takes the current bot, refused if it changed. A non-zero `hash_mismatch` names a run whose out-of-band IR a later publication replaced |
 | `iterion_runs_retry_pending` | — | Due-retry rows observed in the latest bounded sweep (sampled gauge); probe-pulled rows are due rows, so a parked fleet keeps a floor under it |
 | `iterion_runs_retry_sweeps_total` | — | Retry-sweeper passes; flat at zero in cloud means the sweeper is not running, not merely idle |
 | `iterion_bot_override_shadows_newer` | `slug` | 1 while a **platform** bot override is strictly older than the bundle this deployment would otherwise serve — the override wins by design, so the newer baked bundle does not run until it is re-pushed or dropped ([platform-bots.md](platform-bots.md#an-override-outlives-the-release-that-made-it-necessary)). Sampled every five minutes — twelve readings inside the hour its alert waits — with every row rewritten per pass and the vanished slugs retired after those writes, so a dropped override loses its series rather than paging forever, while no scrape reads an empty inventory for one that is still shadowing |
