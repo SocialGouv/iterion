@@ -474,8 +474,12 @@ func relativeReads(root string, f *scanFile) []evidence {
 			if consumed[n] {
 				return true
 			}
-			// A bare ".." outside a Join is a traversal test, not a path.
-			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && !strings.ContainsAny(s, " \t\n") {
+			// Outside a Join, a bare ".." or "../" is a traversal fragment,
+			// not a path: a table's malicious input, the head of a
+			// concatenation ("../" + name), a prefix to test or trim. A
+			// deeper climb ("../../..") stays a read: tests name the root
+			// that way before joining onto it.
+			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && s != "../" && !strings.ContainsAny(s, " \t\n") {
 				add(n, s)
 			}
 		}

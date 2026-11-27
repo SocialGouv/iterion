@@ -114,6 +114,44 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 	}
 }
 
+// TestASingleClimbIsAFragmentADeeperOneIsTheRoot holds the line between the
+// two: "../" outside a Join names no file (a table's malicious input, the head
+// of a concatenation, a prefix to trim), so it reads nothing; "../.." is how a
+// test names the root before joining onto it.
+func TestASingleClimbIsAFragmentADeeperOneIsTheRoot(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":    "module example.com/m\n",
+		"docs/x.md": "x",
+		"pkg/a/a_test.go": `package a
+import ("strings"; "testing")
+func TestA(t *testing.T) {
+	for _, id := range []string{"../" + strings.Repeat("f", 64), "run-1"} { _ = id }
+	_ = strings.TrimPrefix("../docs", "../")
+}
+`,
+		"pkg/b/b_test.go": `package b
+import ("os"; "path/filepath"; "testing")
+func TestB(t *testing.T) { root := "../.."; os.ReadFile(filepath.Join(root, "docs", "x.md")) }
+`,
+	})
+	ev, err := scanTree(root, "example.com/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, e := range ev {
+		got[e.Pkg] = append(got[e.Pkg], e.Kind+" "+e.Path)
+	}
+	if len(got["pkg/a"]) > 0 {
+		t.Errorf(`pkg/a: scan = %v, want nothing: a lone "../" is a fragment, not a read`, got["pkg/a"])
+	}
+	b := got["pkg/b"]
+	slices.Sort(b)
+	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(b, want) {
+		t.Errorf(`pkg/b: scan = %v, want %v: "../.." names the root`, b, want)
+	}
+}
+
 func TestUndeclaredJudgesFilesDirectoriesAndRoots(t *testing.T) {
 	ev := scanFixture(t)
 	tracked := []string{"bots/one/main.bot", "bots/one/manifest.yaml", "docs/adr/1.md", "docs/x.md", "docs/y.md", "docs/z.md", "examples/a.bot", "examples/sub/b.bot", "go.mod"}
