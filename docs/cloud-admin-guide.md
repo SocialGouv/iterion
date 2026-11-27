@@ -730,7 +730,12 @@ UI path: `/teams/<id>` → Team access → "Invite a member".
 When SMTP is configured, the new member receives an email with a link
 to `${PUBLIC_URL}/invitations/accept?token=…` (the SPA accept page,
 which resolves the token via `GET /api/auth/invitations/lookup`) and
-creates an account from there. Without SMTP, the in-band response token
+creates an account from there: the sign-up form shows the team, org,
+roles and inviter and locks the email to the invited address. In
+invite-only sign-up mode the registration accepts the invitation and
+lands the new account on the team it joined; in open sign-up mode the
+registration does not consume it, and the account lands on the accept
+page, where one click joins the team. Without SMTP, the in-band response token
 must be sent to them out-of-band (email / chat / SMS).
 
 Invitations expire in 7 days; revoke with

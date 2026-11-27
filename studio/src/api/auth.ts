@@ -299,6 +299,10 @@ export interface InvitationLookup {
   org_role?: OrgRole;
   team_id: string;
   team_name: string;
+  /** The team's org, absent for a team with no org. */
+  org_name?: string;
+  /** The inviter's address, as the invitation email shows it. */
+  invited_by?: string;
 }
 
 export async function lookupInvitation(token: string): Promise<InvitationLookup> {
@@ -311,6 +315,21 @@ export async function acceptInvitationLoggedIn(token: string): Promise<Membershi
     method: "POST",
     body: JSON.stringify({ token }),
   });
+}
+
+// INVITATION_ACCEPTED_BY_YOU is the error_code of the 409 an accept answers
+// when the signed-in account itself already accepted the invitation and
+// still holds the grant; that body alone names the team it joined.
+export const INVITATION_ACCEPTED_BY_YOU = "invitation_accepted_by_you";
+
+// teamOfOwnAcceptedInvitation answers the team an accept's error names when
+// the invitation was already accepted by the signed-in account, null for any
+// other error.
+export function teamOfOwnAcceptedInvitation(err: unknown): string | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  if (err.body?.error_code !== INVITATION_ACCEPTED_BY_YOU) return null;
+  const team = err.body.team_id;
+  return typeof team === "string" && team !== "" ? team : null;
 }
 
 // ---- Password flows ----

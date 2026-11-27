@@ -4,15 +4,22 @@ import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Spinner } from "@/components/ui/Spinner";
 import { useLocation } from "wouter";
-import { listProviders, type ProvidersResponse } from "@/api/auth";
-import { ApiError } from "@/api/auth";
+import {
+  ApiError,
+  listProviders,
+  lookupInvitation,
+  type AuthSession,
+  type InvitationLookup,
+  type ProvidersResponse,
+} from "@/api/auth";
 import { abandon, canPresent, readRecord, SignOutHeldError } from "@/api/signOutMachine";
 import { consumeQueryParams } from "@/lib/queryFlash";
 import { useAuth } from "@/auth/AuthContext";
 import { signInReturnTo } from "@/auth/returnTo";
 import { useServerInfoStore } from "@/store/serverInfo";
-import { apiBase } from "@/lib/scope";
+import { apiBase, STUDIO_BASE } from "@/lib/scope";
 
 const BASE = apiBase().replace(/\/$/, "");
 
@@ -78,6 +85,45 @@ function ssoErrorNotice(
   }
 }
 
+// submitOwnsLanding is true while a registration that carried an invitation
+// settles. The authenticated state it reaches renders /login anew — another
+// SignInCard instance, whose forward to returnTo (the accept page the link
+// came from) would race this submit's own landing on the joined team.
+let submitOwnsLanding = false;
+
+// LinkInvitation is the invitation the visitor arrived with, as the anonymous
+// lookup answered it.
+type LinkInvitation =
+  | { status: "loading" }
+  | { status: "ok"; info: InvitationLookup }
+  // accepted: the lookup's 409 — the invitation was accepted already, by
+  // whom it does not say. Its acceptee signs in and the accept page opens
+  // the team it joined.
+  | { status: "accepted" }
+  | { status: "error"; message: string };
+
+// invitationLanding is where a registration that carried `invitation` lands.
+// A registration that honoured it answers a session whose active team is the
+// team it joined: the account lands there, the invitation already accepted.
+// That is known when the session's team is the one the lookup named for this
+// very token (`knownTeam`), or — no lookup describing the token — when the
+// instance is invite-only, where a registration always claims its
+// invitation. Otherwise (an open sign-up registers without reading the
+// invitation, or the mode is unknown) the accept page takes it: it accepts a
+// pending invitation once, and opens the team of one this account accepted.
+function invitationLanding(
+  session: AuthSession,
+  invitation: string,
+  knownTeam: string | null,
+  inviteOnly: boolean,
+): string {
+  const joined = session.active_team_id;
+  if (joined && (knownTeam === joined || (knownTeam === null && inviteOnly))) {
+    return `${STUDIO_BASE}/teams/${encodeURIComponent(joined)}`;
+  }
+  return `/invitations/accept?token=${encodeURIComponent(invitation)}`;
+}
+
 // SignInCard is the email/password + SSO sign-in panel, extracted from
 // Login so it can be composed both as a standalone full-screen page
 // (Login, below) and beneath the cloud marketing hero (CloudLanding).
@@ -86,7 +132,21 @@ export function SignInCard() {
   const [, navigate] = useLocation();
   const returnTo = signInReturnTo(window.location);
   const serverInfo = useServerInfoStore((s) => s.info);
-  const [mode, setMode] = useState<"login" | "register">("login");
+  // The invitation link's token (?invite=), read once: a visitor arriving by
+  // it registers by default, for the invited address only.
+  const [linkToken] = useState(() => new URL(window.location.href).searchParams.get("invite") ?? "");
+  const [linkInvitation, setLinkInvitation] = useState<LinkInvitation | null>(
+    linkToken ? { status: "loading" } : null,
+  );
+  // manual: the visitor left the link's locked form for the free one (another
+  // token or another address), the form a visitor without a link gets.
+  const [manual, setManual] = useState(false);
+  const byLink = linkToken !== "" && !manual;
+  // The link's form opens only on an invitation the lookup described.
+  const linkPending = byLink && (linkInvitation?.status === "loading" || linkInvitation?.status === "error");
+  // The address is locked to the one the lookup named, when it named one.
+  const emailLocked = byLink && linkInvitation?.status === "ok";
+  const [mode, setMode] = useState<"login" | "register">(linkToken ? "register" : "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // signInHeld: a password/registration submit the machine held because an
@@ -94,7 +154,7 @@ export function SignInCard() {
   // session (I4). null once the explicit way past it is taken.
   const [signInHeld, setSignInHeld] = useState<{ expiresAt: string | null } | null>(null);
   const [name, setName] = useState("");
-  const [invitation, setInvitation] = useState("");
+  const [invitation, setInvitation] = useState(linkToken);
   const [providers, setProviders] = useState<ProvidersResponse | null>(null);
   const [org, setOrg] = useState("");
   const [showOrgInput, setShowOrgInput] = useState(false);
@@ -153,20 +213,41 @@ export function SignInCard() {
   }, [serverInfo]);
 
   useEffect(() => {
-    if (status === "authenticated") {
+    if (status === "authenticated" && !submitOwnsLanding) {
       navigate(returnTo, { replace: true });
     }
   }, [status, navigate, returnTo]);
 
-  // Pre-fill invitation token from URL.
+  // Read the link's invitation: the form names it and takes its address. A
+  // lookup that fails is shown as such — the link's form does not open on an
+  // invitation the server refuses.
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const t = url.searchParams.get("invite");
-    if (t) {
-      setMode("register");
-      setInvitation(t);
-    }
-  }, []);
+    // A signed-in visitor is forwarded (above): the lookup is the anonymous
+    // form's.
+    if (!linkToken || status === "authenticated") return;
+    let live = true;
+    lookupInvitation(linkToken).then(
+      (info) => {
+        if (!live) return;
+        setLinkInvitation({ status: "ok", info });
+        setEmail(info.email);
+      },
+      (e: unknown) => {
+        if (!live) return;
+        if (e instanceof ApiError && e.status === 409) {
+          // Already accepted: the way forward is its acceptee signing in,
+          // with whatever address they hold — the lookup names none.
+          setLinkInvitation({ status: "accepted" });
+          setMode("login");
+          return;
+        }
+        setLinkInvitation({ status: "error", message: e instanceof ApiError ? e.message : errorMessage(e) });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [linkToken, status]);
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -185,10 +266,31 @@ export function SignInCard() {
     try {
       if (mode === "login") {
         await signIn(email, password, { anyway });
-      } else {
-        await signUp({ email, password, name, invitation: invitation || undefined }, { anyway });
+        navigate(returnTo, { replace: true });
+        return;
       }
-      navigate(returnTo, { replace: true });
+      const carried = invitation.trim();
+      if (!carried) {
+        await signUp({ email, password, name }, { anyway });
+        navigate(returnTo, { replace: true });
+        return;
+      }
+      // A registration that carried an invitation lands where its session
+      // says (invitationLanding) — never back on an accept page whose
+      // invitation the registration already consumed. The landing is this
+      // submit's: the sign-in card the authenticated state may mount before
+      // it navigates must not forward to returnTo meanwhile.
+      const knownTeam =
+        linkInvitation?.status === "ok" && carried === linkToken ? linkInvitation.info.team_id : null;
+      submitOwnsLanding = true;
+      try {
+        const session = await signUp({ email, password, name, invitation: carried }, { anyway });
+        navigate(invitationLanding(session, carried, knownTeam, providers?.signup_mode === "invite_only"), {
+          replace: true,
+        });
+      } finally {
+        submitOwnsLanding = false;
+      }
     } catch (e) {
       if (e instanceof SignOutHeldError) {
         setSignInHeld({ expiresAt: e.record.expires_at });
@@ -266,6 +368,28 @@ export function SignInCard() {
               : "Sign up for a new iterion workspace."}
         </p>
 
+        {byLink && linkInvitation?.status === "loading" && (
+          <div className="flex items-center gap-2 text-sm text-fg-muted mb-4" aria-live="polite">
+            <Spinner size="sm" />
+            <span>Checking your invitation…</span>
+          </div>
+        )}
+        {byLink && linkInvitation?.status === "error" && (
+          <InlineBanner tone="danger" layout="inline" role="alert" className="mb-4">
+            This invitation link can't be used: {linkInvitation.message}. Ask the person who invited you for a new
+            invitation, or continue without it below.
+          </InlineBanner>
+        )}
+        {byLink && linkInvitation?.status === "accepted" && (
+          <InlineBanner tone="info" layout="inline" role="status" className="mb-4">
+            This invitation has already been accepted. If you accepted it, sign in to open its team.
+          </InlineBanner>
+        )}
+        {byLink && linkInvitation?.status === "ok" && (
+          <InvitationSummary info={linkInvitation.info} />
+        )}
+
+        {!linkPending && (
         <form onSubmit={submit} className="space-y-3">
           {mode === "register" && (
             <div>
@@ -294,6 +418,10 @@ export function SignInCard() {
               placeholder="Email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              // The link's invitation is for one address: the server refuses
+              // any other, so the form does not offer one.
+              readOnly={emailLocked}
+              aria-readonly={emailLocked || undefined}
               // "username" (not "email") is the token password managers pair with
               // current-password to recognise a login + offer to save it. On
               // register, "email" is the right collect-an-address semantics.
@@ -320,7 +448,7 @@ export function SignInCard() {
               minLength={mode === "register" ? 8 : undefined}
             />
           </div>
-          {mode === "register" && providers?.signup_mode === "invite_only" && (
+          {mode === "register" && providers?.signup_mode === "invite_only" && !byLink && (
             <div>
               <label htmlFor="login-invitation" className="sr-only">
                 Invitation token
@@ -350,6 +478,14 @@ export function SignInCard() {
             {busy ? "Working…" : mode === "login" ? "Sign in" : "Create account"}
           </Button>
         </form>
+        )}
+        {byLink && (
+          <div className="mt-2 text-center">
+            <Button variant="ghost" size="sm" onClick={() => setManual(true)}>
+              Use another invitation or address
+            </Button>
+          </div>
+        )}
 
         <div className="mt-6 space-y-2">
           <div className="text-xs uppercase tracking-wider text-fg-muted">
@@ -465,6 +601,7 @@ export function SignInCard() {
             ))}
         </div>
 
+        {!linkPending && (
         <div className="mt-6 text-sm text-fg-muted text-center space-y-1">
           {mode === "login" ? (
             <>
@@ -502,11 +639,46 @@ export function SignInCard() {
             </Button>
           )}
         </div>
+        )}
         {/* The legal links a visitor is owed BEFORE signing in (ADR-160);
             inside the card so the plain Login page and the product home's
             card both carry them. */}
         <LegalLinks className="mt-6" />
       </div>
+  );
+}
+
+// InvitationSummary names the invitation a link carries: the team and org it
+// joins, the roles it grants and who sent it.
+function InvitationSummary({ info }: { info: InvitationLookup }) {
+  return (
+    <dl
+      aria-label="Invitation"
+      className="mb-4 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-[var(--radius-md)] border border-border-subtle bg-surface-0 p-3 text-sm"
+    >
+      <dt className="text-fg-muted">Team</dt>
+      <dd className="font-medium">{info.team_name}</dd>
+      {info.org_name && (
+        <>
+          <dt className="text-fg-muted">Organization</dt>
+          <dd className="font-medium">{info.org_name}</dd>
+        </>
+      )}
+      <dt className="text-fg-muted">Team role</dt>
+      <dd className="font-medium">{info.role}</dd>
+      {info.org_role && (
+        <>
+          <dt className="text-fg-muted">Organization role</dt>
+          <dd className="font-medium">{info.org_role}</dd>
+        </>
+      )}
+      {info.invited_by && (
+        <>
+          <dt className="text-fg-muted">Invited by</dt>
+          <dd className="font-medium break-all">{info.invited_by}</dd>
+        </>
+      )}
+    </dl>
   );
 }
 

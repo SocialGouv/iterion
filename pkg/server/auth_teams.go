@@ -557,13 +557,67 @@ func (s *Server) handleInvitationLookup(w http.ResponseWriter, r *http.Request) 
 		s.authError(w, r, err)
 		return
 	}
-	writeJSON(w, struct {
-		Email    string `json:"email"`
-		Role     string `json:"role"`
-		OrgRole  string `json:"org_role,omitempty"`
-		TeamID   string `json:"team_id"`
-		TeamName string `json:"team_name"`
-	}{Email: inv.Email, Role: string(inv.Role), OrgRole: string(invitationOrgRoleIn(inv, t.OrgID)), TeamID: t.ID, TeamName: t.Name})
+	// The org's name and the inviter's address are what the invitation's
+	// email shows its holder, and what an inviter who shares the link
+	// themselves hands over with it: the lookup names them so the
+	// registration form can say who invites, and where to. They are display
+	// only — like inviteMailNames, a name that cannot be read is never a
+	// reason to refuse the lookup: it is left out, and a read that failed for
+	// another reason than a missing row is logged.
+	var orgName string
+	if t.OrgID != "" {
+		org, err := s.authStore().GetOrg(r.Context(), t.OrgID)
+		switch {
+		case err == nil:
+			orgName = org.Name
+		case !errors.Is(err, identity.ErrNotFound) && s.logger != nil:
+			s.logger.Warn("invitation lookup %s: the name of org %s could not be read, left out: %v", inv.ID, t.OrgID, err)
+		}
+	}
+	var invitedBy string
+	if inv.InvitedBy != "" {
+		u, err := s.authStore().GetUser(r.Context(), inv.InvitedBy)
+		switch {
+		case err == nil:
+			invitedBy = u.Email
+		case !errors.Is(err, identity.ErrNotFound) && s.logger != nil:
+			s.logger.Warn("invitation lookup %s: the inviter %s could not be read, left out: %v", inv.ID, inv.InvitedBy, err)
+		}
+	}
+	writeJSON(w, invitationLookupView{
+		Email:     inv.Email,
+		Role:      string(inv.Role),
+		OrgRole:   string(invitationOrgRoleIn(inv, t.OrgID)),
+		TeamID:    t.ID,
+		TeamName:  t.Name,
+		OrgName:   orgName,
+		InvitedBy: invitedBy,
+	})
+}
+
+// invitationLookupView is what the anonymous lookup answers a token holder:
+// the invitation, the team it joins and who sent it.
+type invitationLookupView struct {
+	Email     string `json:"email"`
+	Role      string `json:"role"`
+	OrgRole   string `json:"org_role,omitempty"`
+	TeamID    string `json:"team_id"`
+	TeamName  string `json:"team_name"`
+	OrgName   string `json:"org_name,omitempty"`
+	InvitedBy string `json:"invited_by,omitempty"`
+}
+
+// errorCodeInvitationAcceptedByYou marks the 409 of an accept whose
+// invitation the caller already accepted and whose grant they still hold:
+// the body names the team so the client lands there instead of reporting a
+// failure.
+const errorCodeInvitationAcceptedByYou = "invitation_accepted_by_you"
+
+// invitationAcceptedByYou is that 409's body.
+type invitationAcceptedByYou struct {
+	Error     string `json:"error"`
+	ErrorCode string `json:"error_code"`
+	TeamID    string `json:"team_id"`
 }
 
 func (s *Server) handleInvitationAcceptForLoggedIn(w http.ResponseWriter, r *http.Request) {
@@ -597,6 +651,24 @@ func (s *Server) handleInvitationAcceptForLoggedIn(w http.ResponseWriter, r *htt
 		return
 	}
 	mb, err := s.authSvc.AcceptInvitationForExistingUser(r.Context(), id.UserID, body.Token)
+	if errors.Is(err, identity.ErrInvitationUsed) {
+		// The invitation stays single-use — the answer is still a 409 — but
+		// its own acceptee, still holding the grant, is told which team it
+		// joined. Any other caller reads the plain refusal.
+		own, ok, readErr := s.authSvc.GrantOfOwnAcceptedInvitation(r.Context(), id.UserID, body.Token)
+		if readErr != nil {
+			s.authError(w, r, readErr)
+			return
+		}
+		if ok {
+			writeJSONStatus(w, http.StatusConflict, invitationAcceptedByYou{
+				Error:     err.Error(),
+				ErrorCode: errorCodeInvitationAcceptedByYou,
+				TeamID:    own.TeamID,
+			})
+			return
+		}
+	}
 	if err != nil {
 		s.authError(w, r, err)
 		return

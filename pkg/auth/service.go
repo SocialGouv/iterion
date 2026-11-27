@@ -2285,6 +2285,38 @@ func (s *Service) AcceptInvitationForExistingUser(ctx context.Context, userID, t
 	return mb, nil
 }
 
+// GrantOfOwnAcceptedInvitation answers the team grant userID holds through
+// the invitation token names, when that invitation was accepted BY userID:
+// the acceptee opening the same link again is shown the team it joined
+// instead of a refusal. ok is false for every other case — an invitation not
+// accepted yet, accepted by another account, or whose grant was removed
+// since — so the caller answers what it would have answered without it, and
+// nobody but the acceptee learns where the invitation led. It writes
+// nothing: the invitation stays spent.
+func (s *Service) GrantOfOwnAcceptedInvitation(ctx context.Context, userID, token string) (mb identity.Membership, ok bool, err error) {
+	if userID == "" || token == "" {
+		return identity.Membership{}, false, nil
+	}
+	inv, err := s.store.GetInvitationByTokenHash(ctx, hashInvitationToken(token))
+	if errors.Is(err, identity.ErrNotFound) {
+		return identity.Membership{}, false, nil
+	}
+	if err != nil {
+		return identity.Membership{}, false, err
+	}
+	if inv.AcceptedAt == nil || inv.AcceptedBy != userID {
+		return identity.Membership{}, false, nil
+	}
+	mb, err = s.store.GetMembership(ctx, userID, inv.TeamID)
+	if errors.Is(err, identity.ErrNotFound) {
+		return identity.Membership{}, false, nil
+	}
+	if err != nil {
+		return identity.Membership{}, false, err
+	}
+	return mb, true, nil
+}
+
 // Store returns the underlying identity store. Server handlers
 // reach for it to perform read-only joins (e.g. resolving team
 // names from membership rows) without proxying every accessor

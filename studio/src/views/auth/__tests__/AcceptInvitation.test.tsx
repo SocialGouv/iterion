@@ -33,11 +33,15 @@ const identity = {
 let calls: string[];
 let meStatus: number;
 let accepted: boolean;
+// acceptedByMe: the accepted invitation is the signed-in account's own, and
+// it still holds the grant — the accept's 409 then names the team.
+let acceptedByMe: boolean;
 
 beforeEach(() => {
   calls = [];
   meStatus = 200;
   accepted = false;
+  acceptedByMe = true;
   useServerInfoStore.setState({ info: { mode: "cloud" } as ServerInfo });
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = String(input).split("?")[0] ?? "";
@@ -49,7 +53,11 @@ beforeEach(() => {
       return accepted ? json({ error: "identity: invitation already accepted" }, 409) : json({ email: "r@example.test", role: "member", team_id: "t9", team_name: "Nine" });
     }
     if (path === "/api/auth/invitations/accept") {
-      if (accepted) return json({ error: "identity: invitation already accepted" }, 409);
+      if (accepted) {
+        return acceptedByMe
+          ? json({ error: "identity: invitation already accepted", error_code: "invitation_accepted_by_you", team_id: "t9" }, 409)
+          : json({ error: "identity: invitation already accepted" }, 409);
+      }
       accepted = true;
       return json({ user_id: "u", team_id: "t9", role: "member" });
     }
@@ -73,5 +81,29 @@ describe("accepting an invitation", () => {
     expect(window.location.pathname).toBe("/studio/teams/t9");
     expect(screen.queryByText(/identity unavailable/i)).toBeNull();
     expect(accepted).toBe(true);
+  }, 15000);
+
+  it("lands its own acceptee on the team when the invitation is already accepted", async () => {
+    accepted = true;
+    window.history.replaceState({}, "", "/invitations/accept?token=inv-1");
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><App /></QueryClientProvider>);
+    await screen.findByRole("heading", { name: "Team page" }, { timeout: 8000 });
+    expect(window.location.pathname).toBe("/studio/teams/t9");
+    expect(calls.filter((c) => c === "POST /api/auth/invitations/accept")).toHaveLength(1);
+    expect(calls).toContain("POST /api/auth/me/team/t9");
+    expect(screen.queryByText(/already accepted/i)).toBeNull();
+  }, 15000);
+
+  it("tells another account the invitation is spent, without a team", async () => {
+    accepted = true;
+    acceptedByMe = false;
+    window.history.replaceState({}, "", "/invitations/accept?token=inv-1");
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><App /></QueryClientProvider>);
+    await screen.findByText(/already been accepted, and not by this account/i, {}, { timeout: 8000 });
+    expect(window.location.pathname).toBe("/invitations/accept");
+    expect(screen.queryByRole("button", { name: /^Join/ })).toBeNull();
+    expect(calls.filter((c) => c === "POST /api/auth/invitations/accept")).toHaveLength(1);
   }, 15000);
 });
