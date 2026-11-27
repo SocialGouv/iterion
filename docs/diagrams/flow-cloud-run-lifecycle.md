@@ -148,7 +148,7 @@ stateDiagram-v2
 | `cred_pools`, `cred_pledges`, `cred_leases`, `cred_pool_usage` | server, runner | a pool-funded slot and the spend reported against it |
 | `webhook_deliveries` | server | the `launch_error` row an inbound denial writes |
 | `"NATS KV: iterion-run-locks"` | runner | the claim itself: `LeaseInfo` under a 60 s bucket TTL |
-| `"S3: ir/<run_id>.json"` | server, runner | the out-of-band IR when the envelope exceeds `max_payload` |
+| `"S3: ir/<run_id>-bundle-ir-<digest>-<nonce>.json"` | server, runner | the out-of-band IR when the envelope exceeds `max_payload`, keyed by the SHA-256 of its bytes and a nonce drawn for each publication; the runner checks the bytes against the message's `ir_ref.digest` |
 
 The `leases` collection is **not** on this path's claim: it elects idempotent server-side nets for load, never the runner's exclusion.
 

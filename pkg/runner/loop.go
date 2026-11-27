@@ -997,6 +997,20 @@ func classifyExecResult(execErr error, runID string) execOutcome {
 			logArgs:     []any{runID, attachmentsFetchNakDelay, execErr},
 		}
 	}
+	// The stored out-of-band IR is not the program this message published
+	// (its bytes miss the message's digest): every redelivery fetches the
+	// same object, so Ack like any unloadable IR — with the cause and the
+	// way out that fit it, not the fleet-skew advice below.
+	if errors.Is(execErr, ErrIRDigestMismatch) {
+		return execOutcome{
+			finalStatus: "ir_unloadable",
+			op:          "ack-ir-unloadable",
+			action:      actionAck,
+			level:       logError,
+			logFmt:      "runner: run %s: the stored out-of-band IR is not the program its message published — failed_resumable, NOT redelivered: resume to republish the run's current program (%v)",
+			logArgs:     []any{runID, execErr},
+		}
+	}
 	// The IR does not load on this runner (a server ahead of the fleet):
 	// deterministic here, so Ack — a redelivery reaches the same runner
 	// image and the same verdict, eight times, then the DLQ park overwrites
@@ -2656,7 +2670,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage, usageOut
 		defer cancel()
 	}
 
-	wf, err := loadWorkflow(ctx, msg, store.AsIRBlobStore(r.cfg.Store))
+	wf, err := loadWorkflow(ctx, msg, store.AsIRBlobStore(r.cfg.Store), r.cfg.Logger)
 	if err != nil {
 		if errors.Is(err, ErrIRUnloadable) {
 			r.failUnloadableIR(ctx, msg, err)
@@ -3409,7 +3423,12 @@ func (r *Runner) resetRetryCircuitAfterSuccessfulExecution(ctx context.Context, 
 // it out-of-band (T-42) and sends an IRRef instead, which the runner
 // fetches here via the store's IRBlobStore seam (blobs may be nil for a
 // store without the seam — then an IRRef is unrecoverable and fails loudly).
-func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlobStore) (*ir.Workflow, error) {
+//
+// The fetched bytes must hash to IRRef.Digest: anything else is not the
+// program this message published, and is refused as ErrIRDigestMismatch.
+// A legacy reference — no digest, from a publisher that does not stamp
+// one — loads unchecked, and logger says so.
+func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlobStore, logger *iterlog.Logger) (*ir.Workflow, error) {
 	raw := msg.IRCompiled
 	if len(raw) == 0 {
 		if msg.IRRef == nil || msg.IRRef.StorageKey == "" {
@@ -3421,6 +3440,13 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 		fetched, err := blobs.GetIRBlob(ctx, msg.IRRef.StorageKey)
 		if err != nil {
 			return nil, fmt.Errorf("runner: fetch out-of-band IR %s for run %s: %w", msg.IRRef.StorageKey, msg.RunID, err)
+		}
+		if want := msg.IRRef.Digest; want != "" {
+			if got := queue.IRDigest(fetched); got != want {
+				return nil, fmt.Errorf("runner: %w: %s holds sha256 %s, run %s's message published sha256 %s", ErrIRDigestMismatch, msg.IRRef.StorageKey, got, msg.RunID, want)
+			}
+		} else {
+			logger.Warn("runner: run %s: out-of-band IR %s carries no digest (a legacy reference) — loaded without the digest check", msg.RunID, msg.IRRef.StorageKey)
 		}
 		raw = fetched
 	}
@@ -3447,6 +3473,13 @@ func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlob
 // it on the DLQ with the diagnosis overwritten, which is how five runs died
 // mute on a five-release server/runner skew.
 var ErrIRUnloadable = errors.New("the IR does not load on this runner")
+
+// ErrIRDigestMismatch marks an out-of-band IR whose stored bytes do not hash
+// to the digest its message carries: it is not the program that message
+// published. It is an ErrIRUnloadable — every redelivery fetches the same
+// object and reaches the same verdict — so the delivery is acked and the run
+// fails resumable; a resume republishes the run's current program.
+var ErrIRDigestMismatch = fmt.Errorf("%w: the stored IR is not the program its message published", ErrIRUnloadable)
 
 // compileErrors keeps the diagnostics that blocked the load: the compiler
 // appends warnings and errors in compile order, so an unfiltered head of
@@ -3477,13 +3510,19 @@ func summariseDiagnostics(diags []ir.Diagnostic) string {
 
 // failUnloadableIR writes the verdict a mute runner never wrote: the run
 // goes failed_resumable with a typed code — resumable, because a resume
-// after the fleet is aligned re-compiles the source on the server — and a
+// after the fleet is aligned re-compiles the source on the server, and a
+// resume republishes the program a digest mismatch could not load — and a
 // run_failed event carries the runner's version beside the workflow hash,
-// so the skew is readable from the run alone.
+// so the skew is readable from the run alone. The hint names the way out
+// that fits the cause.
 func (r *Runner) failUnloadableIR(ctx context.Context, msg *queue.RunMessage, cause error) {
+	hint := "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume"
+	if errors.Is(cause, ErrIRDigestMismatch) {
+		hint = "the stored out-of-band IR is not the program this message published; resume to republish the run's current program"
+	}
 	r.recordPreEngineRefusal(ctx, msg, cause, preEngineVerdict{
 		Phase: "workflow_ir", Code: store.FailureIRUnloadable, Disposition: store.PreEngineFinalVerdict, FinalStatus: store.RunStatusFailedResumable,
-		Hint:    "the IR was compiled by a server this runner cannot follow; align the runner with the server, then resume",
+		Hint:    hint,
 		Details: map[string]any{"workflow_hash": msg.WorkflowHash},
 	})
 }

@@ -351,7 +351,7 @@ erDiagram
         int64 lease_epoch
     }
     "S3: artifacts and backend sessions" {
-        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>.json, sessions/<run>/<ref>, runfiles/<run>/<path>, uploads/<upload>/<file>"
+        string key PK "artifacts/<run>/<node>/<v>.json, attachments/<run>/<name>/<file>, tools/<run>/<toolUseID>/<kind>, ir/<run>-bundle-ir-<digest>-<nonce>.json, sessions/<run>/<ref>, runfiles/<run>/<path>, uploads/<upload>/<file>"
     }
     "NATS KV: run locks" {
         string key PK "the run id"
@@ -383,7 +383,7 @@ Outside Mongo, a cloud run writes into six S3 key spaces of one bucket — besid
 | S3, bucket `iterion-artifacts` (the default name) | `artifacts/<run>/<node>/<version>.json` | one object per artifact revision of a node |
 | S3 | `attachments/<run>/<name>/<file>` | the attachment bodies `runs.attachments` indexes — plus the reserved name `__gitdiff`, where a per-file diff too large to inline is offloaded and deliberately left OUT of that index |
 | S3 | `tools/<run>/<toolUseID>/input` · `/output` | one object per tool call and direction |
-| S3 | `ir/<run>.json` · `ir/<run>-bundle-<digest>.json` | the compiled IR when it rides out of band, and the immutable bundle snapshot when it exceeds the queue payload — both deleted by `DeleteRunIR` |
+| S3 | `ir/<run>-bundle-ir-<digest>-<nonce>.json` · `ir/<run>-bundle-<digest>.json` · `ir/<run>.json` | the compiled IR when it rides out of band, under the SHA-256 of its bytes (the digest `ir_ref.digest` carries and the runner checks) and a nonce drawn for each publication; the immutable bundle snapshot when it exceeds the queue payload; and the legacy per-run IR key, read, not written — all deleted by `DeleteRunIR` |
 | S3 | `sessions/<run>/<ref>` | the backend conversation a resume reattaches to |
 | S3 | `runfiles/<run>/<rel path>` | tool-produced files |
 | S3 | `uploads/<upload>/<file>` | an upload a launch form staged and no run claimed yet — reached only through its `staged_uploads` record, read under the tenant filter, never presigned, swept after an hour (bytes, then record) |

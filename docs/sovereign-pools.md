@@ -107,7 +107,9 @@ The isolation chain, in the order a run meets it:
    pool boundary by construction.
 8. **Object storage reads are tenant-mediated**: an IR blob (or bundle
    snapshot) read resolves the run id embedded in its key and loads that
-   run under the caller's tenant filter before touching the bucket — a
+   run under the caller's tenant filter before touching the bucket (a cloud
+   launch refuses a caller-chosen run id that carries `-bundle-`, the infix
+   that ends the run id inside an IR blob id, or ends with `-bundle`) — a
    foreign tenant's key refuses with the same not-found a missing blob
    would return, and an unattributed caller fails closed. The S3
    credential remains deployment-wide (the accepted residual: the pods

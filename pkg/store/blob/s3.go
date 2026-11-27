@@ -552,8 +552,9 @@ func (c *S3Client) GetToolBlobRange(ctx context.Context, runID, toolUseID, kind 
 	return data, total, eof, nil
 }
 
-// PutIRBlob uploads an out-of-band compiled IR under ir/<runID>.json.
-// Idempotent: re-PUTting the same run replaces the bytes.
+// PutIRBlob uploads an out-of-band IR blob under ir/<logicalID>.json (a
+// compiled IR's content id, or a bundle snapshot's). Idempotent: re-PUTting
+// the same logical id replaces the bytes.
 func (c *S3Client) PutIRBlob(ctx context.Context, runID string, body []byte) error {
 	key, err := irBlobKey(runID)
 	if err != nil {
@@ -577,7 +578,7 @@ func (c *S3Client) putIRBlobKey(ctx context.Context, key string, body []byte) er
 
 // GetIRBlob fetches the IR bytes for the given storage key (as carried on
 // queue.IRRef.StorageKey). The key is re-validated against the canonical
-// ir/<run_id>.json shape before use so a tampered reference on the wire
+// ir/<logical_id>.json shape before use so a tampered reference on the wire
 // can never widen the key space. Returns ErrArtifactNotFound when absent.
 func (c *S3Client) GetIRBlob(ctx context.Context, storageKey string) ([]byte, error) {
 	key, err := validateIRBlobKey(storageKey)
@@ -606,9 +607,10 @@ func (c *S3Client) getIRBlobKey(ctx context.Context, key string) ([]byte, error)
 	return body, nil
 }
 
-// DeleteRunIR removes every IR object of the run: the ir/<runID>.json blob
-// and the bundle snapshots under ir/<runID>-bundle-. Both are attempted; the
-// failures come back joined. Idempotent.
+// DeleteRunIR removes every IR object of the run: the legacy ir/<runID>.json
+// blob and the run's "-bundle-" family under ir/<runID>-bundle- (the
+// compiled IRs under their content ids, and the bundle snapshots). Both are
+// attempted; the failures come back joined. Idempotent.
 func (c *S3Client) DeleteRunIR(ctx context.Context, runID string) error {
 	key, err := irBlobKey(runID)
 	if err != nil {

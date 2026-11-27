@@ -33,7 +33,8 @@ func SelectScopedIR(client Client, scope store.IncarnationDataScope) (IRObjects,
 	return capable.IRForScope(scope)
 }
 
-// IRBlobKeyForScope accepts the original run or its bundle snapshot spelling.
+// IRBlobKeyForScope accepts the original run or one of its "-bundle-" ids (a
+// bundle snapshot, or a compiled IR's content id).
 // The owner comes from the retained binding, never by splitting an arbitrary ID.
 func IRBlobKeyForScope(scope store.IncarnationDataScope, logicalID string) (string, error) {
 	prefix, err := scope.BlobPrefix()
@@ -46,7 +47,7 @@ func IRBlobKeyForScope(scope store.IncarnationDataScope, logicalID string) (stri
 	}
 	owner := scope.Header().RunID
 	if logicalID != owner {
-		suffix, ok := strings.CutPrefix(logicalID, owner+"-bundle-")
+		suffix, ok := strings.CutPrefix(logicalID, owner+store.IRBlobFamilyInfix)
 		if !ok || suffix == "" {
 			return "", store.ErrRunDataIdentityChanged
 		}

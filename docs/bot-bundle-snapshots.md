@@ -21,10 +21,12 @@ are excluded. Binary contents and executable bits are preserved.
 `BotBundle` carries the snapshot JSON and its SHA-256 digest. If it would make
 the queue message too large, the publisher uses the existing out-of-band JSON
 blob transport, under `ir/<run-id>-bundle-<digest>.json`; the workflow's IR
-remains a separate object. A content-specific key prevents a resumed attempt
-from overwriting the snapshot referenced by an older queued message. The runner
-checks the digest and paths before materializing a private temporary collection,
-then removes the entire collection when the attempt ends. Bundle prompts merge
+remains a separate object, `ir/<run-id>-bundle-ir-<digest>-<nonce>.json` when
+it is offloaded too, the nonce drawn for each publication. A content-specific
+key prevents a resumed attempt from overwriting the snapshot referenced by an
+older queued message, and the IR's per-publication key does the same for the IR.
+The runner checks the digest and paths before materializing a private temporary
+collection, then removes the entire collection when the attempt ends. Bundle prompts merge
 into the serialized workflow AST, just as they do during server compilation, and
 every `{{include}}` in a prompt — in `main.bot` or in `prompts/*.md` — is
 resolved into the prompt body on the server: the AST that travels is

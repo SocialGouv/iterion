@@ -19,15 +19,15 @@ import (
 // live in S3, not Mongo — matching artifacts + tool blobs.
 var _ store.IRBlobStore = (*Store)(nil)
 
-// PutIRBlob implements store.IRBlobStore: PUT the marshaled IR to S3 under
-// ir/<runID>.json and return that key for queue.IRRef.StorageKey.
-func (s *Store) PutIRBlob(ctx context.Context, runID string, body []byte) (string, error) {
-	key, err := blob.IRBlobKey(runID)
+// PutIRBlob implements store.IRBlobStore: PUT the blob to S3 under
+// ir/<logicalID>.json and return that key for queue.IRRef.StorageKey.
+func (s *Store) PutIRBlob(ctx context.Context, logicalID string, body []byte) (string, error) {
+	key, err := blob.IRBlobKey(logicalID)
 	if err != nil {
 		return "", err
 	}
-	if err := s.blob.PutIRBlob(ctx, runID, body); err != nil {
-		return "", fmt.Errorf("store/mongo: put IR blob %s: %w", runID, err)
+	if err := s.blob.PutIRBlob(ctx, logicalID, body); err != nil {
+		return "", fmt.Errorf("store/mongo: put IR blob %s: %w", logicalID, err)
 	}
 	return key, nil
 }
@@ -52,9 +52,11 @@ func (s *Store) GetIRBlob(ctx context.Context, storageKey string) ([]byte, error
 	}
 	ownerRun := embedded
 	if _, err := s.LoadRun(ctx, ownerRun); err != nil {
-		// The snapshot shape embeds "<runID>-bundle-<digest>": fall back
-		// to the owning run before the prefix.
-		if i := strings.LastIndex(embedded, "-bundle-"); i > 0 {
+		// The "-bundle-" family — a bundle snapshot's
+		// "<runID>-bundle-<digest>", a compiled IR's content id
+		// "<runID>-bundle-ir-<digest>-<nonce>" — resolves to the owning run
+		// before the last "-bundle-".
+		if i := strings.LastIndex(embedded, store.IRBlobFamilyInfix); i > 0 {
 			ownerRun = embedded[:i]
 		}
 		if _, err := s.LoadRun(ctx, ownerRun); err != nil {

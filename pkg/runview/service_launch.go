@@ -269,7 +269,15 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return res, err
 		}
 	} else if IsSubmissionRunID(spec.RunID) {
-		return nil, fmt.Errorf("%w: %q", ErrRunIDReserved, spec.RunID)
+		return nil, fmt.Errorf("%w for idempotent submissions: %q", ErrRunIDReserved, spec.RunID)
+	} else if store.RunIDCarriesIRBlobFamilyInfix(spec.RunID) && store.AsIRBlobStore(s.store) != nil {
+		// Refused before the taken-id lookup and everything that acts on the
+		// id, on a store with an IR blob key space: a run named
+		// "<other run>-bundle-<suffix>" would own that run's IR blob key as
+		// its own, and the deletion of "<other run>" would sweep the IR
+		// objects of a run named "<other run>-bundle". A local store has no
+		// IR blob key space, and takes either id.
+		return nil, fmt.Errorf("%w: %q carries %q, the infix of a run's IR blob ids, or ends with %q", ErrRunIDReserved, spec.RunID, store.IRBlobFamilyInfix, strings.TrimSuffix(store.IRBlobFamilyInfix, "-"))
 	}
 	// A run launched FROM another works on what that run produced, so it is
 	// never more trusted than it (inheritSourceTrust) — settled before the
@@ -362,8 +370,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// Cloud-mode: hand off to the runner pool via the queue. The
 	// publisher persists the run in Mongo as queued + emits the
 	// RunMessage; the runner pod takes it from there. We compile
-	// the workflow here so the wire payload carries an inline IR
-	// (the runner currently doesn't support IRRef fallback). When
+	// the workflow here so the wire payload carries the IR (inline,
+	// or offloaded under its content id when it exceeds the queue
+	// payload — the publisher's IRRef fallback). When
 	// Source is supplied (cloud HTTP API) we compile from memory
 	// instead of reading from disk — the server pod has no shared
 	// filesystem with the client.

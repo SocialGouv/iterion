@@ -488,6 +488,54 @@ in its launch override is refused rather than run with an ambiguous contract.
 **Order: runner-first.** Upgrade the runners before publishing v35 messages.
 The separate delegated runner handshake is not negotiated by this queue version.
 
+## `ir_ref.digest`: additive inside v35, no bump
+
+**What rose.** `ir_ref.digest`, the SHA-256 of the compiled IR the publisher
+offloads out of band, beside the key it is stored under,
+`ir/<run_id>-bundle-ir-<digest>-<nonce>.json`, the nonce being 128 random
+bits drawn for each publication (#3835). The runner refuses fetched bytes
+that miss the digest (`ErrIRDigestMismatch`, an `IR_UNLOADABLE` verdict,
+acked; a resume republishes the run's program).
+
+**Why no bump — the exemption, both conditions.** A runner that ignores the
+field still fetches the publication's own key, and no other publication
+writes there. The one way a caller can write a chosen `ir/` key is to name a
+run after it: a server of the previous release refuses no run id, and its
+publisher stashes a run's oversized IR under `ir/<run_id>.json`. The nonce
+makes the key unguessable, whichever servers and runners are rolled or
+rolled back: it is named only on the run's own queue message, in operator
+logs, and in the run's own error once loading it failed. An old runner
+therefore cannot load another publication's program through a guessed key,
+so it cannot fail open on what the digest guards, but for the residual
+below. And the publisher derives the value; no operator chose it.
+`SchemaVersion` and `MinSchemaVersion` stay where they are.
+
+**Mixed fleet.** The key sits in the run's `-bundle-` family, which the
+previous release already validates, tenant-mediates and sweeps: an old
+runner loads a new message's IR without the check, as it loads every IR. A
+new runner loads a message an old publisher queued (`ir/<run_id>.json`, no
+digest) and logs `carries no digest` for it.
+
+**Order: either; runner-first advised.** No roll order lets a caller guess
+the key, and a rollback needs no queue or DLQ drain to keep a guessed key
+out. One narrow residual does depend on the order: a fetch that fails
+records the key in the run's own error, which the run's tenant reads while
+the message awaits redelivery. While a server of the previous release still
+serves, a reader of that error could launch a run named after the key, and
+that server's publisher would store the reader's oversized program there
+before the next fetch. A new runner refuses those bytes on the digest; an old runner
+would load them as the run's program. Rolled runner-first, no old runner
+takes such a redelivery during the upgrade; a rollback that brings old
+runners back while such a redelivery is pending reopens it.
+
+Once the servers are rolled, check that
+`db.runs.countDocuments({_id: /-bundle(-|$)/})` returns 0. A server of the
+previous release lets a run take an id that carries `-bundle-` or ends with
+`-bundle`; the new release refuses both on a cloud launch. A run with the
+first shape names another run's IR object as its own: its tenant reads it,
+and its deletion deletes it. A run with the second has its IR objects swept
+by the deletion of the run named before that ending.
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 These two paths accompany the **server-first** default. Choose **one** of

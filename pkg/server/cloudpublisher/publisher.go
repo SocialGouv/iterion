@@ -12,11 +12,13 @@ package cloudpublisher
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/SocialGouv/iterion/pkg/dsl/unit"
 	"github.com/google/uuid"
+	"io"
 	"slices"
 	"sort"
 	"strings"
@@ -265,6 +267,10 @@ type Publisher struct {
 	// — the bundle then serializes exactly as before this field existed.
 	// An error refuses the launch or resume.
 	priceFeedEffective func(ctx context.Context, orgID, teamID string, named []string) (json.RawMessage, error)
+	// irNonceSource is nil in production: an offloaded IR's content id
+	// draws its nonce from crypto/rand.Reader. Tests replace it to exercise
+	// a source that fails.
+	irNonceSource io.Reader
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
 	// add a Mongo read per launch (team/org membership changes are
@@ -5530,15 +5536,21 @@ const irEnvelopeReserve = 64 * 1024
 // offloadOversizedIR swaps the inline compiled IR for a lightweight IRRef
 // when the marshaled RunMessage would exceed the NATS max_payload. It
 // stashes the IR in the store's out-of-band blob backend (S3, via the
-// IRBlobStore seam) keyed by run id and points the message at it. This is
-// the T-42 fallback that keeps a workflow whose compiled IR is larger than
-// the payload budget (default 1 MiB) dispatchable instead of hard-failing
-// at enqueue.
+// IRBlobStore seam) under its content id — the run id, the SHA-256 of the
+// exact bytes and a nonce drawn for this publication
+// (store.IRContentLogicalID) — and points the message at it with that
+// digest, which the runner checks before compiling. Every publication of
+// the same run (a resume, a re-publish after a reverted flip), even of
+// identical bytes, writes its own object, so a redelivery of this message
+// still loads this program. This is the T-42 fallback that keeps a workflow
+// whose compiled IR is larger than the payload budget (default 1 MiB)
+// dispatchable instead of hard-failing at enqueue.
 //
 // No-op when: NATS is not wired (unit tests stub publishRun), the message
 // already carries an IRRef, there is no inline IR, or the IR comfortably
 // fits. Fails loudly — rather than silently truncating — when the IR is
-// oversized but the store cannot host an IR blob.
+// oversized but the store cannot host an IR blob, and — rather than naming
+// the blob with a predictable id — when the nonce source fails.
 func (p *Publisher) offloadOversizedIR(ctx context.Context, msg *queue.RunMessage) error {
 	if p.maxPayload == nil || msg.IRRef != nil || len(msg.IRCompiled) == 0 {
 		return nil
@@ -5568,12 +5580,21 @@ func (p *Publisher) offloadOversizedIR(ctx context.Context, msg *queue.RunMessag
 	if err != nil {
 		return err
 	}
-	key, err := blobs.PutIRBlob(ctx, msg.RunID, msg.IRCompiled)
+	digest := queue.IRDigest(msg.IRCompiled)
+	nonceSource := p.irNonceSource
+	if nonceSource == nil {
+		nonceSource = rand.Reader
+	}
+	logicalID, err := store.IRContentLogicalID(msg.RunID, digest, nonceSource)
+	if err != nil {
+		return fmt.Errorf("cloudpublisher: name oversized IR for run %s: %w", msg.RunID, err)
+	}
+	key, err := blobs.PutIRBlob(ctx, logicalID, msg.IRCompiled)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: stash oversized IR for run %s: %w", msg.RunID, err)
 	}
 	msg.IRCompiled = nil
-	msg.IRRef = &queue.IRRef{StorageKey: key, Backend: backend}
+	msg.IRRef = &queue.IRRef{StorageKey: key, Backend: backend, Digest: digest}
 	p.logger.Info("cloudpublisher: run %s compiled IR (%d bytes) exceeds NATS max_payload %d — offloaded to %s:%s", msg.RunID, len(body), maxPayload, backend, key)
 	return nil
 }

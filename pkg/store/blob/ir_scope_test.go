@@ -25,7 +25,8 @@ func TestScopedIRLateWriterAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, logical := range []string{"run", "run-bundle-digest"} {
+	contentID := irContentID(t, "run", []byte(`{"program":"run"}`))
+	for _, logical := range []string{"run", "run-bundle-digest", contentID} {
 		if err := next.PutIRBlob(t.Context(), logical, []byte("successor")); err != nil {
 			t.Fatal(err)
 		}
@@ -39,7 +40,7 @@ func TestScopedIRLateWriterAndCleanup(t *testing.T) {
 	if err := c.DeleteRunIR(t.Context(), "run"); err != nil {
 		t.Fatal(err)
 	}
-	for _, logical := range []string{"run", "run-bundle-digest"} {
+	for _, logical := range []string{"run", "run-bundle-digest", contentID} {
 		key, err := IRBlobKeyForScope(nextScope, logical)
 		if err != nil {
 			t.Fatal(err)
@@ -53,6 +54,18 @@ func TestScopedIRLateWriterAndCleanup(t *testing.T) {
 		}
 		if _, err := c.GetIRBlob(t.Context(), key); err == nil {
 			t.Fatal("legacy view accepted scoped key")
+		}
+	}
+	if err := next.DeleteRunIR(t.Context(), "run"); err != nil {
+		t.Fatal(err)
+	}
+	for _, logical := range []string{"run", "run-bundle-digest", contentID} {
+		key, err := IRBlobKeyForScope(nextScope, logical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := next.GetIRBlob(t.Context(), key); !errors.Is(err, ErrArtifactNotFound) {
+			t.Fatalf("%s readable after the scope's DeleteRunIR: %v", logical, err)
 		}
 	}
 	for _, method := range []string{"Close", "PutArtifact", "IRForScope", "RunObjectsForScope"} {

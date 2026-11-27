@@ -55,10 +55,14 @@ func IsSubmissionRunID(id string) bool {
 	return strings.HasPrefix(id, submissionRunIDPrefix)
 }
 
-// ErrRunIDReserved refuses a caller-chosen run id inside the namespace
-// reserved for submissions: it would occupy the id a submission derives, and
-// the submission would then find a run it cannot tell from its own.
-var ErrRunIDReserved = errors.New("runview: run id is reserved for idempotent submissions")
+// ErrRunIDReserved refuses a caller-chosen run id the platform reserves. One
+// inside the submission namespace would occupy the id a submission derives,
+// and the submission would then find a run it cannot tell from its own. On a
+// store with an IR blob key space, one carrying store.IRBlobFamilyInfix or
+// ending with "-bundle" would share an IR blob key, or a sweep prefix, with
+// another run (store.RunIDCarriesIRBlobFamilyInfix); a local store, which
+// has no such key space, takes it.
+var ErrRunIDReserved = errors.New("runview: run id is reserved")
 
 // ErrSubmissionSpent is the class of SubmissionSpentError, for errors.Is.
 var ErrSubmissionSpent = errors.New("runview: the submission's run never left its launch path")

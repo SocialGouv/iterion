@@ -36,7 +36,7 @@ func (p *Publisher) offloadBundleSnapshot(ctx context.Context, msg *queue.RunMes
 	if err != nil {
 		return err
 	}
-	key, err := blobs.PutIRBlob(ctx, msg.RunID+"-bundle-"+ref.SnapshotDigest, ref.Snapshot)
+	key, err := blobs.PutIRBlob(ctx, msg.RunID+store.IRBlobFamilyInfix+ref.SnapshotDigest, ref.Snapshot)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: store immutable bundle snapshot: %w", err)
 	}
