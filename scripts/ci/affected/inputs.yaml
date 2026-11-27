@@ -1,0 +1,480 @@
+# Declarations of scripts/ci/affected — the test selector (#3739).
+#
+# Read by `task ci:affected` and held by guard_test.go. The selector derives
+# what it can (the Go import graph with tests, directory ownership, embeds);
+# this file says the rest:
+#
+#   global    a change here selects EVERYTHING. A changed file that no rule
+#             of this file, no package directory and no leg claims selects
+#             everything too, and says so.
+#   packages  per package directory, what its tests read OUTSIDE that
+#             directory: `reads` (path globs), `module` (the tests compile or
+#             type-check the whole module), `reach` (the tests build these
+#             package directories). guard_test.go scans every _test.go for
+#             reads that climb out of their directory or reach the repository
+#             root and fails on one this section does not cover.
+#   legs      every job of .github/workflows/tests.yml: the `paths` that can
+#             change its verdict, the Go `packages` it tests (`x/...` for a
+#             subtree, `...` for all), the binaries it runs (`reach`), whether
+#             a deletion selects it (`on_delete`), what it `aggregates`.
+#             guard_test.go holds this section total over the workflow's jobs;
+#             legsteps_test.go holds each leg's paths over what its job's
+#             non-`go test` steps read (working directory, package manager
+#             manifests, the scripts it runs and what they name).
+#
+# Globs: `**` is any number of whole segments, `*` stays within one.
+# Under-selection is a false green: when in doubt, declare more. The scan is
+# static and cannot see every way a test finds the repository root, so these
+# declarations are not proven complete: the selector is an advisory local
+# tool CI does not call (main.go, #3739).
+
+global:
+  - pattern: go.mod
+    why: the module definition — every build and every package's imports
+  - pattern: go.sum
+    why: the module checksums every build verifies
+  - pattern: vendor/**
+    why: the vendored dependencies every build compiles (-mod=vendor)
+  - pattern: third_party/**
+    why: local replace targets, vendored into vendor/ by `go mod vendor`
+  - pattern: .github/**
+    why: the workflows, the gate map and the CI configuration decide what runs and how
+  - pattern: scripts/ci/**
+    why: the CI tooling, this selector and its declarations included
+  - pattern: Taskfile.yml
+    why: every task the CI and the local gates call
+  - pattern: devbox.json
+    why: the pinned toolchain every local gate runs on
+  - pattern: devbox.lock
+    why: the resolved toolchain pins
+  - pattern: .gitattributes
+    why: "the checkout's attributes (eol, filters) rewrite the bytes of every file they match: a `*.sh eol=crlf` breaks every shebang and every script a leg or a test runs"
+  - pattern: "**/.gitattributes"
+    why: a nested .gitattributes rewrites the checked-out bytes of its whole subtree the same way
+
+packages:
+  bots:
+    reads: ["pkg/botreplay/testdata/bot-goldens/rgaa-audit/*.json", "scripts/ultra11y-engine/**", "scripts/ultra11y-engine.sh", "scripts/ultra11y-pin.sh", "README.md", "examples/cursors/cursors.bot"]
+    why: "the behaviour tests read bots/ (their own directory, ultra11y.pin included) and compile bundles whose imports stay under bots/; TestRgaaAuditEngineDrivenNodes' golden subtest reads the two rgaa-audit batch goldens of pkg/botreplay, and the rgaa engine-contract tests read and run scripts/ultra11y-engine{,.sh} and scripts/ultra11y-pin.sh. README.md is a symlink target written into a temp repository by delivery_gate_test.go and examples/cursors/cursors.bot a map key of catalog_shared_helpers_test.go — neither is read, the scan names both. The whole-tree catalogue sweeps live in internal/sweep/{catalogcorpus,catalogclaims,publishedtree,e2ematrix,sandboximages} (#3758)"
+  charts/iterion:
+    reads: ["charts/**", "scripts/chart-kind-wait.sh", "scripts/chart-check-deps.sh", "scripts/chart-render-diff.sh", "Taskfile.yml", ".github/workflows/*.yml", ".github/workflows/*.yaml", "devbox.json", "devbox.lock", "scripts/**"]
+    why: "the kind-wait tests read the Taskfile, the workflows and devbox; the deps and render-diff tests run the chart scripts over charts/; plus paths named literally in render_diff_scratch_test.go"
+  cmd/iterion:
+    reads: ["**/*.go", "docs/environment-variables.md", "pkg/**"]
+    why: "TestBotVarsOverlayIsInstalledThroughTheCheckedLookup walks every non-test .go file from the module root; the schema-ensurer and trusted-proxy tests read pkg/**/*.go and named sources; plus paths named literally in server_schema_ensurers_test.go, server_trusted_proxy_test.go"
+  e2e:
+    reads: ["bots/**", "examples/**", ".botz/**", ".gitignore", "README.md", "SKILL.md", "cmd/iterion/**", "connectors/**", "docs/adr/**", "package.json", "skills/**"]
+    reach: [cmd/iterion, examples/mcp_test_server]
+    why: "fixtures resolve under bots/ then examples/, ValidBots walks bots/, examples/ and .botz/; cli_server_boot and mcp_server build cmd/iterion (and live tests examples/mcp_test_server); plus paths named literally in cli_server_boot_test.go, connector_action_test.go, extra_skills_test.go, live_bot_adr_cartograph_test.go, live_test.go, prod_watch_budget_test.go"
+  internal/automaintguard:
+    reads: ["docs/auto-maintenance.md", "scripts/auto-maintenance-check.sh"]
+    why: "tests read paths named literally in preflight_test.go"
+  internal/ciguard:
+    reads: [".github/**", "scripts/**", "ci/**", "Taskfile.yml", "AGENTS.md", "docs/merge-policy.md", "docs/agents/workflow/review-and-merge.md", "docs/agents/workflow/push-to-main.md", "renovate.json", "Formula/**", "Cask/**", ".release-it.mjs", "**/*_test.go", "CHANGELOG.md", "charts/iterion/Chart.yaml", "internal/mdcode/testdata/committed-reading.txt", "package.json", "docker/**", "openapi.json", "pkg/sandbox/**", "studio/e2e/**", "studio/src/api/schema.ts", "**/Dockerfile", "**/Dockerfile.*", "**/Containerfile"]
+    why: "parses the workflows, the gate map, the Taskfile, AGENTS.md, the merge-policy pages, ci/arc-runner and Formula/Cask, runs workflow run steps and scripts, walks every _test.go (native_exec_runner) and stats the paths-ignore files; plus paths named literally in e2e_shards_test.go, gate_map_test.go, light_pr_lanes_test.go, native_exec_runner_test.go, openapi_check_test.go, renovate_pins_test.go; TestEveryDockerfileVersionPinIsManagedByRenovate walks the tree from the repository root and reads every Dockerfile, Dockerfile.* and Containerfile outside renovate.json's ignorePaths, against renovate.json and go.mod"
+  internal/corpusreading:
+    reads: [".release-it.mjs"]
+    why: "tests read paths named literally in corpusreading_test.go"
+  internal/docsguard:
+    reads: ["docs/**", "pkg/**/*.go", "internal/**/*.go", "cmd/**/*.go", "studio/src/views/teams/TeamPage.tsx", "studio/src/views/integrations/IntegrationsPage.tsx", "studio/src/views/teams/tabs/integrations/EnableRepoPanel.tsx", "bots/review-pr/**", "examples/review-merge-gate.bot", "README.md"]
+    why: "walks docs/, docs/adr and docs/diagrams, the Go sources of pkg/internal/cmd, the forge-enable studio views, and every target docs/references/dsl-authoring-probe.md names; plus paths named literally in adr_numbers_test.go"
+  internal/envtrust:
+    reads: ["**/*.go", "cmd/**", "internal/**", "pkg/**"]
+    why: "lookpath_class sweeps every .go file through sweepwalk.GoFiles; routing_completeness and execution_round8 read pkg/internal/cmd and named vendored sources; plus paths named literally in routing_completeness_test.go"
+  internal/floorsalign:
+    reads: ["pkg/**/*.go", ".release-it.mjs", "package.json", "pnpm-lock.yaml"]
+    why: "TestTheRealRegistryResolvesAgainstThisRepo walks pkg/ .go files; the release hook tests read .release-it.mjs and run the installed release-it"
+  internal/floortest:
+    reads: ["**/*_test.go"]
+    why: "TestNoTestSpellsABelowFloorAsAnotherPin walks every _test.go from the root"
+  internal/fswatch:
+    reads: ["**/*.go", "studio/**"]
+    module: true
+    why: "TestEveryRawWatcherAddGoesThroughFswatch runs go list -test -export over the whole module; the constructor sweep parses every .go file; plus paths named literally in callers_test.go"
+  internal/isolationenv:
+    reads: ["**/*.go"]
+    why: "the isolation-variable tests read every tracked .go file from git ls-files"
+  internal/layerguard:
+    reads: ["**/*.go", "docs/layering.md", "pkg/backend/**", "pkg/backend/tool/privacy/detector/**", "pkg/cli/**", "pkg/dsl/**", "pkg/runner/**", "pkg/runtime/**", "pkg/server/**", "pkg/server/cloudpublisher/**"]
+    module: true
+    why: "layering_test runs go list ./... in several GOOS and tag contexts plus go list -deps, walks pkg/ and internal/ sources and reads docs/layering.md; plus paths named literally in layering_test.go"
+  internal/mdcode:
+    reads: ["**/*.md", "**/*.yaml", "**/*.yml", "**/.gitattributes"]
+    why: "TestCommittedReading pins every tracked .md/.yaml/.yml through corpusreading.Read, minus what git check-attr marks linguist-generated"
+  internal/pricingtest:
+    reads: ["**/*.go"]
+    module: true
+    why: "TestEveryTestBinaryLinkingALivePricingTierIsIsolated runs go list -test ./... and parses every package's test files"
+  internal/skillshare:
+    reads: ["bots/**"]
+    why: "the shared-skill tests read the declared copies under bots/*/skills, bots/testdata/shared_skills.txt and git ls-files bots"
+  internal/sweep/authorcorpus:
+    reads: ["**/*.bot", "bots/**", "examples/**", "e2e/testdata/**", "**/testdata/**"]
+    why: "TestE056IsSilentExactlyWhenTheTwoFilesAreOneProgram walks every .bot from sweepwalk.ModuleRoot (workflowfile.SkipWalkDir rules) and converts each with its imported units, prompts and fragments; TestTheDiagramOfADocumentIsTheDiagramOfItsBotOverTheCorpus copies bots/ and examples/ whole into a temp workspace and draws every workflow of them"
+  internal/sweep/authorreading:
+    reads: ["**/*.go"]
+    module: true
+    why: "TestNoServerCodeReadsAnAuthorDocument runs modtypes.Load (go list -export over the module) and follows every call chain into pkg/dsl/author; its direct table names pkg/cli/fmt.go, fmt_author.go, validate_author.go, pkg/dsl/canon/document.go and probecheck/main.go"
+  internal/sweep/catalogclaims:
+    reads: ["bots/**", "docs/agents/bots/bot-authoring.md", "docs/agents/bots/convergence.md", "docs/workflow_authoring_pitfalls.md", "docs/improvement-ratchet.md", "docs/security-bots.md", "docs/references-bootstrap.md", "studio/src/lib/chatDock/contextMessage.ts", "studio/src/lib/chatDock/replyNavigation.ts", "studio/src/components/ChatDock/AssistantActionOffer.tsx", "studio/src/lib/botTaxonomy.ts", "pkg/server/server_info.go", "pkg/server/assistant_run_watch.go", "pkg/server/assistant_host_event.go"]
+    why: "the scaffold-staging guard walks bots/ for .bot/.md plus three doctrine pages; the empty-gate claim globs bots/*/{README.md,skills/*.md,*.bot,lib/*.bot} and docs/improvement-ratchet.md; the deepsec docs test reads two bots/ catalogues, the sec-audit-source manifest and skill, docs/security-bots.md and docs/references-bootstrap.md; the copilot protocol test reads bots/copilot/main.bot and its host owners in studio/ and pkg/server; taxonomy parity reads studio/src/lib/botTaxonomy.ts"
+  internal/sweep/catalogcorpus:
+    reads: ["bots/**", "examples/**", ".botz/**", "scripts/adhoc/*.bot", "pkg/cli/templates/dispatch_bots_default.bot", "studio/e2e/fixtures/bots/**", "e2e/testdata/exhaustive_dsl_coverage.bot", "*.md", "docs/**/*.md", "skills/**", "cmd/iterion/**", "pkg/dsl/**", "internal/sweep/**"]
+    why: "TestMain chdirs into <root>/bots, so the scan cannot follow its paths: the guards glob and walk bots/ and ../examples, route discovery reads botregistry.DefaultPaths (bots, examples, .botz), the dial floor reads ../scripts/adhoc/*.bot and the dispatcher's default .bot, the parse floor the studio e2e fixtures and e2e/testdata/exhaustive_dsl_coverage.bot, and the untrusted-boundary guard every docfences.Files page (root *.md, docs/**/*.md, bots/ and examples/ .md). skills/**, cmd/iterion/** and pkg/dsl/** are scan hits of literals that are not reads (a Join tail \"skills\", the universality violation patterns); internal/sweep/** is where the scan misplaces a dormant read: exemptionHolds' \"..\" Join, which TestMain's chdir into bots/ sends to the root and which runs only for a briefPromiseExemptions row (the map is empty)"
+  internal/sweep/e2ematrix:
+    reads: ["**"]
+    why: "the matrix contract sliced out of bots/e2e-coverage/main.bot opens every file docs/e2e-coverage-matrix.md cites and greps the whole tree (untracked files included) for each bare test name; the plan table is recounted from that matrix and docs/e2e-stabilisation-plan.md"
+  internal/sweep/itertoken:
+    reads: ["**"]
+    why: "TestNoIterExtensionAnywhere greps every tracked file from sweepwalk.ModuleRoot"
+  internal/sweep/mintchokepoint:
+    reads: ["**/*.go", "pkg/auth/**", "pkg/configshare/**", "pkg/forge/**", "pkg/server/**", "pkg/webhooks/**"]
+    why: "the verdict-stamper and primitive-caller guards walk every non-test .go file from sweepwalk.ModuleRoot; the primitive and forge guards read the mint directories pkg/auth, pkg/configshare, pkg/forge, pkg/server and pkg/webhooks by name"
+  internal/sweep/modelseams:
+    reads: ["**/*.go"]
+    why: "the global-lookup restore sweep walks every .go file from sweepwalk.ModuleRoot; the launch-vars and codemode-cell sweeps walk the pkg/, cmd/ and internal/ trees and name cmd/iterion/runner.go, pkg/backend/model/claw_backend.go, pkg/dryrun/executor.go and pkg/runtime/resume.go"
+  internal/sweep/publishedtree:
+    reads: ["bots/**", "examples/**", "docs/**", "skills/**", "scripts/**", "charts/**", "ci/**", "internal/sweep/**", "*.md", "**/.gitignore"]
+    why: "TestCatalogNamesNoForeignInfrastructure lists the tracked files of catalogScope (bots, examples, docs, skills, scripts, charts, ci, internal/sweep and the root *.md) from sweepwalk.ModuleRoot, its own file excepted, and TestTheGuardExemptsItsOwnPathOnly reads that file back; the gitignore guard asks check-ignore, which reads every .gitignore on the path"
+  internal/sweep/runtimecatalog:
+    reads: ["bots/**"]
+    why: "the catalogue guards compile and run real bots/*/main.bot nodes, walk every bundle under bots/ for owned-skill parsing and binary resolution, and merge bots/whole-improve-loop/presets"
+  internal/sweep/runtimedocs:
+    reads: ["docs/sandbox.md", "docs/environment-variables.md", "docs/resume.md"]
+    why: "each guard reads one operator page from sweepwalk.ModuleRoot against the production answer it imports"
+  internal/sweep/runtimeseams:
+    reads: ["**/*.go", "pkg/**"]
+    module: true
+    why: "the sandbox command-environment inventory runs modtypes.Load (go list -export over the module); the preset merge-site sweep uses sweepwalk.GoFiles, the simulation sweep walks the module and the subbot-runner sweep walks pkg/"
+  internal/sweep/sandboximages:
+    reads: ["sandbox/browser/Dockerfile", "sandbox/rgaa/Dockerfile", "sandbox/sec/Dockerfile", "Dockerfile.runner-devbox", ".dockerignore", "bots/**"]
+    why: "the image guards read the three sandbox Dockerfiles, Dockerfile.runner-devbox and .dockerignore from sweepwalk.ModuleRoot, and the rgaa-audit and sec-audit bots' main.bot and bots/rgaa-audit/ultra11y.pin; the scan reads the Join tail \"bots\" of the bot helper as the whole bots/ tree"
+  internal/sweep/serversurface:
+    reads: ["cmd/iterion/**", "pkg/cli/**", "pkg/server/**", "pkg/dispatcher/native/http.go", "pkg/dispatcher/manager.go", "docs/**"]
+    why: "the CLI route sweeps read the .go files of cmd/iterion and pkg/cli; routescan.ServedRouteTable derives the served table from pkg/server's registrations, pkg/dispatcher/native/http.go and pkg/dispatcher/manager.go; the REST reference guards read docs/cloud-rest-api.md (the scan reads the Join tail \"docs\" as docs/); the bootstrap guard parses cmd/iterion/server.go"
+  internal/sweep/sweepguard:
+    reads: ["internal/sweep/**"]
+    why: "TestNoParallelSweepTestSharesProcessState lists every directory of internal/sweep (os.ReadDir(\"..\"), so a new sweep package joins the verdict) and parses each one's _test.go files through testparallel.ReadCampaign; only _test.go files are read, but the listing is discovered, so the scan holds the whole tree"
+  internal/sweepwalk:
+    why: "every test runs on t.TempDir fixtures; TestModuleRootJudgesTheExecutionTree chdirs into one, so no repository file is read"
+  internal/tenantguard:
+    reads: ["**/*.go"]
+    why: "TestEveryTenantClauseSiteIsAFamilyHelperOrDeclared finds the module root with `go env GOMOD`, walks every non-test .go file of the tree and parses each one for tenant_id clauses outside the fail-closed helper family; the conditionalByDesign keys (pkg/store/mongo/*.go, pkg/runwatch, pkg/secrets, pkg/runview/runstream) are among those files"
+  pkg/backend/auxllm:
+    reads: ["**/*.go"]
+    why: "the channel sweep parses every non-test .go file through sweepwalk.GoFiles"
+  pkg/backend/backendcaps:
+    reads: ["e2e/testdata/live/ledger.json", "docs/backends.md", "docs/backend-capability-registry.md", "docs/agents/backends/fallbacks-and-parity.md", "Dockerfile", "Dockerfile.runner-devbox", "sandbox/*/Dockerfile", "docker/llm-clis/package.json", "pkg/backend/detect/detect.go", "pkg/backend/delegate/*.go", "pkg/backend/model/*.go", "pkg/backend/automemory/automemory.go", "pkg/backend/toolcatalog/*.go", "pkg/dsl/ir/*.go", "pkg/runview/claw_subagent_wiring_test.go", "cmd/iterion/claw_runner_subagent_test.go"]
+    why: "the ledger and published-proof tests read the live ledger, docs and Dockerfiles; TestInventoryIntegrity opens every evidence path registry.json names (a new evidence path there must be added here)"
+  pkg/backend/delegate:
+    reads: ["docs/**", "bots/**", "pkg/botscaffold/templates/**", "pkg/backend/model/claw*.go", ".gitignore", "AGENTS.md", "CLAUDE.md", "SKILL.md"]
+    why: "readonly_lever_docs_test walks docs/, bots/ and pkg/botscaffold/templates/ and AST-parses ../model/claw*.go; plus paths named literally in claude_code_ambient_clilive_test.go, codex_ambient_clilive_test.go, pi_codex_test.go"
+  pkg/backend/mcp:
+    reads: ["**/*.go", ".mcp.json"]
+    why: "the manager construction sweep AST-parses every .go file through sweepwalk.GoFiles; plus paths named literally in config_test.go"
+  pkg/backend/model:
+    reads: [".mcp.json", "AGENTS.md", "CLAUDE.md", "bots/dep-update-guard/main.bot", "bots/revi-converse/**", "bots/review-pr/**", "cmd/iterion/**", "docs/**", "pkg/backend/compatgw/**", "pkg/backend/delegate/**", "pkg/backend/detect/**", "pkg/backend/modelspecs/**", "pkg/backend/tool/**", "pkg/claw/internal/api/**", "pkg/claw/internal/tools/web_search.go"]
+    reach: [cmd/iterion, pkg/backend/model]
+    why: "still wide through its reach: claw_sandbox_env_class_test runs go list -export -deps on ./pkg/backend/model and ./cmd/iterion and type-checks their closure (TestEveryEnvReadIsClassifiedForTheSandbox needs the unexported provider env tables, so it cannot move); the vendored provider/tool env sweeps, the credential-header and planted-endpoint tests read pkg/claw/internal/api, pkg/backend/{tool,delegate,compatgw,detect,modelspecs} and web_search.go by name; the review-pr, revi-converse and dep-update-guard behaviour tests read their bundles. The whole-module walks live in internal/sweep/modelseams (#3758); plus paths named literally in claw_ambient_test.go, claw_sandbox_env_class_test.go, permission_climb_test.go, review_merge_mcp_test.go"
+  pkg/backend/tool:
+    reads: ["pkg/backend/**"]
+    why: "tests read paths named literally in claw_workspace_read_test.go"
+  pkg/backend/tool/privacy/detector:
+    reads: ["examples/*.bot"]
+    why: "TestRules_NoFP_OnExamples globs ../../../../../examples/*.bot and runs every detector rule over each file"
+  pkg/backend/toolcatalog:
+    reads: ["pkg/**/*.go", "bots/**/*.go", "cmd/**/*.go", "internal/**/*.go", "docs/agents/backends/prompt-engineering-dials.md", "docs/agents/backends/fallbacks-and-parity.md", "docs/backends.md", "docs/ultracode.md", "docs/references/diagnostics.md", "docs/plugins.md", "docs/sandbox.md"]
+    why: "refused_test reads seven docs pages; writing_canonicals_test walks pkg/, bots/, cmd/ and internal/ for .go files"
+  pkg/botregistry:
+    reads: ["**/*.go", "bots/whole-improve-loop/**", "bots/**", "bots/issue-triage/**", "bots/review-pr/**", "bots/review-pr/main.bot", "bots/review-pr/manifest.yaml", "bots/whats-next/**", "bots/whats-next/main.bot", "bots/whats-next/manifest.yaml", "bots/whats-next/skills/**"]
+    why: "TestEveryUnreadOverlayOptInIsListed AST-parses every non-test .go from the root; TestLoadSchema_FilePresetsSurface loads the whole-improve-loop bundle; plus paths named literally in catalog_authoring_lock_test.go, catalog_local_state_test.go, catalog_owner_test.go, catalog_test.go, registry_test.go"
+  pkg/botreplay:
+    reads: ["bots/**", "examples/**", ".botz/**"]
+    why: "TestGoldens and the CompileBot users list every bot under bots/, examples/ and .botz/ and compile the scenario bots with their imported units"
+  pkg/botscaffold:
+    reads: ["SKILL.md", "bots/whats-next/skills/iterion-dsl-quickref.md"]
+    why: "tests read paths named literally in skill_templates_test.go"
+  pkg/bundle:
+    reads: ["package.json", "CHANGELOG.md", "bots/**", "examples/**", "scripts/**", "skills/**"]
+    why: "TestSyntaxFloorsNameReleasesThatExist reads package.json and CHANGELOG.md; the floor and manifest sweeps load every bots/ and examples/ manifest and its sources; plus paths named literally in bundle_test.go, snapshot_test.go"
+  pkg/claw/internal/api/providers:
+    reads: ["pkg/claw/internal/api/testdata/named_schema.json"]
+    why: "tests read paths named literally in named_schema_test.go"
+  pkg/claw/internal/api/providers/openaiwire:
+    reads: ["pkg/claw/internal/api/testdata/named_schema.json"]
+    why: "tests read paths named literally in named_schema_test.go"
+  pkg/claw/internal/apikit:
+    reads: ["pkg/claw/testdata/golden/**", "pkg/claw/testdata/golden/fnv1a_vectors.json", "pkg/claw/testdata/golden/model_aliases.json"]
+    why: "tests read paths named literally in prompt_cache_fingerprint_test.go, provider_routing_test.go, telemetry_test.go"
+  pkg/claw/internal/commands:
+    reads: ["pkg/claw/**/*.go", ".gitignore", "CLAUDE.md", "package.json", "pkg/claw/**"]
+    why: "TestNothingInClawSendsTheUserToLogin walks pkg/claw and reads every non-test .go file; plus paths named literally in claudemd_loader_test.go, init_test.go, registry_test.go"
+  pkg/claw/internal/runtime:
+    reads: ["pkg/claw/testdata/golden/session_jsonl_snapshot.jsonl"]
+    why: "tests read paths named literally in session_jsonl_test.go"
+  pkg/claw/internal/testutil:
+    reads: ["**/*.go"]
+    module: true
+    why: "TestEveryTestBinaryLinkingTheRegistryIsIsolated runs go list -test with Deps on ./pkg/claw/... and parses the test files of every pkg/claw package"
+  pkg/claw/plugin:
+    reads: ["pkg/claw/testdata/golden/plugin_manifest.json"]
+    why: "tests read paths named literally in plugin_test.go"
+  pkg/cli:
+    reads: ["bots/**", "connectors/**", "skills/**", "build/**", "examples/cursors/sample.bot", "SKILL.md", "README.md", ".gitignore"]
+    why: "connections_test symlinks ../../connectors/forgejo into its workspaces; the embedded dispatcher catalogue (templates/dispatch_bots, generated by templates:dispatch-bots from nine bots/ bundles) is read by the dispatch tests; plus paths named literally in clean_test.go, connectors_identity_test.go, connectors_test.go, dsl_migrate_more_test.go, dsl_migrate_repo_boundary_test.go, migrate_run_paths_test.go, schedule_test.go, validate_durable_memory_test.go (fixture names joined to the root by the scan: build/, skills/, bots/). The whole-tree greps and corpus benches live in internal/sweep/{itertoken,authorcorpus} (#3758)"
+  pkg/cloud/orgsweep:
+    reads: ["**/*.go", "pkg/**"]
+    why: "purge_completeness_test walks the whole repo and reads every non-test .go file; plus paths named literally in purge_completeness_test.go"
+  pkg/connection:
+    reads: ["connectors/**"]
+    why: "tests read paths named literally in catalog_test.go"
+  pkg/connector/identity:
+    reads: ["connectors/forgejo/**"]
+    why: "tests read paths named literally in lock_test.go"
+  pkg/connector/spec:
+    reads: ["connectors/forgejo/**", "connectors/forgejo/samples/**", "connectors/forgejo/samples/issue-commented.json"]
+    why: "tests read paths named literally in ingress_test.go, triggers_test.go"
+  pkg/deeplink:
+    reads: ["studio/src/lib/scope.ts"]
+    why: "tests read paths named literally in deeplink_test.go"
+  pkg/dispatcher:
+    reads: ["examples/secured-renovacy/**", "pkg/runtime/*.go", "README.md", "bots/**"]
+    why: "TestEngineRunnerAcceptsBundleDir compiles examples/secured-renovacy (skips while absent); heartbeat_store_test globs ../runtime/*.go; plus paths named literally in cleanup_workspace_test.go, overlay_route_test.go"
+  pkg/dryrun:
+    reads: ["**/*.go"]
+    why: "walkModuleGoFiles (env_expansion_test) parses every non-test .go file of the repo, with a floor of 1200 files"
+  pkg/dsl/ast:
+    reads: ["bots/**", "examples/**", "e2e/testdata/**"]
+    why: "TestCorpusSurvivesTheJSONTransport compiles every .bot of the dsltest corpus (bots/, examples/, e2e/testdata/) with its imported units"
+  pkg/dsl/author:
+    reads: ["*.md", "docs/**/*.md", "bots/**", "examples/**", "e2e/testdata/**", "pkg/dsl/spec/testdata/author/**", "vendor/gopkg.in/yaml.v3/*.go", "vendor/go.yaml.in/yaml/v2/*.go"]
+    why: "the doc-fence tests read docfences.Files; the corpus round trip loads every corpus unit; fixtures come from ../spec/testdata/author; the yaml remedies parse two vendored readers"
+  pkg/dsl/canon:
+    reads: ["bots/**", "examples/**", ".fmt-refused"]
+    why: "shippedBots and the writer-form tests walk bots/ and examples/; the refused-baseline test reads .fmt-refused"
+  pkg/dsl/docfences:
+    reads: ["*.md", "docs/**/*.md", "bots/**/*.md", "examples/**/*.md"]
+    why: "TestFilesListsEveryMarkdownWithAFence globs the root *.md and walks docs/, bots/ and examples/ for .md"
+  pkg/dsl/ir:
+    reads: ["**/*.go", "*.md", "docs/**/*.md", "bots/**", "examples/**", "e2e/testdata/**", "pkg/dsl/testdata/**", "pkg/runtime/**"]
+    module: true
+    why: "the leaf-closure test runs go list -deps without -e (a broken embed in the closure fails it); doc-fence, fireset and corpus tests read docs and the corpus; launch_var_edges walks pkg/runtime; plus paths named literally in launch_var_edges_test.go"
+  pkg/dsl/migrate:
+    reads: ["bots/**", "examples/**", "e2e/testdata/**"]
+    why: "corpus_test walks the dsltest corpus"
+  pkg/dsl/parser:
+    reads: ["**/*.go", "examples/**", "docs/grammar/iterion_v1.ebnf", "docs/references/dsl-grammar.md", "pkg/dsl/testdata/**"]
+    why: "TestEveryConstructorPassesBounded walks every non-test .go file; parser and fuzz tests glob examples/; grammar completeness reads the EBNF and dsl-grammar.md"
+  pkg/dsl/spec:
+    reads: ["*.md", "docs/**/*.md", "bots/**/*.md", "examples/**/*.md", "docs/references/iterion-author*.schema.json", "docs/grammar/iterion_v1.ebnf", "studio/src/lib/iterDsl.generated.ts", "pkg/dsl/parser/*.go"]
+    why: "TestGeneratedDSLDocsAreFresh reads the generated pages, the Monaco file and the schema JSONs; the region test reads docfences.Files; conformance parses ../parser/*.go"
+  pkg/dsl/unit:
+    reads: ["**/*.go", "**/.gitignore", "bots/**"]
+    module: true
+    why: "theModule (modtypes.Load) runs go list -export over the whole module; salvage_optins runs git ls-files '*.go' and stats nested go.mod files"
+  pkg/dsl/unparse:
+    reads: ["bots/**", "examples/**", "e2e/testdata/**", "pkg/dsl/ast/ast.go", "pkg/dsl/ast/contract.go"]
+    why: "lossless and transport tests walk the dsltest corpus; roundtrip globs examples/*.bot; the sweep parses ../ast/ast.go and contract.go"
+  pkg/dsl/workflowfile:
+    reads: ["**/*.yaml", "**/*.yml"]
+    why: "the YAML bound tests walk the whole repo for .yaml/.yml files"
+  pkg/forge:
+    reads: ["bots/**"]
+    why: "TestCatalogCommandsRouteToTheirBot globs ../../bots/*/<name> for bundle.ManifestFile and ManifestFileAlt (manifest.yaml, manifest.yml) and provisions the whole catalogue's invocations; the name is computed, so the scan holds every file under bots/*, which only bots/** covers"
+  pkg/git:
+    reads: ["**/*.go"]
+    why: "the git-caller sweeps (gitSitesInTree) read every .go file of the repo"
+  pkg/identity:
+    reads: ["**/*.go"]
+    why: "lintProductionCallers(\"../..\") walks every non-test .go file"
+  pkg/knowledge:
+    reads: ["**/*.go", "pkg/backend/tool/privacy/detector/testdata/secrets_positive.txt"]
+    why: "TestEveryMemoryStoreAdapterGatesItsMutations walks every non-test .go file; export_test reads the secrets corpus"
+  pkg/lease:
+    reads: ["**/*.go", "pkg/server/**"]
+    why: "leaseSpecSitesInModule runs sweepwalk.GoFiles over the module; plus paths named literally in spec_health_class_test.go"
+  pkg/liveledger:
+    reads: ["Taskfile.yml", "**/*_test.go", "e2e/testdata/live/ledger.json", "e2e/**"]
+    why: "the live-target tests parse the Taskfile, walk every _test.go and load the committed ledger; plus paths named literally in enum_live_tests_test.go"
+  pkg/platformcfg:
+    reads: ["**/*.go", "pkg/**/*.yaml", "pkg/**/*.yml", "pkg/**/*.js", "pkg/**/*.mjs", "pkg/**/*.cjs", "pkg/**/*.json", ".gitignore", "bots/**", "examples/**", "pkg/botscaffold/templates/**", "pkg/cli/templates/dispatch_bots_default.bot", "**/*ockerfile*", "**/*OCKERFILE*", "cmd/**", "internal/**", "pkg/**", "pkg/cli/templates/dispatch_bots/**", "pkg/server/static/**"]
+    why: "engineEnvNames walks pkg/cmd/internal sources and pkg config files; the bot-knob tests walk the shipped bot roots; the image-env test reads every tracked Dockerfile; plus paths named literally in platformcfg_infra_test.go"
+  pkg/plugin:
+    reads: ["Dockerfile.runner-devbox", "renovate.json", "README.md", "SKILL.md", "skills/adversarial-review-loop/SKILL.md"]
+    why: "the codeindex pin tests read Dockerfile.runner-devbox and renovate.json; plus paths named literally in detail_test.go, plugin_test.go"
+  pkg/reliability:
+    reads: ["docs/workflow-reliability-1006.md", "**/*_test.go", "pkg/backend/model/executor_build_task.go", "pkg/backend/model/executor_verified_action.go", "pkg/retrycoord/**", "pkg/runner/**", "pkg/supervise/**", "pkg/runtime/admission.go", "pkg/runtime/artifact_contract.go", "pkg/runtime/executor_output_correction.go", "pkg/runtime/node_output.go", "pkg/runview/diagnostic.go", "pkg/store/execution_context.go"]
+    why: "the divergence-ledger tests read the rollout doc, walk every _test.go and check every ../ link of the doc's baseline (a new link target must be added here)"
+  pkg/repograph:
+    why: "every test builds its graph from a temp tree fixture() writes; the scan's root hit is that fixture helper, not a repository read"
+  pkg/repomap:
+    reads: ["**"]
+    why: "TestGeneratedMapsAreFresh and the link tests regenerate the maps from ../.. (Go sources, docs, bot manifests and skills) and stat every link target, which can be any path"
+  pkg/reviewtopology:
+    reads: ["e2e/testdata/review_topology_mini.bot"]
+    why: "tests read paths named literally in resolve_test.go"
+  pkg/runner:
+    reads: ["**/*.go", "cmd/iterion/server.go", "bots/**", ".gitattributes", ".mcp.json"]
+    why: "usage_cap_launch_vars walks every non-test .go file; the pre-engine refusal inventory parses loop.go; loop_pool reads cmd/iterion/server.go; usage_cap_review_pr compiles bots with their imports; plus paths named literally in bank_lfs_test.go, pre_engine_refusal_nats_test.go"
+  pkg/runtime:
+    reads: ["pkg/**", "cmd/**/*.go", "internal/**/*.go", "bots/**", "sandbox/**", ".devcontainer/**", ".gitignore", "Dockerfile", "README.md", "SKILL.md", "connectors/jira/connector.yaml", "skills/**"]
+    why: "still wide: TestTheInContainerCommandInventoryIsReadFromTheCode walks every non-test .go file under pkg/, cmd/ and internal/ from the go.mod root (it renders the unexported devboxInstallSnippet, so it cannot move); transient_outage_test globs ../../bots/*/*.bot, the owned-skills tests read five bots/*/main.bot, sandbox_image_admission_test lists ../../sandbox and stats each <variant>/Dockerfile; plus fixture names the scan joins to the root in bundle_symlink_test.go, bundle_test.go, catalog_regen_scope_test.go (bots/), sandbox_host_guard_executed_test.go, sandbox_host_state_floor_test.go, sandbox_image_env_dockerlive_test.go, workdir_throwaway_test.go (pkg/), worktree_test.go. The module type-check, the catalogue and the page sweeps live in internal/sweep/{runtimeseams,runtimecatalog,runtimedocs} (#3758)"
+  pkg/runview:
+    reads: ["**/*.go", "studio/src/components/Runs/runSourceMeta.ts", ".mcp.json", "README.md", "SKILL.md", "bots/app-dev/main.bot", "bots/smoke/board_smoke.bot", "bots/whats-next/main.bot", "connectors/**", "connectors/forgejo/**", "skills/**"]
+    why: "the executor-spec sweeps use sweepwalk.GoFiles; source_kind_class reads the studio runSourceMeta.ts; plus paths named literally in bot_identity_test.go, compile_promotion_test.go, executor_workspace_follow_test.go, localconnectors_test.go, resume_claim_test.go, resume_shared_dependency_test.go, workflow_path_test.go, workflow_provenance_test.go"
+  pkg/sandbox/execenv/protocol:
+    reads: ["sandbox/finalize/execenv-smoke.sh", "cmd/iterion-execenv-guest/**"]
+    reach: [cmd/iterion-execenv-guest]
+    why: "image_smoke_test anchors on runtime.Caller: TestImageSmokeFrame reads sandbox/finalize/execenv-smoke.sh and compares its base64 frame to the production encoder; TestGuestDependencyClosure runs `go list -deps ./cmd/iterion-execenv-guest` at the root and refuses any dependency besides the guest and this package"
+  pkg/sandbox/kubernetes:
+    reads: ["native/**", "README.md", "cmd/iterion/**", "cmd/iterion-execenv-guest/**"]
+    reach: [cmd/iterion-execenv-guest, cmd/iterion]
+    why: "buildNativeExecTransport builds ./cmd/iterion-execenv-guest and ./cmd/iterion and compiles native/execenv/capsule.c; plus paths named literally in exec_transport_native_test.go, git_floor_test.go"
+  pkg/sandbox/netproxy:
+    reads: ["docs/sandbox.md"]
+    why: "tests read paths named literally in preset_docs_test.go"
+  pkg/scripthost:
+    reads: ["cmd/iterion/**"]
+    reach: [cmd/iterion]
+    why: "TestMain finds the root by climbing two directories from os.Getwd (repoRoot in main_test.go), builds ./cmd/iterion there and the confinement tests run the binary's __script-host; socketdeny_linux_test reads the vendored x/sys/unix (global)"
+  pkg/secrets:
+    reads: ["**/*.go", "docs/getting-started.md"]
+    why: "TestOnlyBaseURLNamesZAISpellsTheZAIHosts parses every tracked .go file; getting_started_wire_ids reads docs/getting-started.md"
+  pkg/server:
+    reads: ["pkg/**", "bots/**", "scripts/**", "skills/**", "openapi.json", "docs/cloud-rest-api-generated.md", "docs/backends.md", "docs/cloud-deployment.md", "docs/environment-variables.md", "studio/index.html", ".gitignore", "README.md"]
+    why: "the sentinel sweeps walk pkg/{auth,identity,pat,forge} (the scan reads filepath.Join(\"..\", root) as pkg/); routescan reads pkg/dispatcher/native/http.go and pkg/dispatcher/manager.go; about 64 behaviour tests load the real bots/ catalogue (botsDirAbs, newDispatchWorld); TestTheGeneratedRESTInventoryIsFresh regenerates docs/cloud-rest-api-generated.md from pkg/server and openapi.json; the gateway doc test reads docs/backends.md, the SPA test studio/index.html, the revi-effort test runs scripts/ops/revi-effort-cells.py; plus fixture names the scan joins to the root in assistant_authoring_test.go (scripts/), assistant_dependency_transaction_test.go (skills/), assistant_authoring_local_test.go, auth_forwarded_test.go, marketplace_routes_test.go. The module type-check and whole-tree sweeps live in internal/sweep/{authorreading,mintchokepoint,serversurface} (#3758)"
+  pkg/server/cloudpublisher:
+    reads: ["scripts/ops/revi-effort-cells.py", "bots/**", "docs/cloud-admin.md", "docs/cloud-public-exposure-checklist.md", "docs/oauth-forfait.md", "pkg/runview/fork.go", "pkg/runner/subbot.go", "pkg/runner/loop.go", "docs/**", "skills/**"]
+    why: "the revi gateway and routing tests stat the script and compile bots; the forfait audit reads three docs pages; runner_pool reads runview/runner sources; plus paths named literally in contributions_dedup_test.go, forfait_audit_grep_test.go"
+  pkg/store:
+    reads: ["**/*.go", ".gitignore", "README.md", "docs/**", "docs/quotas-and-limits.md", "docs/scheduling.md", "docs/usage-caps.md", "pkg/cli/**", "pkg/runner/**", "pkg/runtime/**", "pkg/server/cloudpublisher/**"]
+    why: "TestNoHandRolledTerminalSets and TestListRunsCallersAreOnTheLedger walk non-test .go files of the repo; plus paths named literally in lifecycle_negative_space_test.go, rename_noreplace_test.go, run_probe_marker_chokepoint_test.go, store_test.go"
+  pkg/store/mongo:
+    reads: ["pkg/**/*_test.go", ".github/workflows/tests.yml", "pkg/**"]
+    why: "TestMongoGatedPackagesAreInTheCIJob walks every pkg/ _test.go and checks it against tests.yml; plus paths named literally in ci_mongo_gate_test.go"
+  scripts/ci/affected:
+    reads: ["**"]
+    why: "the guard tests scan every package's Go files against the tracked file list and read tests.yml and inputs.yaml"
+  scripts/ci/mainwatch:
+    reads: [".github/workflows/tests.yml", "scripts/ci/testquarantine/**"]
+    why: "logparse and watch tests read tests.yml; validateWithTestquarantine runs go run ./scripts/ci/testquarantine"
+  scripts/ci/testcaps:
+    reads: ["**/*.go", ".github/workflows/tests.yml", "Taskfile.yml"]
+    why: "TestRepositorySkipsCarryReasons scans every .go file from git ls-files; the census test reads tests.yml and the Taskfile"
+  scripts/ci/testquarantine:
+    reads: ["**/*_test.go", "scripts/ci/test-quarantine.tsv"]
+    why: "TestTheCommittedQuarantineNamesTestsOfItsOwnPackageOnly reads the quarantine table and walks every _test.go"
+  scripts/ci/testshards:
+    reads: ["**/*.go", ".github/workflows/tests.yml", "scripts/ci/*.tsv"]
+    module: true
+    why: "TestTheCommittedWeightsTablesPackTheirLegs reads the splitter calls of tests.yml and the weights tables and runs go list ./... at the root"
+
+legs:
+  test:
+    aggregates: [test-unit, test-e2e, studio, test-native-exec]
+    why: the required aggregator; it reads its legs' results and nothing else
+  race:
+    aggregates: [race-shard, test-native-exec]
+    why: the aggregator of the race legs
+  heavy-gate:
+    paths: [scripts/ci/heavy-gate.sh]
+    why: "push only: scripts/ci/heavy-gate.sh reads main's run history and decides whether the push runs the heavy layer; it tests no package, and its one input sits under scripts/ci/ (global)"
+  test-unit:
+    packages: ["..."]
+    paths: ["**/*.go", scripts/ultra11y-engine.sh, "scripts/ultra11y-engine/**", scripts/ultra11y-pin.sh, bots/rgaa-audit/ultra11y.pin, scripts/chart-check-deps.sh]
+    why: unit tests over the selected packages (minus e2e and pkg/sandbox/kubernetes), plus the one-time gofmt, go vet, live-tag compile and generated-artefact freshness steps any Go change reaches; the ultra11y engine install (scripts/ultra11y-engine.sh, its lockfile directory, ultra11y-pin.sh and the pin it reads) and the chart dependency check run before the tests
+  race-shard:
+    packages: ["..."]
+    paths: [scripts/ultra11y-engine.sh, "scripts/ultra11y-engine/**", scripts/ultra11y-pin.sh, bots/rgaa-audit/ultra11y.pin, scripts/chart-check-deps.sh]
+    why: the selected packages under -race (minus e2e and pkg/sandbox/kubernetes), after the same ultra11y engine install and chart dependency check as test-unit
+  test-e2e:
+    packages: [e2e]
+    paths: ["studio/**", package.json, pnpm-lock.yaml, pnpm-workspace.yaml]
+    why: "go test ./e2e, after `pnpm install --frozen-lockfile` and `vite build` in studio/ whose output the server under test embeds (pkg/server/static): a studio change that breaks the build reddens this leg"
+  studio:
+    paths: ["studio/**", openapi.json, package.json, pnpm-lock.yaml, pnpm-workspace.yaml, charts/iterion/Chart.yaml]
+    reach: [cmd/iterion]
+    why: eslint, tsc -b and vitest over studio/, the OpenAPI drift check (go run ./cmd/iterion openapi, then openapi-typescript into studio/src/api/schema.ts) and the Chart.yaml/package.json version check
+  test-native-exec:
+    packages: [pkg/sandbox/kubernetes]
+    why: go test ./pkg/sandbox/kubernetes/, plain and under -race
+  mongo-conformance:
+    packages:
+      - pkg/internal/storekit/...
+      - pkg/audit/...
+      - pkg/pat/...
+      - pkg/connection/...
+      - pkg/cloudsched/...
+      - pkg/auth/...
+      - pkg/secrets/...
+      - pkg/orgusage/...
+      - pkg/credusage/...
+      - pkg/credpool/...
+      - pkg/botsource/...
+      - pkg/pricefeed/...
+      - pkg/runview/runstream/...
+      - pkg/cloud/orgsweep/...
+      - pkg/usagecap/...
+      - pkg/dispatcher/boardmongo/...
+      - pkg/identity/...
+      - pkg/usernotify/...
+      - pkg/configshare/...
+      - pkg/pluginsource/...
+      - pkg/assistantmission/...
+      - pkg/runwatch/...
+      - pkg/webhooks/...
+      - pkg/server/cloudpublisher/...
+      - pkg/forge/...
+      - pkg/trigger/...
+      - pkg/lease/...
+      - pkg/platformcfg/...
+      - pkg/server/...
+      - pkg/connector/intake/...
+      - pkg/connector/poller/...
+      - pkg/store/mongo/...
+      - pkg/runview/...
+      - pkg/runner/...
+    why: the Mongo-gated go test lines of the job, each package pattern the job names, pkg/server and pkg/store/mongo through their .../ form (guard_test.go holds every job pattern named)
+  nats-conformance:
+    packages: [pkg/runner/..., pkg/queue/...]
+    why: the NATS-gated go test line of the job
+  cloud-e2e:
+    paths: [Dockerfile, .dockerignore, package.json, pnpm-lock.yaml, pnpm-workspace.yaml, "studio/**", "bots/**", "connectors/**", "native/**", scripts/build-execenv-capsule.sh, "docker/llm-clis/**", "charts/**", scripts/chart-kind-wait.sh, "sandbox/finalize/**"]
+    reach: [cmd/iterion, cmd/iterion-execenv-guest]
+    why: "builds the image from the Dockerfile's COPY set and its bind mounts (a RUN step executes sandbox/finalize/execenv-smoke.sh), loads it into kind and installs the chart"
+  vendor-check:
+    paths: ["**/*.go"]
+    why: go mod tidy + vendor must leave go.mod, go.sum and vendor/ unchanged, and any import added or dropped can move them
+  golangci:
+    paths: ["**/*.go", .golangci.yml]
+    why: golangci-lint run over the module
+  brand:
+    paths: ["assets/brand/**", "scripts/brand/**", scripts/prompt-parity.sh, README.md, CLAUDE.md, charts/iterion/README.md, charts/iterion/Chart.yaml, docs/cloud-overview.md, docs/index.md, docs/getting-started.md, docs/scripts/og-card.html, "docs/public/og.png*", docs/.vitepress/config.ts, studio/index.html, studio/public/manifest.json, "studio/src/views/CloudHome/**", "Cask/**", "Formula/**", build/linux/iterion.desktop, build/windows/info.json, cmd/iterion-desktop/wails.json, cmd/iterion/main.go]
+    why: positioning-check, prompt-parity and og-check read these surfaces; tap-entry-check is under scripts/ci (global)
+  fmt-check:
+    paths: ["bots/**", "examples/**", .fmt-refused]
+    reach: [cmd/iterion]
+    why: go run ./cmd/iterion fmt --check over bots and examples
+  helm-lint:
+    paths: ["charts/**", "scripts/chart-*.sh"]
+    packages: [charts/iterion]
+    why: helm dependency update, helm lint and template over charts/iterion, then go test -run TestChart ./charts/iterion/
+  govulncheck:
+    paths: ["**/*.go"]
+    why: the call-graph vulnerability scan over ./... (advisory)
+  desktop-vet-linux:
+    paths: ["cmd/iterion-desktop/**", "build/**"]
+    reach: [cmd/iterion-desktop]
+    why: go vet -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+  desktop-vet-cross:
+    paths: ["cmd/iterion-desktop/**", "build/**"]
+    reach: [cmd/iterion-desktop]
+    why: go vet -tags desktop ./cmd/iterion-desktop/ under GOOS windows and darwin
+  docs-links:
+    paths: ["**/*.md", "docs/**", "internal/docsguard/testdata/github-anchors/**"]
+    reach: [scripts/docslinks]
+    on_delete: true
+    why: every relative link of the tracked markdown against the real tree — a deleted or renamed target of any type breaks one; check-anchor-slugs.mjs replays the GitHub anchor fixtures of internal/docsguard/testdata/github-anchors
+  docs-build:
+    paths: ["docs/**", CHANGELOG.md, package.json, pnpm-lock.yaml, pnpm-workspace.yaml]
+    why: the link checker's self-test and the VitePress build of docs/ (which includes CHANGELOG.md)

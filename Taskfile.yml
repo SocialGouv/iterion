@@ -1530,6 +1530,18 @@ tasks:
     cmds:
       - bash scripts/diagnostics/queue-stats.sh {{.CLI_ARGS}}
 
+  ci:affected:
+    desc: "ADVISORY, local only — pick which tests to run first, before the full gate `task check` (#3739). Its scan cannot see every way a test finds the repository root, so a selection is not proof of completeness, and CI does not call it. Selects the tests a diff can reach: the Go packages whose test binaries link, own or declare-read a changed file, and the tests.yml legs whose inputs changed; a global trigger or a file nothing claims selects everything, loudly. JSON on stdout, the why on stderr. Default `origin/main...HEAD` on a clean tree at HEAD (`-base`/`-head`, `-allow-dirty`); `-scan` lists the reads outside package directories that scripts/ci/affected/inputs.yaml must declare; `-replay-since <date> -weights scripts/ci/test-shards-unit-weights.tsv` measures a window of main (local midnights). Exit 0 selected, 1 `-scan` found an undeclared read, 2 error — through `task -x`; the binary is built and run, not `go run`, which folds every failure into 1"
+    cmds:
+      - |
+        dir="$(mktemp -d)"
+        go build -mod=vendor -o "$dir/affected" ./scripts/ci/affected || { rmdir "$dir"; exit 2; }
+        status=0
+        "$dir/affected" {{.CLI_ARGS}} || status=$?
+        rm -f "$dir/affected"
+        rmdir "$dir"
+        exit "$status"
+
   ci:shards:
     desc: "Print one deterministic Go-test shard — the mechanism the CI race-shard and test-unit matrix legs (tests.yml #1977, #3402) use to divide ./... across runners. Assign, never inline $( ): `pkgs=$(task ci:shards -- -n 3 -i 0)` then use $pkgs, so a nonzero exit aborts. Bare or `-all` dumps every shard; `-weights scripts/ci/test-shards-weights.tsv` (race) or `scripts/ci/test-shards-unit-weights.tsv` (unit) balances by measured duration"
     cmds:

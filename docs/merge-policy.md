@@ -379,8 +379,14 @@ pending from the run's start, they are created after `test`. "Re-run failed
 jobs" on a red `brand` therefore reruns the three jobs behind it too.
 
 The merge queue, a push to `main`, the nightly and a dispatch keep their
-layers. What a requested run runs is still the whole light layer: running
-only what a diff can reach is #3739, which waits on #3758.
+layers. What a requested run runs is the whole light layer. `task
+ci:affected` (#3739) selects the tests a diff can reach, but as an
+**advisory local tool**, not a gate: it picks which tests a session runs
+first, before the full gate (`task check`). Its static scan cannot see every
+way a test finds the repository root, so a selection is no proof that the
+tests it leaves out are unaffected, and CI does not use it. Wiring it into
+CI needs a dynamic read audit first — every test binary traced against the
+declarations ([#3739](https://github.com/SocialGouv/iterion/issues/3739)).
 
 **Before pushing**, a session runs `task check` (the
 [review-and-merge](agents/workflow/review-and-merge.md) discipline), adds
