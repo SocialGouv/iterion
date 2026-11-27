@@ -187,7 +187,7 @@ func redatingProbeLoop(t *testing.T, ticks int, refuse func(time.Time) error) (p
 	w := newProbeWorld()
 	now := time.Now().UTC()
 
-	if out := w.r.armUsageWindowRetry(ctx, refuse(now), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, refuse(now), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wall: %v", out)
 	}
 	// The walls this window is ever recorded as. The arming reads the REAL
@@ -229,7 +229,7 @@ func redatingProbeLoop(t *testing.T, ticks int, refuse func(time.Time) error) (p
 				t.Fatalf("tick %d: the resume's clear: %v", i, err)
 			}
 			decide(*rows[0].RetryAfter, scan)
-			if out := w.r.armUsageWindowRetry(ctx, refuse(scan), w.runID, spentNothing, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, refuse(scan), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 				t.Fatalf("tick %d: the probed re-failure: %v", i, out)
 			}
 		}
@@ -289,7 +289,7 @@ func TestArmUsageWindowRetry_ADatedWindowKeepsItsPaceToo(t *testing.T) {
 	now := time.Now().UTC()
 	wall := now.Add(96 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wall: %v", out)
 	}
 	pulls := 0
@@ -307,7 +307,7 @@ func TestArmUsageWindowRetry_ADatedWindowKeepsItsPaceToo(t *testing.T) {
 			if err := w.st.ClearRunRetry(ctx, w.runID); err != nil {
 				t.Fatalf("tick %d: clear: %v", i, err)
 			}
-			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 				t.Fatalf("tick %d: the probed re-failure: %v", i, out)
 			}
 		}
@@ -353,7 +353,7 @@ func TestArmUsageWindowRetry_ALegacyRowGainsItsWallWithoutASecondBudget(t *testi
 		t.Fatalf("precondition: the legacy row already reports a wall (%s)", got)
 	}
 
-	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the probed re-failure: %v", out)
 	}
 	row := w.st.Row()
@@ -391,7 +391,7 @@ func TestArmUsageWindowRetry_EveryParkThatFollowedAPullReportsWhatItFound(t *tes
 		reg := metrics.New()
 		r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2450", spentNothing, quiet); got != usageRetryArmed {
+		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2450"), spentNothing, quiet); got != usageRetryArmed {
 			t.Fatalf("outcome = %v, want usageRetryArmed", got)
 		}
 		if st.probeRearmed {
@@ -411,7 +411,7 @@ func TestArmUsageWindowRetry_EveryParkThatFollowedAPullReportsWhatItFound(t *tes
 		reg := metrics.New()
 		r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2450", spentNothing, quiet); got != usageRetryArmed {
+		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2450"), spentNothing, quiet); got != usageRetryArmed {
 			t.Fatalf("outcome = %v, want usageRetryArmed", got)
 		}
 		if v := probeResult(t, reg, metrics.RetryProbeStillBlocked); v != 1 {
@@ -429,7 +429,7 @@ func TestArmUsageWindowRetry_EveryParkThatFollowedAPullReportsWhatItFound(t *tes
 		reg := metrics.New()
 		r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-		if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(now.Add(90*time.Minute)), "run-2450", spentTokens, quiet); got != usageRetryArmed {
+		if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(now.Add(90*time.Minute)), usageMsg("run-2450"), spentTokens, quiet); got != usageRetryArmed {
 			t.Fatalf("outcome = %v, want usageRetryArmed", got)
 		}
 		if v := probeResult(t, reg, metrics.RetryProbeStillBlocked); v != 0 {
@@ -456,7 +456,7 @@ func TestArmUsageWindowRetry_EveryParkThatFollowedAPullReportsWhatItFound(t *tes
 		// write consumed. Production allows eight (queue.MaxDeliver).
 		const redeliveries = 4
 		for i := range redeliveries {
-			if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2450", spentNothing, quiet); got != usageRetryNotApplicable {
+			if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2450"), spentNothing, quiet); got != usageRetryNotApplicable {
 				t.Fatalf("delivery %d: outcome = %v, want usageRetryNotApplicable — the store refused, so the caller naks", i, got)
 			}
 		}
@@ -467,7 +467,7 @@ func TestArmUsageWindowRetry_EveryParkThatFollowedAPullReportsWhatItFound(t *tes
 
 		// The delivery that LANDS reports what that pull found, once.
 		st.scheduleErr = nil
-		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2450", spentNothing, quiet); got != usageRetryArmed {
+		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2450"), spentNothing, quiet); got != usageRetryArmed {
 			t.Fatalf("the delivery that lands: outcome = %v, want usageRetryArmed", got)
 		}
 		if v := probeResult(t, reg, metrics.RetryProbeStillBlocked); v != 1 {
@@ -495,7 +495,7 @@ func TestArmUsageWindowRetry_AProviderThatMovesItsWallIsStillPacedByTheFloor(t *
 	now := time.Now().UTC()
 	wall := now.Add(96 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wall: %v", out)
 	}
 	pulls, moves := 0, 0
@@ -519,7 +519,7 @@ func TestArmUsageWindowRetry_AProviderThatMovesItsWallIsStillPacedByTheFloor(t *
 			// the one before: genuine news, and a new wait.
 			before := w.st.Row().UsageWall()
 			wall = wall.Add(time.Hour)
-			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 				t.Fatalf("tick %d: the probed re-failure: %v", i, out)
 			}
 			if after := w.st.Row().UsageWall(); !after.Equal(before) {
@@ -584,7 +584,7 @@ func TestArmUsageWindowRetry_TheCapturedFacadeWindowIsOneWall(t *testing.T) {
 			w := newProbeWorld()
 			now := time.Now().UTC()
 
-			if out := w.r.armUsageWindowRetry(ctx, refuse(now), w.runID, spentNothing, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, refuse(now), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 				t.Fatalf("the park that opens the wall: %v", out)
 			}
 			pulls, wallsSeen := 0, map[string]bool{}
@@ -605,7 +605,7 @@ func TestArmUsageWindowRetry_TheCapturedFacadeWindowIsOneWall(t *testing.T) {
 					if err := w.st.ClearRunRetry(ctx, w.runID); err != nil {
 						t.Fatalf("tick %d: the resume's clear: %v", i, err)
 					}
-					if out := w.r.armUsageWindowRetry(ctx, refuse(time.Now().UTC()), w.runID, spentNothing, quiet); out != usageRetryArmed {
+					if out := w.r.armUsageWindowRetry(ctx, refuse(time.Now().UTC()), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 						t.Fatalf("tick %d: the probed re-failure: %v", i, out)
 					}
 					wall := w.st.Row().UsageWall()
@@ -670,7 +670,7 @@ func TestArmUsageWindowRetry_OneDatedWindowIsOneWallWhateverCarriedIt(t *testing
 	// deliveries arm the same wall on a fresh row.
 	for name, err := range map[string]error{"typed": typed, "flattened": flattened} {
 		w := newProbeWorld()
-		if out := w.r.armUsageWindowRetry(context.Background(), err, w.runID, spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); out != usageRetryArmed {
+		if out := w.r.armUsageWindowRetry(context.Background(), err, usageMsg(w.runID), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); out != usageRetryArmed {
 			t.Fatalf("%s delivery: outcome = %v", name, out)
 		}
 		if got := w.st.Row().UsageWall().Truncate(time.Millisecond); !got.Equal(reset.Truncate(time.Millisecond)) {
@@ -702,7 +702,7 @@ func TestArmUsageWindowRetry_ARefusedParkFeedsTheSharedCircuitOnceItLands(t *tes
 	// consumed. Production allows eight (queue.MaxDeliver).
 	const redeliveries = 4
 	for i := range redeliveries {
-		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), run.ID, spentNothing, quiet); got != usageRetryNotApplicable {
+		if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg(run.ID), spentNothing, quiet); got != usageRetryNotApplicable {
 			t.Fatalf("delivery %d: outcome = %v, want usageRetryNotApplicable", i, got)
 		}
 	}
@@ -717,7 +717,7 @@ func TestArmUsageWindowRetry_ARefusedParkFeedsTheSharedCircuitOnceItLands(t *tes
 
 	// The delivery that LANDS charges both, once.
 	st.scheduleErr = nil
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), run.ID, spentNothing, quiet); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg(run.ID), spentNothing, quiet); got != usageRetryArmed {
 		t.Fatalf("the delivery that lands: outcome = %v, want usageRetryArmed", got)
 	}
 	if st.circuitFailures != 1 {

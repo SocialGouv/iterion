@@ -298,6 +298,9 @@ func (s *reserveSpy) ReserveCredSlot(ctx context.Context, fp, runID string, max 
 	s.mu.Unlock()
 	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
 }
+func (s *reserveSpy) ReassertCredSlot(ctx context.Context, fp, runID string, token time.Time) (store.CredSlotReassertion, error) {
+	return s.ledger.ReassertCredSlot(ctx, fp, runID, token)
+}
 func (s *reserveSpy) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
 	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
 }

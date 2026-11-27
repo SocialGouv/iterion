@@ -27,6 +27,16 @@ const (
 	// DropSettled: the run finished, failed, or waits for a human's answer —
 	// there is nothing for the message to execute.
 	DropSettled Drop = "settled"
+	// DropOperatorPausedHoldsCapacity: an operator paused the run, and the
+	// message carries the places its admission reserved. The pause released
+	// them; a redelivery resuming the run would run it on places nobody holds
+	// for it, past the cap. The operator's resume re-admits it.
+	DropOperatorPausedHoldsCapacity Drop = "operator_paused_holds_capacity"
+	// DropRetryArmed: the run is parked with a durable retry armed, and the
+	// message is a guarded publication's (RunMessage.Capacity set). The retry
+	// sweeper's re-admission resumes it; a redelivery would resume it beside
+	// that retry, on places nobody re-admitted.
+	DropRetryArmed Drop = "retry_armed"
 )
 
 // Admission is a runner's verdict on a delivery of msg, read against the
@@ -52,12 +62,26 @@ func (a Admission) Proceeds() bool { return a.Drop == "" }
 // run's resume publication, a queued first attempt, a running doc (an orphan
 // or a live owner, told apart under the run's lock) and any status the rule
 // does not know proceed.
+//
+// A message that carries its admission's places (RunMessage.Capacity) is a
+// guarded publication: it never resumes an operator-paused run that holds
+// capacity (DropOperatorPausedHoldsCapacity) nor a run whose retry is armed
+// (DropRetryArmed), whether it is a launch or a resume — the rule is read
+// before either is told apart.
 func Admit(msg *RunMessage, run *store.Run) Admission {
 	if Superseded(msg, run) {
 		return Admission{Drop: DropSupersededAttempt}
 	}
 	if run.ResumeRequiresExplicit && msg.Resume == nil {
 		return Admission{Drop: DropExplicitResumeRequired}
+	}
+	if msg.Capacity != nil {
+		switch {
+		case run.Status == store.RunStatusPausedOperator && len(msg.Capacity.Holds) > 0:
+			return Admission{Drop: DropOperatorPausedHoldsCapacity}
+		case run.Status == store.RunStatusFailedResumable && run.ContinuationState == store.ContinuationRetryArmed:
+			return Admission{Drop: DropRetryArmed}
+		}
 	}
 	switch run.Status {
 	case store.RunStatusCancelled:

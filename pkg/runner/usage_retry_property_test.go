@@ -117,9 +117,9 @@ func (w *probeWorld) apply(step retryprobetest.Step, now time.Time) bool {
 	}
 	switch step.Kind {
 	case retryprobetest.StepParkDated, retryprobetest.StepParkAfterWorkDated:
-		w.r.armUsageWindowRetry(ctx, weeklyWindowErr(step.At), w.runID, step.Spend, quiet)
+		w.r.armUsageWindowRetry(ctx, weeklyWindowErr(step.At), usageMsg(w.runID), step.Spend, quiet)
 	case retryprobetest.StepParkBlind, retryprobetest.StepParkAfterWorkBlind:
-		w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, step.Spend, quiet)
+		w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), usageMsg(w.runID), step.Spend, quiet)
 	case retryprobetest.StepParkRedated:
 		w.redatedParks++
 		w.redatedShape = w.redatedParks % 3
@@ -130,7 +130,7 @@ func (w *probeWorld) apply(step retryprobetest.Step, now time.Time) bool {
 		case 2:
 			refusal = facadeWindowErr(now)
 		}
-		w.r.armUsageWindowRetry(ctx, refusal, w.runID, step.Spend, quiet)
+		w.r.armUsageWindowRetry(ctx, refusal, usageMsg(w.runID), step.Spend, quiet)
 	case retryprobetest.StepSkippedSooner:
 		at := now.Add(45 * time.Minute)
 		w.st.Mutate(func(r *store.Run) { r.SkippedCredReopensAt = &at })

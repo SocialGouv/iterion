@@ -409,9 +409,11 @@ func (s RunStatus) CarriesFailureCode() bool {
 // credential's concurrency ceiling (secrets.ApiKey.MaxConcurrentRuns):
 // running is spending, and queued is about to — admitting a burst of
 // queued runs against a full key is exactly the thundering herd the
-// ceiling exists to stop. Parked (failed_resumable) and paused runs
-// hold NO slot: they spend nothing while they wait, and their resume
-// re-resolves credentials against the ceiling like any claim.
+// ceiling exists to stop. Paused runs hold NO slot, and neither does a
+// parked (failed_resumable) run unless it is in its redelivery transit
+// (Run.InCapacityTransit): a run the queue is about to hand back keeps
+// its places until the hold's instant. Read the status alone only
+// through Run.HoldsCapacity, which adds that transit.
 func (s RunStatus) HoldsCredentialSlot() bool {
 	return s == RunStatusRunning || s == RunStatusQueued
 }

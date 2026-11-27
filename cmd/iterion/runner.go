@@ -31,6 +31,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runner"
 	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/usagecap"
 	"github.com/spf13/cobra"
@@ -334,6 +335,17 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("runner: %w", err)
 	}
 
+	// The capacity transit's length (ADR-167 C1): read on runners only, the
+	// instant it gives is stamped on the run. A value that does not parse
+	// stops the boot; a short one is honoured with the reason it is short.
+	holdTTL, holdWarning, err := store.RedeliveryHoldTTLFromEnv()
+	if err != nil {
+		return fmt.Errorf("runner: %w", err)
+	}
+	if holdWarning != "" {
+		logger.Warn("runner: %s", holdWarning)
+	}
+
 	// 5. Runner loop.
 	r, err := runner.New(rootCtx, runner.Config{
 		NATS:                 natsConn,
@@ -348,6 +360,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		HeartbeatInterval:    cfg.Runner.Heartbeat,
 		DrainMode:            cfg.Runner.DrainMode,
 		DrainTimeout:         cfg.Runner.DrainTimeout,
+		RedeliveryHoldTTL:    holdTTL,
 		SchemaMismatchDelay:  cfg.Runner.SchemaMismatchDelay,
 		RunnerEpoch:          selfEpoch,
 		HighWaterEpoch:       highWaterEpoch,

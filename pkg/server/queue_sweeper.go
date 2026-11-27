@@ -613,6 +613,10 @@ func dlqReplayRefusal(drop queue.Drop, run *store.Run, msg *queue.RunMessage, se
 		return fmt.Sprintf("run %s is cancelled — a runner drops the redelivery on admission (the cancel wins over the message); resume the run explicitly instead, which re-queues it, %s", run.ID, discard)
 	case queue.DropDeliberateFailure:
 		return fmt.Sprintf("run %s is %s on the code %q — a runner drops the redelivery on admission (the same message would fail identically); resume the run instead, which re-queues it as a new attempt, %s", run.ID, run.Status, run.FailureCode, discard)
+	case queue.DropOperatorPausedHoldsCapacity:
+		return fmt.Sprintf("run %s was paused by an operator, and this message carries the capacity places its admission reserved, which the pause released — a runner drops it on admission; resume the run instead, which re-admits it, %s", run.ID, discard)
+	case queue.DropRetryArmed:
+		return fmt.Sprintf("run %s is parked with its retry armed (%q) — the retry sweeper resumes it, and a runner drops a replayed message on admission; wait for the retry or resume the run, %s", run.ID, run.FailureCode, discard)
 	case queue.DropSettled:
 		switch run.Status {
 		case store.RunStatusPausedWaitingHuman:

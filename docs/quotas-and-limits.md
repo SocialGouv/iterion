@@ -344,7 +344,21 @@ lives on the key itself: `max_concurrent_runs`
 atomic reservation at launch and resume, and a full key **parks** a launch
 (`CRED_SLOT_WAIT`, asked again until a slot frees or its `max_wait` passes)
 rather than denying it — an operator's resume on a full key answers 429
-(`credential_at_capacity`), whichever surface resumes it.
+(`credential_at_capacity`), whichever surface resumes it. A run the queue
+hands back for a redelivery keeps its places until `continuation_until`
+(`ITERION_REDELIVERY_HOLD_TTL`, runners only), and the redelivery proves them
+before it resumes: one lost meanwhile parks the run on `CRED_SLOT_WAIT` — free
+for an infrastructure cause, one attempt of its retry budget otherwise
+([byok.md](byok.md#concurrency-ceiling--what-counts)). A redelivery never
+resumes an operator-paused run that held capped places, nor a run whose retry
+is armed. A run parked that way after it started resumes, once a slot frees,
+the program it was parked with rather than its bot's current one — no
+`--force`, no refusal for a bot changed during the wait; a stored bot deleted
+meanwhile still ends the wait
+([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)).
+An automatic retry that meets a refusal only a person lifts (an undecided
+effect, a scratch or a lineage that does not travel, an artifact contract, a
+required secret that resolves to nothing) stops at its first due, named.
 
 The override-field semantics are pinned in
 [pkg/server/launch_gate.go:orValue](../pkg/server/launch_gate.go) (the
@@ -956,7 +970,7 @@ accounting lives in the Mongo counters above.
 | Metric | Labels | Meaning |
 |---|---|---|
 | `iterion_launch_denied_total` | `reason` (denial token, `member_role_required` included) | The refusals of the **admission gate** that it renders on an HTTP response (`writeLaunchDenial`) — the rung it takes as well as the six limits; a refusal the WebSocket answer envelope or a daemon records on the socket, the card, the subscription or the schedule is not in this series. The same rung taken at a board / trigger **mount** answers the same envelope and is deliberately **not** counted here: a refused board write is not a refused launch. The two launch routes that sit behind such a mount — `POST /api/v1/pipeline-board/tasks/{id}/launch` and `POST /api/v1/triggers/emit` — refuse a caller below the rung at the mount, before the gate runs, so those refusals are not counted either: the series moves only when the gate itself refuses on an HTTP response; the alert below excludes the authorization reason |
-| `iterion_webhook_throttled_total` | `provider`, `reason` (`rate_limited` / `quota_exceeded`) | Inbound deliveries throttled before processing |
+| `iterion_webhook_throttled_total` | `provider`, `reason` (`rate_limited` / `quota_exceeded` / `backlog_full`) | Inbound deliveries throttled before processing; `backlog_full` a connector ingress refused because its team's unprocessed backlog reached its cap |
 | `iterion_webhook_deliveries_total` | `provider`, `status` | Every inbound delivery's terminal status |
 | `iterion_auth_logins_total` | `result` (`success` / `invalid` / `locked` / `password_change_required` / `error`) | Login attempts |
 | `iterion_auth_password_resets_total` | `step` (`requested` / `confirmed`) | Self-service reset flow |
@@ -964,7 +978,11 @@ accounting lives in the Mongo counters above.
 | `iterion_runs_orphan_recovered_total` | — | The orphan sweeper's flips to `failed_resumable` |
 | `iterion_runs_usage_window_blocked_total` | — | Runs stopped by an exhausted provider quota window |
 | `iterion_runs_retry_scheduled_total` | — | Durable automatic retries armed for a provider reset |
-| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed` / `slot_wait` / `window_wait` / `release_deferred`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total`; `window_wait` is a due row held until the usage window its record names, spending no attempt; `release_deferred` is a run released on its credential window's answer whose resume was refused for a transient reason, re-armed on the ordinary backoff without spending an attempt ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)) |
+| `iterion_runs_retry_resumed_total` | `result` (`enqueued` / `abandoned` / `failed` / `slot_wait` / `window_wait` / `release_deferred`, and the annotations `frozen_readmitted` / `frozen_stale` / `frozen_unavailable`) | Retry-sweeper outcomes for due runs; `enqueued` includes the resumes a pull-forward probe caused, countable against `iterion_runs_retry_probes_total`; `window_wait` is a due row held until the usage window its record names, spending no attempt; `release_deferred` is a run released on its credential window's answer whose resume was refused for a transient reason, re-armed on the ordinary backoff without spending an attempt ([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted)). The `frozen_*` results annotate a park's frozen program and are counted beside the pass's own result, never instead of it: `frozen_readmitted` a parked program republished — a capacity park's at once, a usage-window park's once its bot's current program was refused for a changed source or because it no longer compiles — `frozen_stale` a record that no longer binds its run (or one whose stored bot was deleted and re-created after the parked attempt), `frozen_unavailable` a record whose envelope is gone or corrupt — both ignored, the run resuming its bot's current program ([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with), [usage parks](resume.md#a-usage-parked-run-resumes-its-bots-current-program-unless-that-changed)) |
+| `iterion_capacity_reassert_total` | `stage` (`delivery` / `pre_engine` / `claim`), `outcome` (`held` / `missing` / `error` / `expired` / `legacy` / `unheld_out_of_transit`), `kind` (`key` / `gateway`) | A runner's re-assertions of the capacity places a redelivery's admission reserved (ADR-167 C2), per subject: `held` proven, `missing` gone (the run parks on `CRED_SLOT_WAIT`), `error` the ledger did not answer (re-offered after 30 s, parked on the last delivery), `expired` the hold lapsed before the claim, `legacy` a message from a publisher older than the guard, resumed unguarded (`kind="none"`) — it must read 0 before a per-gateway bound moves to `enforce` — and `unheld_out_of_transit` a delivery that resumes a run holding nothing — neither alive nor in its transit: its hold lapsed or was never stamped, or an operator paused it — while the run's stamp names a subject its message holds no place for: nothing re-asserts it, and the delivery proceeds ([byok.md](byok.md#concurrency-ceiling--what-counts)) |
+| `iterion_capacity_transit_end_total` | `outcome` (`restored` / `claimed_or_moved`) | Capacity transits a delivery ended itself because it resumed nothing: `restored` the continuation it replaced put back and its places given back, `claimed_or_moved` the run had moved on and nothing was written |
+| `iterion_capacity_launch_reassert_total` | `outcome` (`held` / `reserved_again` / `parked` / `error`) | A launch's re-assertion of its capacity places right before it publishes (ADR-167 C3): `reserved_again` the entry was gone and a new reservation took a place, `parked` none was free, `error` the ledger did not answer and the launch failed |
+| `iterion_capacity_frozen_program_total` | `source` (`capacity` / `usage_window`), `outcome` (`written` / `not_started` / `freeze_failed` / `hash_mismatch`) | What a runner's park — a lost capacity place, a provider usage window — did with the program of the delivery it parked: `written` a started run parked with its program frozen for its re-admission, `not_started` a run that never started (its re-admission takes the current bot), `freeze_failed` and `hash_mismatch` a started run parked without its program — its re-admission takes the current bot, refused if it changed. `written` and `not_started` count a park once it lands; a failed freeze is counted when it fails, a park the store then refused included. A non-zero `hash_mismatch` names a run whose out-of-band IR a later publication replaced |
 | `iterion_runs_retry_pending` | — | Due-retry rows observed in the latest bounded sweep (sampled gauge); probe-pulled rows are due rows, so a parked fleet keeps a floor under it |
 | `iterion_runs_retry_sweeps_total` | — | Retry-sweeper passes; flat at zero in cloud means the sweeper is not running, not merely idle |
 | `iterion_bot_override_shadows_newer` | `slug` | 1 while a **platform** bot override is strictly older than the bundle this deployment would otherwise serve — the override wins by design, so the newer baked bundle does not run until it is re-pushed or dropped ([platform-bots.md](platform-bots.md#an-override-outlives-the-release-that-made-it-necessary)). Sampled every five minutes — twelve readings inside the hour its alert waits — with every row rewritten per pass and the vanished slugs retired after those writes, so a dropped override loses its series rather than paging forever, while no scrape reads an empty inventory for one that is still shadowing |
@@ -985,6 +1003,19 @@ fires:
 - **IterionOrphanRunsRecovered** on `increase(iterion_runs_orphan_recovered_total[30m]) > 0`.
 - **IterionBotOverrideShadowsNewer** at `max by (slug) (iterion_bot_override_shadows_newer) > 0` for an hour — aggregated across replicas because each pod measures its OWN baked image against the shared platform rows, so an un-aggregated expression is one page per pod.
 - **IterionBotShadowCheckUnavailable** when `max(iterion_bot_shadow_check_unavailable) == 1` for 30 minutes: while it fires, no override can be certified current.
+- **IterionCapacityReassertErrors** at `sum by (stage) (increase(iterion_capacity_reassert_total{outcome="error"}[15m])) > 0` for 15 minutes: the run-admission ledger is not answering the runners' re-assertions, so redeliveries are re-offered every 30 s and parked on their last delivery. The wait equals the window, so it pages on errors that recur — two or more, at least a minute apart, such as a delivery failing on three of its re-offers, on whichever pods take them — and not on one error the next re-offer cured.
+- **IterionCapacityLaunchReassertErrors** at `sum(increase(iterion_capacity_launch_reassert_total{outcome="error"}[15m])) > 0` for 10 minutes: launches fail on the re-assertion right before they publish.
+- **IterionFrozenProgramNotRecorded** on `sum by (source, outcome) (increase(iterion_capacity_frozen_program_total{outcome=~"freeze_failed|hash_mismatch"}[1h])) > 0`: a started run was parked without its program, and its re-admission takes the current bot.
+- The recording rule **`iterion:capacity_reassert_legacy:increase24h`** (`sum(increase(iterion_capacity_reassert_total{outcome="legacy"}[24h]))`), not an alert: `legacy` is expected during a rolling deploy, and the version checklist reads it at 0 before a per-gateway bound moves to `enforce`. `expired` and `unheld_out_of_transit` page nobody.
+
+Every child these rules read through `increase()` or `rate()` — each
+denial reason, each accepted webhook provider under each throttle reason,
+the capacity `error` and `legacy` children, each frozen-program source
+under `freeze_failed` and `hash_mismatch` — is served at 0 by every pod
+from its boot: a child created by its first increment is first scraped at
+1, and `increase()` never sees that event, so a single freeze failure
+would not page and a single legacy resume per pod would record 0. An event
+before a pod's first scrape stays invisible all the same.
 
 The thresholds are deliberately conservative starting points — tune
 them per deployment.

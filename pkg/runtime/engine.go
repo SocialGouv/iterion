@@ -296,6 +296,12 @@ type Engine struct {
 	// budgetClock, when set, is the clock of every run budget this engine
 	// builds — only tests set it, to advance a run's age by hand.
 	budgetClock func() time.Time
+	// resumeClaimGuard checks the run every resume claim is about to claim
+	// from, before any write of the claim (WithResumeClaimGuard).
+	resumeClaimGuard func(ctx context.Context, run *store.Run) error
+	// onResumablePark is called after each failed_resumable write of the
+	// engine's own run (WithOnResumablePark).
+	onResumablePark func(ctx context.Context, code store.FailureCode)
 }
 
 // ActiveElapsed returns the monotonic active time consumed by the run
@@ -870,8 +876,12 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // failed.
 func (e *Engine) recordSetupOutcome(ctx context.Context, runID string, status store.RunStatus, msg string, code store.FailureCode) (bool, error) {
 	if status.IsTerminalResumable() {
-		return e.recordFailureStatusIf(ctx, runID, status, msg, code,
+		changed, err := e.recordFailureStatusIf(ctx, runID, status, msg, code,
 			[]store.RunStatus{store.RunStatusRunning})
+		if changed && err == nil && status == store.RunStatusFailedResumable {
+			e.resumablePark(ctx, code)
+		}
+		return changed, err
 	}
 	if err := e.recordFailureStatus(ctx, runID, status, msg, code); err != nil {
 		return false, err

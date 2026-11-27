@@ -181,6 +181,7 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 		if persisted.Status == rr.Status {
 			rr.OutcomeSeq = persisted.OutcomeSeq
 			rr.ContinuationState = persisted.ContinuationState
+			rr.ContinuationUntil = cloneTimePtr(persisted.ContinuationUntil)
 			// The typed cause too: transitions own it, and a stale
 			// same-status copy clearing it would erase what a park
 			// wrote meanwhile.
@@ -191,6 +192,7 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 				rr.OutcomeSeq++
 			}
 			rr.ContinuationState = ""
+			rr.ContinuationUntil = nil
 		}
 		if err := s.writeRunLockedContext(ctx, &rr, false, nil); err != nil {
 			return err
@@ -216,6 +218,7 @@ func (s *FilesystemRunStore) SaveRun(ctx context.Context, r *Run) error {
 	rr.PreEngineRefusal = nil
 	rr.OutcomeSeq = 0
 	rr.ContinuationState = ""
+	rr.ContinuationUntil = nil
 	if err := s.writeRunLockedContext(ctx, &rr, false, nil); err != nil {
 		return err
 	}
@@ -752,7 +755,7 @@ func (s *FilesystemRunStore) flipToQueued(ctx context.Context, id string, from R
 	marker := NextQueuedAt(at, r.QueuedAt)
 	flip := QueuedFlip{At: marker, Prior: QueuedFlipPrior{
 		Status: r.Status, QueuedAt: cloneTimePtr(r.QueuedAt), Error: r.Error, FailureCode: r.FailureCode,
-		EndReason: r.EndReason, OutcomeSeq: r.OutcomeSeq, ContinuationState: r.ContinuationState, FinishedAt: cloneTimePtr(r.FinishedAt),
+		EndReason: r.EndReason, OutcomeSeq: r.OutcomeSeq, ContinuationState: r.ContinuationState, ContinuationUntil: cloneTimePtr(r.ContinuationUntil), FinishedAt: cloneTimePtr(r.FinishedAt),
 		WorkflowSource: r.WorkflowSource, WorkflowSources: slices.Clone(r.WorkflowSources), WorkflowHash: r.WorkflowHash,
 	}}
 	transitionRunStatus(r, RunStatusQueued, "", RunOutcomeMeta{})
@@ -796,6 +799,7 @@ func (s *FilesystemRunStore) RevertQueuedFlip(ctx context.Context, id string, fl
 	r.EndReason = prior.EndReason
 	r.OutcomeSeq = prior.OutcomeSeq
 	r.ContinuationState = prior.ContinuationState
+	r.ContinuationUntil = cloneTimePtr(prior.ContinuationUntil)
 	r.FinishedAt = cloneTimePtr(prior.FinishedAt)
 	r.WorkflowSource = prior.WorkflowSource
 	r.WorkflowSources = slices.Clone(prior.WorkflowSources)
@@ -867,7 +871,9 @@ func (s *FilesystemRunStore) applyStatusTransition(ctx context.Context, r *Run, 
 //     the meta states one, cleared when the run genuinely changes
 //     state without a statement (unknown, honest), and PRESERVED on a
 //     same-status rewrite (an untyped rewrite of an already-parked run
-//     must not erase a live retry_armed).
+//     must not erase a live retry_armed). ContinuationUntil follows it:
+//     written with a stated redelivery_pending that carries one, removed
+//     by any other statement, cleared and preserved with it otherwise.
 //
 // The publisher's resume rollback is not a transition: it puts back what
 // its own flip replaced (RevertQueuedFlip), the episode and continuation
@@ -898,8 +904,14 @@ func transitionRunStatus(r *Run, status RunStatus, runErr string, meta RunOutcom
 	}
 	if meta.Continuation != "" {
 		r.ContinuationState = meta.Continuation
+		r.ContinuationUntil = nil
+		if meta.Continuation == ContinuationRedeliveryPending && !meta.ContinuationUntil.IsZero() {
+			until := TransitInstant(meta.ContinuationUntil)
+			r.ContinuationUntil = &until
+		}
 	} else if transition {
 		r.ContinuationState = ""
+		r.ContinuationUntil = nil
 	}
 	// A final continuation and an armed retry contradict each other (see
 	// the Mongo twin, statusTransitionSet): disarm at the tail every final
@@ -1068,6 +1080,7 @@ func (s *FilesystemRunStore) PauseRun(ctx context.Context, id string, cp *Checkp
 	// A paused run has no platform continuation statement — same
 	// discipline as FailureCode below.
 	r.ContinuationState = ""
+	r.ContinuationUntil = nil
 	// A paused run carries no failure classification — same discipline
 	// as the transition choke point, which this checkpoint-coupled
 	// write bypasses. FinishedAt likewise: a paused run is not over,
@@ -1456,16 +1469,18 @@ func (s *FilesystemRunStore) SetRunBudgetSnapshot(ctx context.Context, runID str
 	return s.writeRunLockedContext(ctx, r, false, nil)
 }
 
-// CountAliveRunsWithCredFingerprint counts queued/running runs stamped with
-// fingerprint — a credential's, or a capacity subject — model-idle or not
-// (see RunStore). Scan-and-filter like the other fs-side reverse queries —
-// local scale, no secondary index.
+// CountAliveRunsWithCredFingerprint counts the runs that hold fingerprint —
+// a credential's, or a capacity subject — now: queued, running or in their
+// redelivery transit, model-idle or not (see RunStore, Run.SpendsCredential).
+// Scan-and-filter like the other fs-side reverse queries — local scale, no
+// secondary index.
 func (s *FilesystemRunStore) CountAliveRunsWithCredFingerprint(ctx context.Context, fingerprint, excludeRunID string) (int, error) {
 	if fingerprint == "" {
 		return 0, nil
 	}
+	now := time.Now()
 	ids, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		return r.ID != excludeRunID && r.SpendsCredential(fingerprint)
+		return r.ID != excludeRunID && r.SpendsCredential(fingerprint, now)
 	})
 	if err != nil {
 		return 0, err

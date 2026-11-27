@@ -1147,8 +1147,8 @@ jobs:
     needs: [heavy-gate]
     if: "${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository) && ((github.event_name != 'pull_request' && github.event_name != 'merge_group' && (github.event_name != 'push' || needs.heavy-gate.outputs.heavy != 'false')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}"
     runs-on: ${{ (vars.CI_SELF_HOSTED == 'off' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || endsWith(github.event.pull_request.user.login, 'renovate[bot]') || github.event.pull_request.user.login == 'dependabot[bot]'))) && 'ubuntu-latest' || vars.CI_HEAVY_RUNNER || 'arc-runners' }}
-    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m, and the
-    # subbot step's 5m) plus setup, kept under the merge queue's 60-minute
+    # The sum of the inner `go test -timeout`s (20m + 15m + 5m + 5m + 3m, and
+    # the subbot step's 5m) plus setup, kept under the merge queue's 60-minute
     # check_response_timeout: a hang is named by go test's own timeout, and
     # this ceiling only backstops the steps around it. At 15 it cut a green
     # 11-14 min suite whenever two runs shared the runners (#3390).
@@ -1253,6 +1253,14 @@ jobs:
           # it to `test`.
           go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
             -run '^(TestSnapshotOriginNativeMongo|TestMergeExpectedBirthNativeMongo|TestRunListingWindowNativeMongo)$'
+          # The runner's capacity guard (ADR-167 C2) against the real ledger
+          # and the one-write park, a started run's frozen program included,
+          # and the program a usage-window park records on the attempt it
+          # parks. The `/...` form keeps pkg/runner visible to
+          # pkg/store/mongo's gated-package guard; -run leaves the rest of it
+          # to `test`.
+          go test -mod=vendor -count=1 -v -timeout 3m ./pkg/runner/... \
+            -run '^(TestCapacityTransit.*Mongo|TestUsageParkFrozenProgram.*Mongo)$'
 
       - name: Subbot lease Mongo and NATS witness
         env:

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -211,7 +212,7 @@ func (s *Server) webhookRateAllowed(w http.ResponseWriter, cfg webhooks.Config) 
 	}
 	if ok, retry := s.authLimiter.allow("wh:"+cfg.ID, bucket); !ok {
 		if s.cfg.Metrics != nil {
-			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "rate_limited").Inc()
+			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), metrics.WebhookThrottledRateLimited).Inc()
 		}
 		w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
 		httpError(w, http.StatusTooManyRequests, "rate limited")
@@ -248,7 +249,7 @@ func (s *Server) chargeWebhookQuota(w http.ResponseWriter, r *http.Request, cfg 
 	}
 	if !allowed {
 		if s.cfg.Metrics != nil {
-			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "quota_exceeded").Inc()
+			s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), metrics.WebhookThrottledQuotaExceeded).Inc()
 		}
 		httpError(w, http.StatusTooManyRequests, "monthly call quota exceeded")
 		return release, false

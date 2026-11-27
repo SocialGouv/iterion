@@ -461,8 +461,9 @@ type QueuedFlip struct {
 // QueuedFlipPrior is what a flip to queued, and the resume behind it,
 // replace on a run: its status, the previous attempt's marker, the outcome
 // bookkeeping of the state it leaves — the failure, its code and end reason,
-// the episode, the continuation, the end time — and the recorded source the
-// resume stamps before its publication (the rewind baseline).
+// the episode, the continuation and its transit instant, the end time — and
+// the recorded source the resume stamps before its publication (the rewind
+// baseline).
 type QueuedFlipPrior struct {
 	Status            RunStatus
 	QueuedAt          *time.Time
@@ -471,6 +472,7 @@ type QueuedFlipPrior struct {
 	EndReason         RunEndReason
 	OutcomeSeq        int64
 	ContinuationState ContinuationState
+	ContinuationUntil *time.Time
 	FinishedAt        *time.Time
 	WorkflowSource    string
 	WorkflowSources   []WorkflowSourceFile

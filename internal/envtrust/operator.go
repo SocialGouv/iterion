@@ -154,9 +154,15 @@ var operatorInfraNames = map[string]bool{
 	// posture — how much replay a crash may lose on a fan-out. It
 	// configures the process, never a bot's run.
 	"ITERION_PARALLEL_SAVE_WINDOW": true,
-	"ITERION_BIN":                  true,
-	"ITERION_PI_BIN":               true,
-	"ITERION_OPENCODE_BIN":         true,
+	// The capacity transit's length (ADR-167 T4a): how long a runner pod
+	// holds a run's capacity places while the queue redelivers it. The
+	// runner's own posture, read at its boot, never a bot's run. The name
+	// is pkg/store's RedeliveryHoldTTLEnv, spelled out for the same reason
+	// as the pin list above.
+	"ITERION_REDELIVERY_HOLD_TTL": true,
+	"ITERION_BIN":                 true,
+	"ITERION_PI_BIN":              true,
+	"ITERION_OPENCODE_BIN":        true,
 	// The opencode argv dialect (#2915): =1 makes the engine speak the 1.x
 	// argv to the host's CLI. It configures the process against the binary
 	// the operator installed, never a bot's run.

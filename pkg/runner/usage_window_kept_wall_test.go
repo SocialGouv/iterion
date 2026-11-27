@@ -76,7 +76,7 @@ func TestUsageWindow_AWallKeptFromAnotherCredentialDoesNotHoldTheRun(t *testing.
 	r := &Runner{cfg: Config{Store: st}}
 	quiet := iterlog.New(iterlog.LevelError, io.Discard)
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWallAt(weekly), run.ID, spentNothing, quiet); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWallAt(weekly), usageMsg(run.ID), spentNothing, quiet); got != usageRetryArmed {
 		t.Fatalf("park 1 outcome = %v, want armed", got)
 	}
 	if row := st.Row(); !row.RetryAfter.Equal(teamKey.Add(time.Minute)) || !row.Wall.Equal(weekly) {
@@ -89,7 +89,7 @@ func TestUsageWindow_AWallKeptFromAnotherCredentialDoesNotHoldTheRun(t *testing.
 		t.Fatal(err)
 	}
 	st.Mutate(func(doc *store.Run) { doc.SkippedCredReopensAt = &weekly })
-	if got := r.armUsageWindowRetry(context.Background(), facadeWindowErr(now), run.ID, spentTokens, quiet); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), facadeWindowErr(now), usageMsg(run.ID), spentTokens, quiet); got != usageRetryArmed {
 		t.Fatalf("park 2 outcome = %v, want armed", got)
 	}
 	doc := st.Doc()
@@ -114,7 +114,7 @@ func TestUsageWindow_AWallTheRunGotPastDoesNotHoldItsNextPark(t *testing.T) {
 	st := retryprobetest.New(run)
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), run.ID, spentTokens, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg(run.ID), spentTokens, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want armed", got)
 	}
 	doc := st.Doc()

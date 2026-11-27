@@ -445,6 +445,9 @@ func (f *failingLedger) Unwrap() store.RunStore { return f.RunStore }
 func (f *failingLedger) ReserveCredSlot(context.Context, string, string, int) (store.CredSlotAdmission, error) {
 	return store.CredSlotAdmission{}, errors.New("ledger unavailable")
 }
+func (f *failingLedger) ReassertCredSlot(context.Context, string, string, time.Time) (store.CredSlotReassertion, error) {
+	return store.CredSlotReassertion{}, errors.New("ledger unavailable")
+}
 func (f *failingLedger) ReleaseCredSlot(context.Context, string, string, time.Time) error { return nil }
 func (f *failingLedger) SettleCredSlotAdmission(context.Context, string, time.Time) error { return nil }
 
@@ -863,6 +866,12 @@ func (s *failingKeyLedger) ReserveCredSlot(ctx context.Context, fp, runID string
 	}
 	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
 }
+func (s *failingKeyLedger) ReassertCredSlot(ctx context.Context, fp, runID string, token time.Time) (store.CredSlotReassertion, error) {
+	if fp == s.failFP {
+		return store.CredSlotReassertion{}, errors.New("ledger unavailable for " + fp)
+	}
+	return s.ledger.ReassertCredSlot(ctx, fp, runID, token)
+}
 func (s *failingKeyLedger) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
 	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
 }
@@ -1049,6 +1058,10 @@ func (s *overlappingResumes) ReserveCredSlot(ctx context.Context, fp, runID stri
 	return s.ledger.ReserveCredSlot(ctx, fp, runID, max)
 }
 
+func (s *overlappingResumes) ReassertCredSlot(ctx context.Context, fp, runID string, token time.Time) (store.CredSlotReassertion, error) {
+	return s.ledger.ReassertCredSlot(ctx, fp, runID, token)
+}
+
 func (s *overlappingResumes) ReleaseCredSlot(ctx context.Context, fp, runID string, at time.Time) error {
 	return s.ledger.ReleaseCredSlot(ctx, fp, runID, at)
 }
@@ -1131,3 +1144,13 @@ func TestCredSlotAdmission_TwoOverlappingResumesQueueExactlyOne(t *testing.T) {
 		t.Fatalf("the key names %d holders, want the queued resume alone", n)
 	}
 }
+
+// Every ledger fake of this package is a whole store.CredSlotStore: a fake
+// that overrides part of the interface and misses a method is looked through
+// by store.AsCredSlotStore (Unwrapper) and silently bypassed.
+var (
+	_ store.CredSlotStore = (*failingLedger)(nil)
+	_ store.CredSlotStore = (*failingKeyLedger)(nil)
+	_ store.CredSlotStore = (*overlappingResumes)(nil)
+	_ store.CredSlotStore = (*reserveSpy)(nil)
+)

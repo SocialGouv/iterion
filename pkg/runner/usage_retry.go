@@ -611,7 +611,7 @@ func (r *Runner) parkUsageLimitRetry(
 	usage *metricsEmitter,
 	logger *iterlog.Logger,
 ) (bool, string) {
-	outcome := r.armUsageWindowRetry(ctx, execErr, msg.RunID, usage.spentOnTheProvider(), logger)
+	outcome := r.armUsageWindowRetry(ctx, execErr, msg, usage.spentOnTheProvider(), logger)
 	switch outcome {
 	case usageRetryNotApplicable:
 		return false, ""
@@ -643,6 +643,9 @@ const (
 // armUsageWindowRetry is the decide-and-persist half: everything except
 // finalizing the delivery.
 //
+// msg is the delivery parking: the run it names, and the program it carried,
+// frozen for the re-admission before any arming (freezeUsageProgram).
+//
 // spentOnProvider is what the execution now parking got from the provider
 // (metricsEmitter.spentOnTheProvider): it is how a probe's refusal, which
 // costs nothing, is told apart from a park that followed real work on a
@@ -650,10 +653,11 @@ const (
 func (r *Runner) armUsageWindowRetry(
 	ctx context.Context,
 	execErr error,
-	runID string,
+	msg *queue.RunMessage,
 	spentOnProvider bool,
 	logger *iterlog.Logger,
 ) (outcome usageRetryOutcome) {
+	runID := msg.RunID
 	retryStore := store.AsRunRetryStore(r.cfg.Store)
 	if retryStore == nil {
 		return usageRetryNotApplicable // local/filesystem store: no durable retry surface
@@ -765,6 +769,25 @@ func (r *Runner) armUsageWindowRetry(
 	if !ok {
 		return usageRetryNotApplicable
 	}
+	// Every arming below parks this run on the usage window: the program its
+	// delivery carried is recorded first, so the sweeper that re-admits the
+	// run reads it whichever arming lands. A freeze that fails is said and
+	// counted and stops nothing. A record that landed, or a run that never
+	// started, is counted once an arming lands — as the capacity park counts
+	// after its write: a park the store refused is handed back and freezes
+	// again on its redelivery, and one the spent budget refused parks
+	// nothing. Its writes run on a budget of their own, and the armings get
+	// theirs afresh: a slow freeze must not leave them an expired context,
+	// which would cost the run its durable retry.
+	if landed := r.freezeUsageProgram(ctx, msg, runMeta, logger); landed != "" {
+		defer func() {
+			if outcome == usageRetryArmed {
+				r.countFrozenProgram(store.FrozenProgramSourceUsageWindow, landed)
+			}
+		}()
+	}
+	ctx, armCancel := context.WithTimeout(context.WithoutCancel(ctx), usageRetryStoreTimeout)
+	defer armCancel()
 	// `at`/`source` are the PAID decision: made with the attempts this run
 	// has actually spent, and (on a probed row) with the announced instant
 	// restored over a blind guess, because the fall-through below arms that
@@ -960,6 +983,61 @@ func (r *Runner) armUsageWindowRetry(
 	logger.Warn("runner: run %s hit the provider usage window — retry %d/%d armed for %s (reset source: %s), NOT redelivering",
 		runID, attempt, pol.MaxAttempts, at.Format(time.RFC3339), source)
 	return usageRetryArmed
+}
+
+// freezeUsageProgram records, for the usage-window park about to be armed,
+// the program this delivery carried: frozen (Runner.freezeProgram, source
+// usage_window) and written on the run root bound to the attempt it parks
+// (store.FrozenProgramWriter) — the run's queued_at, which this delivery
+// belongs to (queue.Superseded). The retry sweeper's re-admission resumes the
+// bot's current program, and this one only when the current one is refused
+// because its source changed (ADR-167 T4a).
+//
+// A run that never started has no program to keep and freezes nothing:
+// not_started is returned. A record that lands returns written. Both are the
+// caller's to count, once its arming lands. Every other way the record does
+// not land — a store that hosts no frozen-program writer, a run whose attempt
+// is not this delivery's, a freeze that fails, a write that fails or finds
+// the run moved — is said and counted here, "" is returned, and the arming
+// proceeds without it: the re-admission then resumes the current program,
+// refused if it changed.
+func (r *Runner) freezeUsageProgram(ctx context.Context, msg *queue.RunMessage, run *store.Run, logger *iterlog.Logger) (landed string) {
+	const source = store.FrozenProgramSourceUsageWindow
+	if !run.ProgramStarted() {
+		return metrics.FrozenProgramNotStarted
+	}
+	failed := func(cause string) {
+		r.countFrozenProgram(source, metrics.FrozenProgramFreezeFailed)
+		logger.Error("runner: run %s started and met its provider's usage window, and its program was not recorded: %s — its retry is armed WITHOUT it: its re-admission resumes the bot's current program, and is refused if that program changed", msg.RunID, cause)
+	}
+	writer := store.AsFrozenProgramWriter(r.cfg.Store)
+	switch {
+	case writer == nil:
+		failed("this run store records no frozen program")
+		return ""
+	case run.QueuedAt == nil:
+		failed("the run carries no attempt marker (queued_at) to bind it to")
+		return ""
+	case queue.Superseded(msg, run):
+		failed(fmt.Sprintf("the run's attempt (queued_at %s) is not this delivery's (%s)", fmtQueuedMarker(run), deliveryAttemptLabel(msg)))
+		return ""
+	}
+	fp := r.freezeProgram(ctx, msg, run, source, "met its provider's usage window", logger)
+	if fp == nil {
+		return ""
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), usageRetryStoreTimeout)
+	defer cancel()
+	set, err := writer.SetRunFrozenProgram(wctx, msg.RunID, *run.QueuedAt, fp)
+	switch {
+	case err != nil:
+		failed(fmt.Sprintf("write its record: %v", err))
+	case !set:
+		failed(fmt.Sprintf("the run moved past the attempt this delivery parks (queued_at %s) before its record was written", fmtQueuedMarker(run)))
+	default:
+		return metrics.FrozenProgramWritten
+	}
+	return ""
 }
 
 // countRetryProbe records what one pull-forward probe found, from the runner

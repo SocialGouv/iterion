@@ -220,7 +220,7 @@ erDiagram
   }
   cred_slots {
     string _id PK "credential fingerprint or capacity subject gw:host - one row per capped key or shared gateway"
-    object holders "{run_id, at}[] - the runs admitted under the key's or gateway's hard cap"
+    object holders "{run_id, at, admitted_at}[] - the runs admitted under the key's or gateway's hard cap; at moves on every admission and re-assertion, admitted_at is the admitting write's identity (absent on an adopted entry)"
   }
   usage_windows {
     string _id PK "'<key>#<window>'"

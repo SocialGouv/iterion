@@ -711,6 +711,29 @@ func WithOnResumeAdmitted(fn func()) EngineOption {
 	return func(e *Engine) { e.onResumeAdmitted = fn }
 }
 
+// WithResumeClaimGuard hands every resume claim a check of the run document
+// it is about to claim from, called once per claim attempt before any write
+// of the claim — after the supersession check, on every claim road (a quota
+// or handoff restatement, a correction entry, a plain or queued-attempt
+// claim). An error refuses the claim with nothing written: the engine returns
+// it wrapped, and records no status for it. A guard also makes the pause path
+// claim first (claimsFirst), so no write of that path moves the run to a
+// status the guard did not see. Not propagated to a subbot child's engine.
+// The cloud runner passes its capacity guard (store.ErrCapacityPlaceLost,
+// store.ErrCapacityLedgerUnavailable).
+func WithResumeClaimGuard(guard func(ctx context.Context, run *store.Run) error) EngineOption {
+	return func(e *Engine) { e.resumeClaimGuard = guard }
+}
+
+// WithOnResumablePark calls fn after each write of failed_resumable the
+// engine performs on its own run — a failure the run can resume from, an
+// interruption, a setup phase that parks — with the code it wrote. A caller
+// that holds places for the run past the engine's return reads it to start
+// that hold at the park itself, not after its own post-engine steps.
+func WithOnResumablePark(fn func(ctx context.Context, code store.FailureCode)) EngineOption {
+	return func(e *Engine) { e.onResumablePark = fn }
+}
+
 // WithQueuedAttempt makes the resume claim of a queued run the claim of one
 // attempt: the one queued no later than publishedAt, the publication of the
 // delivery this engine executes. A run queued again after it — a cancel, then

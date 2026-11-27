@@ -3,6 +3,7 @@ package secrets
 import (
 	"bytes"
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -212,5 +213,73 @@ func TestResolveGenericWithBindings_DanglingBindingSkipped(t *testing.T) {
 	// the workflow-secret name so an operator can grep the drop.
 	if out := buf.String(); !strings.Contains(out, "gitlab_token") || !strings.Contains(out, "dangles") {
 		t.Fatalf("dangling binding must warn (naming the secret), got: %q", out)
+	}
+}
+
+// getFailing is a secret store whose Get of the ids it names fails with err:
+// a store that could not answer, not an absent secret.
+type getFailing struct {
+	GenericSecretStore
+	ids map[string]bool
+	err error
+}
+
+func (s *getFailing) Get(ctx context.Context, id string) (GenericSecret, error) {
+	if s.ids[id] {
+		return GenericSecret{}, s.err
+	}
+	return s.GenericSecretStore.Get(ctx, id)
+}
+
+// The resolver tells a candidate it could not read from one that is absent:
+// a binding or an override whose Get fails other than with
+// ErrGenericSecretNotFound, and a sealed value that does not unseal, are
+// reported per name; a dangling binding (the secret deleted) is not; a lower
+// tier that resolves still wins. Red when a read error is reported as
+// nothing, or a deleted secret as unreadable.
+func TestResolveGenericWithBindingsReport_UnreadableIsNotAbsent(t *testing.T) {
+	ctx := context.Background()
+	sealer := newSealer(t)
+	mem := NewMemoryGenericSecretStore()
+	bindStore := NewMemoryBotSecretBindingStore()
+	bound := mkGenericSecret(t, mem, sealer, "team", "", "org_forge", "bound-val")
+	pinned := mkGenericSecret(t, mem, sealer, "team", "", "org_pin", "pinned-val")
+	stranger := mkGenericSecret(t, mem, newSealer(t), "team", "", "org_other_ring", "other-ring-val")
+	mkGenericSecret(t, mem, sealer, "team", "", "fallback", "team-val")
+	for _, b := range []BotSecretBinding{
+		{ID: "b1", TenantID: "team", BotID: "bot", SecretID: bound.ID, SecretNameForWorkflow: "forge_token"},
+		{ID: "b2", TenantID: "team", BotID: "bot", SecretID: "ghost", SecretNameForWorkflow: "deleted_token"},
+		{ID: "b3", TenantID: "team", BotID: "bot", SecretID: stranger.ID, SecretNameForWorkflow: "sealed_token"},
+		{ID: "b4", TenantID: "team", BotID: "bot", SecretID: bound.ID, SecretNameForWorkflow: "fallback"},
+	} {
+		b.CreatedAt = time.Now()
+		if err := bindStore.Create(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blip := errors.New("server selection error: context deadline exceeded")
+	store := &getFailing{GenericSecretStore: mem, ids: map[string]bool{bound.ID: true, pinned.ID: true}, err: blip}
+	names := []string{"forge_token", "deleted_token", "sealed_token", "pinned_token", "fallback"}
+	got, unreadable, err := ResolveGenericWithBindingsReport(ctx, store, bindStore, "team", "", "bot", names,
+		map[string]string{"pinned_token": pinned.ID}, sealer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"forge_token", "pinned_token"} {
+		if _, ok := got[name]; ok {
+			t.Fatalf("%s resolved %+v, want nothing", name, got[name])
+		}
+		if !errors.Is(unreadable[name], blip) {
+			t.Fatalf("%s: unreadable %v, want the store's error", name, unreadable[name])
+		}
+	}
+	if _, ok := got["sealed_token"]; ok || unreadable["sealed_token"] == nil {
+		t.Fatalf("sealed_token: resolved=%v unreadable=%v, want reported as not unsealing", ok, unreadable["sealed_token"])
+	}
+	if e, ok := unreadable["deleted_token"]; ok {
+		t.Fatalf("deleted_token reported unreadable (%v), want absent: its secret is gone", e)
+	}
+	if string(got["fallback"].Plaintext) != "team-val" || got["fallback"].SourceScope != "team" {
+		t.Fatalf("fallback: %+v, want the team tier past the unreadable binding", got["fallback"])
 	}
 }
