@@ -16,7 +16,7 @@
   - [ADR-155](155-reserved-capacity-is-a-durable-allocation.md) — reserved capacity. ADR-155's own text has not been amended; the operator's arbitration of 2026-11-24, in [a comment on #2968](https://github.com/SocialGouv/iterion/issues/2968), drops its `capacityledger` and turns its slot axes (team cap, per-bot reserve) into `store.CredSlotStore` subjects.
   - [ADR-162](162-the-fork-review-lane-is-a-gesture-on-floors-that-land-first.md) — the fork-author bound, which fails closed in the launch gate.
   - [ADR-167](167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md) — `gw:<host>`, the first non-key subject of `CredSlotStore`. It is designed, with only the store slice merged; [#3254](https://github.com/SocialGouv/iterion/issues/3254) is open.
-- **Amended by**: [ADR-176](176-a-launch-past-capacity-waits-as-a-run.md) (Proposed) — D4's mechanism extends to every concurrency axis, and a launch past capacity waits as a run instead of a 429 or a park.
+- **Amended by**: [ADR-176](176-a-launch-past-capacity-waits-as-a-run.md) (Proposed) — D4's mechanism extends to every concurrency axis, a launch past capacity waits as a run instead of a 429 or a park, and a ledger error makes the run wait on `ledger_error` instead of refusing it (D4's ledger-error arm and its Consequences).
 - **Serves**: [#3748](https://github.com/SocialGouv/iterion/issues/3748)
 
 ## Context
