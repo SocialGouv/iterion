@@ -88,7 +88,12 @@ func (s *Server) superAdminRunRead(r *http.Request, id auth.Identity, teamID, ac
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta["team_id"] = teamID
+	// A caller that records its own team_id (the cross-org list names the
+	// REQUESTED team, empty when none) keeps it; otherwise the row names
+	// the team the read reaches.
+	if _, set := meta["team_id"]; !set {
+		meta["team_id"] = teamID
+	}
 	meta["via"] = "super-admin"
 	s.auditPlatform(r, teamID, action, "run", targetID, meta)
 	return true
@@ -104,16 +109,25 @@ func (s *Server) handleAdminListRuns(w http.ResponseWriter, r *http.Request) {
 	// The predicate, once per request and before any answer: WHO may read
 	// across orgs, and the audit line that says this request did. Every
 	// answer past it — the page, an empty page, a 404 for an unknown org,
-	// a 400 — follows the one audited request; the row names the ids the
-	// request asked for (scope: the team when one is named, else the
-	// org), whether or not they exist. A non-super-admin is refused here,
-	// before any lookup, and leaves no row.
-	scope := orgID
-	if teamID != "" {
-		scope = teamID
+	// a 400 — follows the one audited request. The row is queued before
+	// the answer, best-effort like every audit insert: a lost row does not
+	// fail the read. It names what the request asked for, whether or not
+	// it exists: the requested org_id and team_id (empty when absent), and
+	// scope_kind — platform (every org's runs), org (every team of
+	// org_id), team (team_id alone), org_team (team_id within org_id). Its
+	// tenant is the team when one is named, else the org. A non-super-
+	// admin is refused here, before any lookup, and leaves no row.
+	scope, scopeKind := orgID, "platform"
+	switch {
+	case orgID != "" && teamID != "":
+		scope, scopeKind = teamID, "org_team"
+	case teamID != "":
+		scope, scopeKind = teamID, "team"
+	case orgID != "":
+		scopeKind = "org"
 	}
 	if !s.superAdminRunRead(r, id, scope, "run.cross_org_list", "list", map[string]any{
-		"org_id": orgID, "team_id": teamID, "status": status,
+		"org_id": orgID, "team_id": teamID, "scope_kind": scopeKind, "status": status,
 	}) {
 		httpError(w, http.StatusForbidden, "super-admin only")
 		return
@@ -134,8 +148,8 @@ func (s *Server) handleAdminListRuns(w http.ResponseWriter, r *http.Request) {
 	limit := adminRunsLimitDefault
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid limit")
+		if err != nil || n < 1 {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid limit %q (want 1..%d)", v, adminRunsLimitMax)
 			return
 		}
 		limit = n

@@ -443,8 +443,8 @@ func TestAdminRuns_EarlyAnswersAreAudited(t *testing.T) {
 			if ev.ActorID != "root" || ev.ActorKind != "super_admin" || ev.Scope != audit.ScopePlatform {
 				t.Fatalf("audit row actor %q/%q scope %q, want the super-admin at platform scope", ev.ActorID, ev.ActorKind, ev.Scope)
 			}
-			if ev.TenantID != tc.scope || ev.Meta["team_id"] != tc.scope || ev.Meta["org_id"] != tc.org {
-				t.Fatalf("audit row tenant %q meta %v, want scope %q and the requested org %q", ev.TenantID, ev.Meta, tc.scope, tc.org)
+			if ev.TenantID != tc.scope || ev.Meta["team_id"] != tc.team || ev.Meta["org_id"] != tc.org {
+				t.Fatalf("audit row tenant %q meta %v, want scope %q, the requested org %q and team %q", ev.TenantID, ev.Meta, tc.scope, tc.org, tc.team)
 			}
 		})
 	}
@@ -470,5 +470,55 @@ func TestAdminRuns_RefusedCallerLeavesNoAuditRow(t *testing.T) {
 				t.Fatalf("a refused caller left %d run.cross_org_list rows, want none", len(rows))
 			}
 		})
+	}
+}
+
+// TestAdminRuns_AuditRowNamesTheRequest: the one run.cross_org_list row
+// names what the request asked for — the requested org and team (empty
+// when absent, never the org id recorded as a team) and the scope kind —
+// whatever the store then answers.
+func TestAdminRuns_AuditRowNamesTheRequest(t *testing.T) {
+	for _, tc := range []struct {
+		query, tenant, org, team, kind string
+		code                           int
+	}{
+		{"", "", "", "", "platform", 200},
+		{"?org_id=org-alpha", "org-alpha", "org-alpha", "", "org", 200},
+		{"?org_id=org-alpha&team_id=team-a1", "team-a1", "org-alpha", "team-a1", "org_team", 200},
+		{"?team_id=team-b1", "team-b1", "", "team-b1", "team", 200},
+		{"?org_id=org-nope", "org-nope", "org-nope", "", "org", 404},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			auditStore, s, hs, adminTok, _ := newAdminRunsServer(t)
+			if code, _ := adminRunsGet(t, hs, adminTok, tc.query); code != tc.code {
+				t.Fatalf("%q: code %d, want %d", tc.query, code, tc.code)
+			}
+			rows := crossOrgListRows(t, s, auditStore)
+			if len(rows) != 1 {
+				t.Fatalf("%q left %d run.cross_org_list rows, want exactly 1", tc.query, len(rows))
+			}
+			ev := rows[0]
+			if ev.TenantID != tc.tenant || ev.Meta["org_id"] != tc.org || ev.Meta["team_id"] != tc.team || ev.Meta["scope_kind"] != tc.kind {
+				t.Fatalf("%q: audit row tenant %q meta %v, want tenant %q org_id %q team_id %q scope_kind %q", tc.query, ev.TenantID, ev.Meta, tc.tenant, tc.org, tc.team, tc.kind)
+			}
+		})
+	}
+}
+
+// TestAdminRuns_LimitOutsideItsRangeIsRefused: the page size is 1..500 —
+// 0 is not "no limit", it is refused like a negative or a non-number; a
+// size above the cap is capped, and 1 answers one row and a cursor.
+func TestAdminRuns_LimitOutsideItsRangeIsRefused(t *testing.T) {
+	_, _, hs, adminTok, _ := newAdminRunsServer(t)
+	for _, q := range []string{"?limit=0", "?limit=-1", "?limit=abc"} {
+		if code, out := adminRunsGet(t, hs, adminTok, q); code != 400 {
+			t.Errorf("%s: code %d rows %d, want 400", q, code, len(out.Runs))
+		}
+	}
+	if code, out := adminRunsGet(t, hs, adminTok, "?limit=1"); code != 200 || len(out.Runs) != 1 || out.NextCursor == "" {
+		t.Fatalf("?limit=1: code %d rows %d cursor %q, want one row and a next cursor", code, len(out.Runs), out.NextCursor)
+	}
+	if code, out := adminRunsGet(t, hs, adminTok, "?limit=501"); code != 200 || len(out.Runs) != 4 {
+		t.Fatalf("?limit=501: code %d rows %d, want the cap applied and all 4 runs", code, len(out.Runs))
 	}
 }

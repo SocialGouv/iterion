@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,20 +36,27 @@ type tenantHeader struct {
 // document: none is "", exactly one exact "tenant_id" string is that tenant,
 // anything else — a duplicate, a case alias, a non-string — is an invalid
 // identity, never read leniently.
+//
+// A refusal wraps ErrInvalidRunDataIdentity with the offending key shape —
+// the keys and the BSON type, never the values.
 func canonicalTenant(headers []tenantHeader) (string, error) {
 	switch len(headers) {
 	case 0:
 		return "", nil
 	case 1:
 	default:
-		return "", store.ErrInvalidRunDataIdentity
+		keys := make([]string, len(headers))
+		for i, h := range headers {
+			keys[i] = h.key
+		}
+		return "", fmt.Errorf("%w: duplicate tenant keys %q", store.ErrInvalidRunDataIdentity, keys)
 	}
 	if headers[0].key != "tenant_id" {
-		return "", store.ErrInvalidRunDataIdentity
+		return "", fmt.Errorf("%w: tenant key alias %q", store.ErrInvalidRunDataIdentity, headers[0].key)
 	}
 	tenant, ok := headers[0].value.StringValueOK()
 	if !ok {
-		return "", store.ErrInvalidRunDataIdentity
+		return "", fmt.Errorf("%w: tenant_id is BSON %s, not a string", store.ErrInvalidRunDataIdentity, headers[0].value.Type)
 	}
 	return tenant, nil
 }

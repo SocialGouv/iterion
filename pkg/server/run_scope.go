@@ -380,9 +380,10 @@ func (s *Server) runScopeLadder(r *http.Request, fixedSegments int, role identit
 // run by id are resolved to the RUN's team and stamped with the caller's
 // standing THERE; every other route stamps exactly as before (the original
 // identity, the original team). ok=false means the response is already
-// written: 404 for a run that does not exist or that the caller cannot see
-// (one answer, no existence oracle), 403 for a caller without the ladder's
-// rung, 500 when the store fails (fail visibly, never a degrade).
+// written: 404 for a run that does not exist, that the caller cannot see or
+// whose stored tenant is invalid (one answer, no existence oracle), 403 for a
+// caller without the ladder's rung, 500 when the store fails (fail visibly,
+// never a degrade).
 func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Identity) (context.Context, bool) {
 	if issueID, isIssue, fixedSegments := s.issueIDClass(r); isIssue {
 		return s.scopeIssueByID(w, r, id, issueID, fixedSegments)
@@ -402,6 +403,18 @@ func (s *Server) scopeRunByID(w http.ResponseWriter, r *http.Request, id auth.Id
 	if err != nil {
 		if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
 			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+			return nil, false
+		}
+		if errors.Is(err, store.ErrInvalidRunDataIdentity) {
+			// A run document whose tenant the strict rule refuses has no
+			// team anyone can stand in: it answers the 404 of a missing
+			// run to every caller (a distinct status would be an
+			// existence oracle), and the corruption is logged for the
+			// operator.
+			if s.logger != nil {
+				s.logger.Warn("run scope: run %s refused, its stored tenant is invalid: %v", runID, err)
+			}
+			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %s", runID)
 			return nil, false
 		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "resolve run tenant: %v", err)

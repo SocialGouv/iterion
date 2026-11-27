@@ -3,6 +3,7 @@ package mongo
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -43,15 +44,23 @@ func TestMongoUnboundRunDecodeAppliesTheStrictTenantRule(t *testing.T) {
 				entries bson.D
 				tenant  string
 				valid   bool
+				// shape is the key shape a refusal names.
+				shape string
 			}{
-				{"canonical", bson.D{{Key: "tenant_id", Value: "T"}}, "T", true},
-				{"missing", nil, "", true},
-				{"empty", bson.D{{Key: "tenant_id", Value: ""}}, "", true},
-				{"alias-only", bson.D{{Key: "TENANT_ID", Value: "T"}}, "", false},
-				{"canonical-then-alias", bson.D{{Key: "tenant_id", Value: "T"}, {Key: "Tenant_Id", Value: "U"}}, "", false},
-				{"duplicate", bson.D{{Key: "tenant_id", Value: "U"}, {Key: "tenant_id", Value: "T"}}, "", false},
-				{"null", bson.D{{Key: "tenant_id", Value: nil}}, "", false},
-				{"number", bson.D{{Key: "tenant_id", Value: int32(7)}}, "", false},
+				{"canonical", bson.D{{Key: "tenant_id", Value: "T"}}, "T", true, ""},
+				{"missing", nil, "", true, ""},
+				{"empty", bson.D{{Key: "tenant_id", Value: ""}}, "", true, ""},
+				{"alias-only", bson.D{{Key: "TENANT_ID", Value: "T"}}, "", false, `tenant key alias "TENANT_ID"`},
+				{"canonical-then-alias", bson.D{{Key: "tenant_id", Value: "T"}, {Key: "Tenant_Id", Value: "U"}}, "", false, `duplicate tenant keys ["tenant_id" "Tenant_Id"]`},
+				{"duplicate", bson.D{{Key: "tenant_id", Value: "U"}, {Key: "tenant_id", Value: "T"}}, "", false, `duplicate tenant keys ["tenant_id" "tenant_id"]`},
+				{"null", bson.D{{Key: "tenant_id", Value: nil}}, "", false, "tenant_id is BSON null, not a string"},
+				{"number", bson.D{{Key: "tenant_id", Value: int32(7)}}, "", false, "tenant_id is BSON 32-bit integer, not a string"},
+			}
+			// refusedWith reports whether err is the typed refusal naming
+			// the run and the offending key shape.
+			refusedWith := func(err error, id, shape string) bool {
+				return errors.Is(err, store.ErrInvalidRunDataIdentity) && err != nil &&
+					strings.Contains(err.Error(), "run "+id+":") && strings.Contains(err.Error(), shape)
 			}
 			byID := map[string]int{}
 			for i, tc := range cases {
@@ -75,8 +84,8 @@ func TestMongoUnboundRunDecodeAppliesTheStrictTenantRule(t *testing.T) {
 						}
 						continue
 					}
-					if !errors.Is(err, store.ErrInvalidRunDataIdentity) {
-						t.Errorf("%s of %s: tenant %q, %v, want ErrInvalidRunDataIdentity", name, id, mongoLoadedTenant(r), err)
+					if !refusedWith(err, id, tc.shape) {
+						t.Errorf("%s of %s: tenant %q, %v, want ErrInvalidRunDataIdentity naming the run and %s", name, id, mongoLoadedTenant(r), err, tc.shape)
 					}
 				}
 			}
@@ -97,8 +106,12 @@ func TestMongoUnboundRunDecodeAppliesTheStrictTenantRule(t *testing.T) {
 				}
 				refused := map[string]bool{}
 				for _, sk := range skipped {
-					if !errors.Is(sk.Err, store.ErrInvalidRunDataIdentity) {
-						t.Errorf("ListRunWindow %+v skipped %s with %v, want ErrInvalidRunDataIdentity", w, sk.ID, sk.Err)
+					shape := ""
+					if i, ok := byID[sk.ID]; ok {
+						shape = cases[i].shape
+					}
+					if !refusedWith(sk.Err, sk.ID, shape) {
+						t.Errorf("ListRunWindow %+v skipped %s with %v, want ErrInvalidRunDataIdentity naming the run and %s", w, sk.ID, sk.Err, shape)
 					}
 					refused[sk.ID] = true
 				}

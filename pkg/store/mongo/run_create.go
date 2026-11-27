@@ -125,7 +125,7 @@ func decodeRunValueRecord(ctx context.Context, id string, raw bson.Raw, decodeLe
 		return store.Run{}, err
 	}
 	if err := checkRunDocumentTenant(ctx, raw); err != nil {
-		return store.Run{}, err
+		return store.Run{}, fmt.Errorf("store/mongo: run %s: %w", id, err)
 	}
 
 	var r store.Run
