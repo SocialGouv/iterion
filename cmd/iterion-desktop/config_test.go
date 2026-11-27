@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_Missing_ReturnsDefaults(t *testing.T) {
@@ -105,6 +106,22 @@ func TestProjectByID(t *testing.T) {
 	again := c.ProjectByID(a.ID)
 	if again.Dir != "/tmp/a" {
 		t.Errorf("ProjectByID returned a live pointer, got Dir=%q after mutation", again.Dir)
+	}
+}
+
+// The project just touched heads the MRU even when the clock has not moved
+// past the newest stamp: two touches within Windows' clock granularity read
+// the same time, and a stamp from a skewed clock can sit in the future.
+func TestMRU_TheProjectJustTouchedLeadsWhateverTheClockSays(t *testing.T) {
+	c := NewConfig()
+	a := c.AddProject("/tmp/a")
+	c.RecentProjects[0].LastOpened = time.Now().UTC().Add(time.Hour)
+	b := c.AddProject("/tmp/b")
+	if c.RecentProjects[0].ID != b.ID {
+		t.Fatalf("MRU head after adding b = %q, want b %q", c.RecentProjects[0].ID, b.ID)
+	}
+	if !c.SetCurrentProject(a.ID) || c.RecentProjects[0].ID != a.ID {
+		t.Fatalf("MRU head after switching to a = %q, want a %q", c.RecentProjects[0].ID, a.ID)
 	}
 }
 
