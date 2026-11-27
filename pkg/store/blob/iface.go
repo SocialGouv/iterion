@@ -127,22 +127,27 @@ type Client interface {
 	// single sweep, with DeleteRun's semantics.
 	DeleteRunFiles(ctx context.Context, runID string) error
 
-	// PutIRBlob stashes an out-of-band compiled IR under `ir/<runID>.json`
-	// (the queue IRRef fallback for workflows whose IR exceeds the NATS
-	// max_payload). Idempotent: re-PUTting the same run replaces the bytes.
-	PutIRBlob(ctx context.Context, runID string, body []byte) error
+	// PutIRBlob stashes an out-of-band blob under `ir/<logicalID>.json`
+	// (the queue IRRef fallback for payloads that exceed the NATS
+	// max_payload): a compiled IR under its content id
+	// `<runID>-bundle-ir-<digest>-<nonce>` (store.IRContentLogicalID), a
+	// bundle snapshot under `<runID>-bundle-<digest>`. Idempotent:
+	// re-PUTting the same logical id replaces the bytes.
+	PutIRBlob(ctx context.Context, logicalID string, body []byte) error
 
-	// GetIRBlob returns the IR bytes previously PUT for a run, addressed by
-	// the storage key carried on queue.IRRef.StorageKey. Returns
-	// ErrArtifactNotFound when the key is absent. The key is validated
-	// against the canonical `ir/<run_id>.json` shape so a tampered
-	// reference can never widen the key space.
+	// GetIRBlob returns the bytes previously PUT under a logical id,
+	// addressed by the storage key carried on queue.IRRef.StorageKey.
+	// Returns ErrArtifactNotFound when the key is absent. The key is
+	// validated against the canonical `ir/<logical_id>.json` shape so a
+	// tampered reference can never widen the key space.
 	GetIRBlob(ctx context.Context, storageKey string) ([]byte, error)
 
-	// DeleteRunIR removes the `ir/<runID>.json` blob and the run's bundle
-	// snapshots (`ir/<runID>-bundle-<digest>.json`, IRBundleSnapshotPrefix),
-	// part of the per-run cleanup sweep alongside DeleteRun /
-	// DeleteRunToolBlobs. Idempotent: deleting a non-existent key returns nil.
+	// DeleteRunIR removes the legacy `ir/<runID>.json` blob and every
+	// object of the run's `-bundle-` family (`ir/<runID>-bundle-…`,
+	// IRBundleSnapshotPrefix: compiled IRs under their content ids, and
+	// bundle snapshots), part of the per-run cleanup sweep alongside
+	// DeleteRun / DeleteRunToolBlobs. Idempotent: deleting a non-existent key
+	// returns nil.
 	DeleteRunIR(ctx context.Context, runID string) error
 
 	// PutBackendSession stores a packed CLI session (ADR-089) under
@@ -172,8 +177,8 @@ type Client interface {
 	DeleteUpload(ctx context.Context, uploadID string) error
 }
 
-// IRBlobKey returns the canonical layout key for an out-of-band compiled
-// IR: `ir/<run_id>.json`. This is the value stamped on
+// IRBlobKey returns the canonical layout key of an out-of-band IR blob:
+// `ir/<logical_id>.json`. This is the value stamped on
 // queue.IRRef.StorageKey.
 func IRBlobKey(runID string) (string, error) {
 	return irBlobKey(runID)

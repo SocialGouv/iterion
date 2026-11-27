@@ -148,7 +148,8 @@ run of every team the org still lists — a team deleted through the team
 door took no runs with it, and the purge no longer sees them
 ([flow-org-team-lifecycle.md](diagrams/flow-org-team-lifecycle.md)) — one
 by one through the run store, with the objects it owns in the bucket (`artifacts/`, `attachments/`, `tools/`,
-`ir/<run>.json` and the bundle snapshots `ir/<run>-bundle-<digest>.json`,
+the IR objects `ir/<run>-bundle-ir-<digest>-<nonce>.json` (compiled IRs),
+`ir/<run>-bundle-<digest>.json` (bundle snapshots) and the legacy `ir/<run>.json`,
 `sessions/`, `runfiles/` under the run id); then every team-scoped
 and org-scoped Mongo collection, the audit rows keyed by the org AND by
 each of its teams, the org's sealed credentials and routing policies; then

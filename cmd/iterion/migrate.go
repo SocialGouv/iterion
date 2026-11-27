@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -341,6 +342,13 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 // (the run document holds the index + checkpoint). Each step is
 // idempotent against re-runs (Mongo upsert + S3 PUT-overwrite).
 func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, runID string, dryRun bool, logger *iterlog.Logger) error {
+	// A local run id is the operator's free choice (iterion run --run-id);
+	// the cloud store reserves the ids that carry the IR blob infix or end
+	// with "-bundle", so the run is refused before anything is written, and
+	// a dry run predicts the refusal.
+	if store.RunIDCarriesIRBlobFamilyInfix(runID) {
+		return fmt.Errorf("run id %q carries %q, the infix the cloud store reserves for a run's IR blob ids, or ends with %q: the run is not migrated", runID, store.IRBlobFamilyInfix, strings.TrimSuffix(store.IRBlobFamilyInfix, "-"))
+	}
 	r, err := src.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("load run: %w", err)

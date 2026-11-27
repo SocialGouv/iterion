@@ -114,10 +114,12 @@ func toolBlobKey(runID, toolUseID, kind string) (string, error) {
 	return fmt.Sprintf("tools/%s/%s/%s", runID, toolUseID, kind), nil
 }
 
-// irBlobKey builds the canonical S3 key for an out-of-band compiled IR:
-// ir/<run_id>.json. One object per run (the IRRef fallback only ever
-// stashes a single IR per run), so there is no sub-path to sanitise
-// beyond the run id.
+// irBlobKey builds the canonical S3 key for an out-of-band IR blob:
+// ir/<logical_id>.json. The logical id is the run id — a legacy key that
+// runners read and publishers do not write — or one of the run's "-bundle-"
+// ids (IRBundleSnapshotPrefix): a compiled IR's content id
+// (store.IRContentLogicalID) or a bundle snapshot. It is one path
+// component, so there is no sub-path to sanitise beyond it.
 func irBlobKey(runID string) (string, error) {
 	if err := store.SanitizePathComponent("run_id", runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
@@ -125,20 +127,25 @@ func irBlobKey(runID string) (string, error) {
 	return fmt.Sprintf("ir/%s.json", runID), nil
 }
 
-// IRBundleSnapshotPrefix is the S3 key prefix of a run's immutable bundle
-// snapshots: the publisher parks one out of band under the IR key of
-// "<run_id>-bundle-<digest>" (ir/<run_id>-bundle-<digest>.json) when it
-// exceeds the queue payload. Keyed by the run id alone like every run key
-// space, so DeleteRunIR sweeps it with the run's canonical IR. The run id is
-// sanitised, and the "-bundle-" suffix keeps the prefix off another run whose
-// id merely starts with this one — the same "-bundle-" convention the IR read
-// mediation splits on (store/mongo GetIRBlob), which assumes no run id
-// carries it.
+// IRBundleSnapshotPrefix is the S3 key prefix of a run's "-bundle-" family
+// of IR objects: the immutable bundle snapshots, parked under the IR key of
+// "<run_id>-bundle-<digest>" (ir/<run_id>-bundle-<digest>.json), and the
+// compiled IRs, under "<run_id>-bundle-ir-<digest>-<nonce>"
+// (store.IRContentLogicalID), each when it exceeds the queue payload. Keyed
+// by the run id like every run key space, so DeleteRunIR sweeps them with
+// the run's legacy ir/<run_id>.json. The run id is sanitised, and the
+// "-bundle-" suffix (store.IRBlobFamilyInfix) keeps the prefix off another
+// run whose id merely starts with this one — the same infix the IR read
+// mediation splits on (store/mongo GetIRBlob). That holds while no run id
+// carries the infix or ends with "-bundle" — the prefix of run "x" covers
+// the whole family of run "x-bundle" — and the doors that take a run id
+// from a caller into the cloud store refuse both shapes
+// (store.RunIDCarriesIRBlobFamilyInfix).
 func IRBundleSnapshotPrefix(runID string) (string, error) {
 	if err := store.SanitizePathComponent("run_id", runID); err != nil {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
-	return fmt.Sprintf("ir/%s-bundle-", runID), nil
+	return "ir/" + runID + store.IRBlobFamilyInfix, nil
 }
 
 // validateIRBlobKey re-derives the canonical IR key from a storage key
@@ -152,15 +159,15 @@ func validateIRBlobKey(storageKey string) (string, error) {
 		return "", err
 	}
 	if canonical != storageKey {
-		return "", fmt.Errorf("blob: invalid IR storage key %q (want ir/<run_id>.json)", storageKey)
+		return "", fmt.Errorf("blob: invalid IR storage key %q (want ir/<logical_id>.json)", storageKey)
 	}
 	return canonical, nil
 }
 
-// IRBlobKeyRunID returns the run id embedded in a canonical IR storage
-// key ("ir/<run_id>.json" — the snapshot shape embeds
-// "<run_id>-bundle-<digest>"). The mongo IR blob read uses it to bind
-// the fetch to the embedded run's tenant (D14 F7).
+// IRBlobKeyRunID returns the logical id embedded in a canonical IR storage
+// key: the run id of "ir/<run_id>.json", or the "<run_id>-bundle-…" id of a
+// bundle snapshot or of a compiled IR (store.IRContentLogicalID). The mongo
+// IR blob read uses it to bind the fetch to the owning run's tenant (D14 F7).
 func IRBlobKeyRunID(storageKey string) (string, error) {
 	if _, err := validateIRBlobKey(storageKey); err != nil {
 		return "", err

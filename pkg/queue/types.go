@@ -12,6 +12,8 @@ package queue
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -734,11 +736,48 @@ const (
 	IRBackendMongo IRBackend = "mongo"
 )
 
-// IRRef points at an out-of-band IR blob. Used when ast.MarshalFile
-// output exceeds the NATS message size budget (~1 MB).
+// IRRef points at an out-of-band blob: the compiled IR (RunMessage.IRRef)
+// when ast.MarshalFile output exceeds the NATS message size budget (~1 MB),
+// or a bot bundle snapshot (BotBundleRef.SnapshotRef).
 type IRRef struct {
 	StorageKey string    `json:"storage_key"`
 	Backend    IRBackend `json:"backend"`
+	// Digest is the lowercase hex SHA-256 of the exact bytes stored at
+	// StorageKey (IRDigest). The publisher stamps it on RunMessage.IRRef and
+	// names the blob by it and by a nonce drawn for the publication
+	// (store.IRContentLogicalID), so every publication of a run writes its
+	// own object, and the runner refuses fetched bytes that do not hash to
+	// it. It is empty on a legacy reference (ir/<run_id>.json, from a
+	// publisher that does not stamp it): the runner loads that one without
+	// the check and logs that it did.
+	//
+	// A BotBundleRef.SnapshotRef leaves it empty: BotBundleRef.SnapshotDigest
+	// is the same hash of the same bytes, and bundle.DecodeSnapshot checks it.
+	// Validate refuses a snapshot reference whose Digest names another hash.
+	//
+	// The field rides without a schema bump, under the additive-field rule's
+	// exemption (docs/cloud-queue-schema-rollout.md, which also states its
+	// one residual): a runner that ignores it still fetches the publication's
+	// own key, and no other publication writes there. A server of an earlier
+	// release refuses no run id and stashes a run's IR under
+	// ir/<run_id>.json, but the key carries a 128-bit nonce, so no caller can
+	// guess it to name a run after it and have such a server write there, in
+	// any roll order; and the publisher derives the value — no operator chose
+	// it.
+	Digest string `json:"digest,omitempty"`
+}
+
+// IRDigest is the digest IRRef.Digest carries: the lowercase hex SHA-256
+// of body.
+func IRDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// isSHA256Hex reports whether s is a lowercase hex SHA-256, the spelling
+// of IRRef.Digest and BotBundleRef.SnapshotDigest.
+func isSHA256Hex(s string) bool {
+	return len(s) == 64 && strings.Trim(s, "0123456789abcdef") == ""
 }
 
 // Backend is the LLM execution backend a runner picks for the run.
@@ -868,7 +907,8 @@ func staleProducer(v int, rules []staleRule) error {
 // touching the workflow:
 //   - schema version matches (rolling-upgrade safety)
 //   - mandatory identifiers present
-//   - exactly one of IRCompiled / IRRef is set (J-IR-too-large fallback)
+//   - exactly one of IRCompiled / IRRef is set (J-IR-too-large fallback),
+//     and an IRRef digest, when set, is a lowercase hex SHA-256
 func (m *RunMessage) Validate() error {
 	if m == nil {
 		return fmt.Errorf("queue: nil RunMessage")
@@ -949,12 +989,15 @@ func (m *RunMessage) Validate() error {
 		default:
 			return fmt.Errorf("queue: IRRef.Backend %q invalid (want s3|mongo)", m.IRRef.Backend)
 		}
+		if d := m.IRRef.Digest; d != "" && !isSHA256Hex(d) {
+			return fmt.Errorf("queue: IRRef.Digest %q invalid (want a lowercase hex SHA-256)", d)
+		}
 	}
 	if b := m.BotBundle; b != nil && (b.SnapshotDigest != "" || len(b.Snapshot) > 0 || b.SnapshotRef != nil) {
 		if m.V < 13 {
 			return fmt.Errorf("%w: bundle snapshots require v13", ErrSchemaVersion)
 		}
-		if len(b.SnapshotDigest) != 64 || strings.Trim(b.SnapshotDigest, "0123456789abcdef") != "" {
+		if !isSHA256Hex(b.SnapshotDigest) {
 			return fmt.Errorf("queue: bundle snapshot digest must be lowercase SHA-256")
 		}
 		if (len(b.Snapshot) > 0) == (b.SnapshotRef != nil) {
@@ -963,6 +1006,9 @@ func (m *RunMessage) Validate() error {
 		if b.SnapshotRef != nil {
 			if b.SnapshotRef.StorageKey == "" || (b.SnapshotRef.Backend != IRBackendS3 && b.SnapshotRef.Backend != IRBackendMongo) {
 				return fmt.Errorf("queue: invalid bundle snapshot reference")
+			}
+			if d := b.SnapshotRef.Digest; d != "" && d != b.SnapshotDigest {
+				return fmt.Errorf("queue: bundle snapshot reference digest %q differs from snapshot_digest %q", d, b.SnapshotDigest)
 			}
 		}
 	}

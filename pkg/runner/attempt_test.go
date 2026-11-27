@@ -17,7 +17,7 @@ func TestLoadWorkflowPreservesAttemptSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wf, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "attempt", WorkflowName: "w", IRCompiled: body}, nil)
+	wf, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "attempt", WorkflowName: "w", IRCompiled: body}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
@@ -62,10 +64,18 @@ func TestListRunIDsForPurge_Mongo(t *testing.T) {
 	if _, err := s.PutIRBlob(ctx, "run-a3-bundle-d1", []byte(`{"snapshot":1}`)); err != nil {
 		t.Fatalf("PutIRBlob snapshot: %v", err)
 	}
+	program := []byte(`{"ir":"content-addressed"}`)
+	contentID, err := store.IRContentLogicalID("run-a3", queue.IRDigest(program), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutIRBlob(ctx, contentID, program); err != nil {
+		t.Fatalf("PutIRBlob content id: %v", err)
+	}
 	if err := s.DeleteRun(ta, "run-a3"); err != nil {
 		t.Fatalf("DeleteRun: %v", err)
 	}
-	for _, name := range []string{"run-a3", "run-a3-bundle-d1"} {
+	for _, name := range []string{"run-a3", "run-a3-bundle-d1", contentID} {
 		key, err := blob.IRBlobKey(name)
 		if err != nil {
 			t.Fatal(err)

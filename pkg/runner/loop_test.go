@@ -27,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
 
 // NOTE: The runner's main loop wraps NATS deliveries + a Mongo store +
@@ -239,7 +240,7 @@ func TestMaterializeOAuthCredentials_UnknownKindRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadWorkflow_RejectsEmptyIR(t *testing.T) {
-	_, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "r", WorkflowName: "wf"}, nil)
+	_, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "r", WorkflowName: "wf"}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "neither IRCompiled nor IRRef") {
 		t.Errorf("expected neither-IRCompiled-nor-IRRef err, got %v", err)
 	}
@@ -250,7 +251,7 @@ func TestLoadWorkflow_RejectsMalformedIR(t *testing.T) {
 		RunID:        "r",
 		WorkflowName: "wf",
 		IRCompiled:   []byte(`{not valid json`),
-	}, nil)
+	}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "decode IR") {
 		t.Errorf("expected decode IR err, got %v", err)
 	}
@@ -258,7 +259,8 @@ func TestLoadWorkflow_RejectsMalformedIR(t *testing.T) {
 
 // fakeIRBlobs is a store.IRBlobStore that serves preloaded IR bytes so the
 // runner's out-of-band fetch path (IRRef fallback, T-42) is exercisable
-// without S3/Mongo.
+// without S3/Mongo. It derives keys like the cloud store (blob.IRBlobKey)
+// and, like S3, replaces the bytes when a PUT lands on an existing key.
 type fakeIRBlobs struct {
 	blobs map[string][]byte
 	err   error
@@ -275,8 +277,11 @@ func (f *fakeIRBlobs) GetIRBlob(_ context.Context, key string) ([]byte, error) {
 	return b, nil
 }
 
-func (f *fakeIRBlobs) PutIRBlob(_ context.Context, runID string, body []byte) (string, error) {
-	key := "ir/" + runID + ".json"
+func (f *fakeIRBlobs) PutIRBlob(_ context.Context, logicalID string, body []byte) (string, error) {
+	key, err := blob.IRBlobKey(logicalID)
+	if err != nil {
+		return "", err
+	}
 	if f.blobs == nil {
 		f.blobs = map[string][]byte{}
 	}
@@ -302,7 +307,7 @@ func TestLoadWorkflow_FetchesIRRef(t *testing.T) {
 		WorkflowName: "main",
 		IRRef:        &queue.IRRef{StorageKey: "ir/run-big.json", Backend: queue.IRBackendS3},
 	}
-	wf, err := loadWorkflow(context.Background(), msg, blobs)
+	wf, err := loadWorkflow(context.Background(), msg, blobs, nil)
 	if err != nil {
 		t.Fatalf("loadWorkflow: %v", err)
 	}
@@ -317,7 +322,7 @@ func TestLoadWorkflow_IRRefWithoutSeamFails(t *testing.T) {
 		WorkflowName: "main",
 		IRRef:        &queue.IRRef{StorageKey: "ir/run-big.json", Backend: queue.IRBackendS3},
 	}
-	_, err := loadWorkflow(context.Background(), msg, nil)
+	_, err := loadWorkflow(context.Background(), msg, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot fetch IR blobs") {
 		t.Fatalf("expected cannot-fetch err, got %v", err)
 	}
@@ -329,7 +334,7 @@ func TestLoadWorkflow_IRRefFetchErrorPropagates(t *testing.T) {
 		WorkflowName: "main",
 		IRRef:        &queue.IRRef{StorageKey: "ir/missing.json", Backend: queue.IRBackendS3},
 	}
-	_, err := loadWorkflow(context.Background(), msg, &fakeIRBlobs{})
+	_, err := loadWorkflow(context.Background(), msg, &fakeIRBlobs{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "fetch out-of-band IR") {
 		t.Fatalf("expected fetch err, got %v", err)
 	}
@@ -387,7 +392,7 @@ workflow main:
 		RunID:        "r",
 		WorkflowName: "main",
 		IRCompiled:   body,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("loadWorkflow: %v", err)
 	}

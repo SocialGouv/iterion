@@ -2,11 +2,13 @@ package mongo
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongotest"
+	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
@@ -84,6 +86,25 @@ func TestIRBlobReadIsTenantMediated(t *testing.T) {
 	}
 	if body, err := s.GetIRBlob(store.WithTenant(ctx, "tenant-a"), snapKey); err != nil || string(body) != `{"snapshot":true}` {
 		t.Fatalf("owner snapshot read: body=%q err=%v", body, err)
+	}
+
+	// A compiled IR's content id "<runID>-bundle-ir-<digest>-<nonce>"
+	// resolves to the owning run the same way: the owner reads its program,
+	// a foreign tenant gets the not-found a missing blob would return.
+	program := []byte(`{"ir":"content-addressed"}`)
+	contentID, err := store.IRContentLogicalID("run-a", queue.IRDigest(program), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentKey, err := s.PutIRBlob(ctx, contentID, program)
+	if err != nil {
+		t.Fatalf("PutIRBlob content id: %v", err)
+	}
+	if body, err := s.GetIRBlob(store.WithTenant(ctx, "tenant-a"), contentKey); err != nil || string(body) != string(program) {
+		t.Fatalf("owner content-addressed read: body=%q err=%v", body, err)
+	}
+	if _, err := s.GetIRBlob(store.WithTenant(ctx, "tenant-b"), contentKey); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("foreign content-addressed read: err = %v, want os.ErrNotExist", err)
 	}
 
 	// A mediated read whose blob is genuinely absent: the owner's tenant

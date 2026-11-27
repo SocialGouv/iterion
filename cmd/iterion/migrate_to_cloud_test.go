@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -308,5 +310,40 @@ func TestMigrateToCloud_PreflightS3ProbeKeyAndCleanup(t *testing.T) {
 	}
 	if len(gotPrefixes) != 1 || gotPrefixes[0] != "artifacts/preflight/" {
 		t.Errorf("S3 cleanup prefixes = %v, want [artifacts/preflight/]", gotPrefixes)
+	}
+}
+
+// A local run id is the operator's choice, and the cloud store reserves the
+// ids that carry the IR blob infix — such a run would land owning another
+// run's IR object — or end with "-bundle" — its IR objects would be swept by
+// the deletion of the run named before that ending. The migration refuses
+// both before writing anything, and the dry run predicts the refusal.
+func TestMigrateToCloud_RefusesARunIDCarryingTheIRBlobInfix(t *testing.T) {
+	ctx := context.Background()
+	src, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("open source store: %v", err)
+	}
+	const victim = "019ac3d2-7f1e-7c4b-9a0e-2b5c8d1e4f60"
+	contentID, err := store.IRContentLogicalID(victim, strings.Repeat("ab", 32), rand.Reader)
+	if err != nil {
+		t.Fatalf("IRContentLogicalID: %v", err)
+	}
+	dst, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("open destination store: %v", err)
+	}
+	for _, runID := range []string{contentID, victim + "-bundle"} {
+		if _, err := src.CreateRun(ctx, runID, "review-pr", nil); err != nil {
+			t.Fatalf("CreateRun(%s): %v", runID, err)
+		}
+		for _, dryRun := range []bool{true, false} {
+			if err := migrateRun(ctx, src, dst, runID, dryRun, quietLogger()); err == nil || !strings.Contains(err.Error(), store.IRBlobFamilyInfix) {
+				t.Fatalf("migrateRun(dry_run=%t) of %s = %v, want a refusal naming %q", dryRun, runID, err, store.IRBlobFamilyInfix)
+			}
+		}
+		if _, err := dst.LoadRun(ctx, runID); !errors.Is(err, store.ErrRunNotFound) {
+			t.Fatalf("the refused run %s landed in the destination (LoadRun = %v)", runID, err)
+		}
 	}
 }

@@ -24,7 +24,7 @@ func TestLoadWorkflow_UnloadableIRIsTyped(t *testing.T) {
 		{"decodable, uncompilable", "{}"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "r", IRCompiled: []byte(tc.ir)}, nil)
+			_, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "r", IRCompiled: []byte(tc.ir)}, nil, nil)
 			if !errors.Is(err, ErrIRUnloadable) {
 				t.Fatalf("err = %v, want ErrIRUnloadable", err)
 			}

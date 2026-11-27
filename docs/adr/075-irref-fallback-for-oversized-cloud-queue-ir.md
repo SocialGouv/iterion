@@ -4,6 +4,22 @@
 - Date: 2026-07-16
 - Deciders: jo (direction), Claude (analysis + implementation)
 
+> Amended (2026-11-27, #3835): each publication offloads its IR under its
+> own key, `ir/<run_id>-bundle-ir-<sha256>-<nonce>.json` — the nonce being
+> 128 random bits, so no caller can guess the key and name a run after it —
+> inside the run's `-bundle-` key family, so the key validation, the tenant
+> mediation and `DeleteRunIR` of the previous release serve it unchanged;
+> and `IRRef.digest` carries the SHA-256 the runner checks before compiling.
+> The key by run id alone below let a later publication of the run (a
+> resume) overwrite the program an earlier queued message still pointed at.
+> `ir/<run_id>.json` stays readable for the messages a publisher of the
+> previous release queued. The Decision and Consequences below keep that
+> previous layout as history: "one object per run" under `ir/<run_id>.json`
+> no longer holds (one object per offloaded publication), `GetIRBlob`
+> re-derives `ir/<logical_id>.json` rather than `ir/<run_id>.json`, and
+> `DeleteRunIR` sweeps the legacy key together with the `ir/<run_id>-bundle-`
+> prefix.
+
 ## Context
 
 Cloud-mode dispatch marshals a run's compiled IR (the AST `File`) inline
