@@ -3,6 +3,56 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.4](https://github.com/SocialGouv/iterion/compare/v7.40.3...v7.40.4) (2026-11-27)
+
+### Features
+
+* **tokens:** regenerate, disable/enable and purge personal access tokens; the list hides revoked ones ([#3847](https://github.com/SocialGouv/iterion/issues/3847)) ([#3859](https://github.com/SocialGouv/iterion/issues/3859)) ([304fc0a](https://github.com/SocialGouv/iterion/commit/304fc0a27d20491bda645ca3c0c246bfad221a87)), references [#3858](https://github.com/SocialGouv/iterion/issues/3858)
+
+    <details><summary>why</summary>
+
+    Asked by the operator during the prod E2E of #3821: the access-token panel and `iterion remote tokens` only created and revoked, and a revoked token stayed listed forever. Design decided by the operator (comment on #3847).
+
+    </details>
+* **vetty:** carry a supply-chain hold onto an identical change with no LLM call ([#3769](https://github.com/SocialGouv/iterion/issues/3769)) ([#3844](https://github.com/SocialGouv/iterion/issues/3844)) ([80ad647](https://github.com/SocialGouv/iterion/commit/80ad64744acedc86d66de10e122ae31b45d7a91f)), references [buildkit-operator#49](https://github.com/buildkit-operator/issues/49)
+
+    <details><summary>why</summary>
+
+    buildkit-operator#49 paid 13 consecutive full audits (~$10 each) for one correct hold_security: every Renovate rebase bought a full audit, because a hold was never carried.
+
+    </details>
+
+### Bug Fixes
+
+* **gate:** answer a paused run's unanswered claim within a bound, without a relaunch ([#3768](https://github.com/SocialGouv/iterion/issues/3768)) ([#3842](https://github.com/SocialGouv/iterion/issues/3842)) ([1add051](https://github.com/SocialGouv/iterion/commit/1add05174f5d7ad54d2387efa9ab042725a18b7f))
+
+    <details><summary>why</summary>
+
+    A gating run that paused for a human kept its launch claim pending on the required check for as long as the pause lasted, and nothing said so. On SocialGouv/iterion 25 Vetty runs paused between 2026-10-12 and 2026-11-26 (23 on a node recovery pause after AUTH_FAILED, 2 at the escalate human node); each held revi/review pending until its pull request closed, and the operator admin-merged three PRs reading it as "the reviewer does not review".
+
+    </details>
+* **runner:** a redelivered run clones with its forge token's live value, and a 401 names the refused credential ([#3816](https://github.com/SocialGouv/iterion/issues/3816)) ([#3840](https://github.com/SocialGouv/iterion/issues/3840)) ([e367731](https://github.com/SocialGouv/iterion/commit/e3677313fdc4522899d21ad0df48434b99db9fe0))
+
+    <details><summary>why</summary>
+
+    The publisher seals the run bundle once, at launch, and the bundle survives a non-terminal outcome so a redelivery can re-fetch it. A redelivered attempt therefore opened a snapshot as old as the launch: its forge_token, a GitHub App installation token living about one hour, was dead an hour later. The server's refresh worker keeps the managed secret's STORE record live and the bundle carries its id (GenericSecretRefs), but the runner only re-read that record from the mid-run refreshers, which…
+
+    </details>
+* **studio:** an invitation link registers once, on the invited address, and lands on the team ([#3846](https://github.com/SocialGouv/iterion/issues/3846)) ([#3853](https://github.com/SocialGouv/iterion/issues/3853)) ([09209b9](https://github.com/SocialGouv/iterion/commit/09209b92d19dcf63a9ba11ca61a6519f59cadd3e)), references [#3852](https://github.com/SocialGouv/iterion/issues/3852)
+
+    <details><summary>why</summary>
+
+    Found during the prod E2E of #3821: registering through an invitation link showed "Join a team — invitation already accepted" although the account had been created and the invitation accepted. The registration consumes the invitation (registerWithInvitation), then Login navigated back to the accept page, which offered Join again. Also, the link path showed the token in an editable field and left the email free, although the server refuses any other address.
+
+    </details>
+* **vetty:** honour the repository's scanner exclusions and report what the audit sets aside ([#3817](https://github.com/SocialGouv/iterion/issues/3817)) ([#3843](https://github.com/SocialGouv/iterion/issues/3843)) ([f46630b](https://github.com/SocialGouv/iterion/commit/f46630b05724353741d162f07a57c0dda4677377)), references [#3791](https://github.com/SocialGouv/iterion/issues/3791)
+
+    <details><summary>why</summary>
+
+    On #3791 (run 01a21953) a base-image bump that removed 490 HIGH/CRITICAL was held hold_security on two "introduced" advisories (hashbrown 0.15.0, zip 2.2.0) located only in a nixpkgs source-tree Cargo.lock under /nix/store/*-nixpkgs, a tree the repository already skips in its own Trivy scan. The audit's own trivy ran without that exclusion.
+
+    </details>
+
 ## [7.40.3](https://github.com/SocialGouv/iterion/compare/v7.40.2...v7.40.3) (2026-11-27)
 
 ### Features
