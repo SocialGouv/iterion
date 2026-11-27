@@ -118,7 +118,21 @@ park: `redelivery_pending` (the RUNNER promoted it at an actual queue Nak),
 consumer must never read as final. Engine writers state only the CAUSE
 (`failure_code`); continuation is runner/server-side knowledge. Both fields
 are store-owned bookkeeping: full-document saves can neither rewind the
-counter nor resurrect a stale continuation. **Deploy-order constraint**: an
+counter nor resurrect a stale continuation. A run BORN through `SaveRun` (an
+upsert-create with no stored row: a launch the cloud publisher parks on
+`CRED_SLOT_WAIT`, a run `iterion migrate to-cloud` copies) is not a
+transition: it counts no episode and carries no continuation, but it keeps
+the `failure_code` its document states and gets a fresh `execution_epoch`,
+on both store twins. Mongo rows born this way by an older binary are not
+repaired. A parked launch's row keeps no `failure_code` through its park,
+abandoned or not: each refused resume's rollback restores the empty code its
+flip replaced, and neither the sweeper's deferral nor its abandonment writes
+`failure_code` (the park's code lives in `retry_state.code`,
+`CRED_SLOT_WAIT`); its first resume attempt's flip gives it an
+`execution_epoch`. A run `iterion migrate to-cloud` copied keeps no
+`failure_code` and an empty `execution_epoch`, since a re-run that copies the
+same status is a same-status save, which keeps the stored code and epoch.
+**Deploy-order constraint**: an
 old binary's `SaveRun` drops the fields entirely (rewinding the episode key
 for its consumers), so a release adding an `outcome_seq` CONSUMER must ship
 only after the fleet fully carries the writer.

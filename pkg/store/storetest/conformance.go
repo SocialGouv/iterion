@@ -66,6 +66,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("ForkSuppliedInputsRoundTrip", func(t *testing.T) { testForkSuppliedInputsRoundTrip(t, factory(t)) })
 	t.Run("OutcomeSeqAndTypedCauses", func(t *testing.T) { testOutcomeSeqAndTypedCauses(t, factory(t)) })
 	t.Run("SaveRunHostileValues", func(t *testing.T) { testSaveRunHostileValues(t, factory(t)) })
+	t.Run("SaveRunBirth", func(t *testing.T) { testSaveRunBirth(t, factory(t)) })
 	t.Run("RoutingPolicyImmutable", func(t *testing.T) { testRoutingPolicyImmutable(t, factory(t)) })
 	t.Run("OutputsSurviveTerminal", func(t *testing.T) { testOutputsSurviveTerminal(t, factory(t)) })
 	t.Run("SessionLedgerSurvivesTheFailureCheckpoint", func(t *testing.T) { testSessionLedgerSurvivesTheFailureCheckpoint(t, factory(t)) })
@@ -3538,8 +3539,8 @@ func testSaveRunHostileValues(t *testing.T, s store.RunStore) {
 	}
 
 	// An upsert-create directly in a terminal status is NOT an episode:
-	// nothing transitioned, the document was born that way (fork seeds
-	// cancelled children through SaveRun on a run that does not exist).
+	// nothing transitioned, the document was born that way (a parked
+	// launch, a migrated run; testSaveRunBirth covers every status).
 	born := *got
 	born.ID = "run-born-terminal"
 	born.CASVersion = 0
