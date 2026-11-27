@@ -230,6 +230,52 @@ func TestGateRelaunch(t *testing.T) {
 			t.Error("the head's relaunch claim was written — a quota wall must not spend the head's one relaunch")
 		}
 	}
+	// A run paused for a human past the bound gets its claim answered (#3768),
+	// in a world where a dead run IS relaunched: the paused one is not — it is
+	// alive and waits for its human, and a second run would duplicate it. Nor
+	// on the next offer, which finds the answer on the head.
+	t.Run("a paused run past the bound is answered and never relaunched", func(t *testing.T) {
+		w := build(t, nil)
+		id, err := store.GenerateRunID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := w.s.cfg.Store.CreateRun(context.Background(), id, "dep_update_guard", deadInputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		run.BotID = botID
+		run.Status = store.RunStatusPausedWaitingHuman
+		run.Checkpoint = &store.Checkpoint{NodeID: "escalate"}
+		if err := w.s.cfg.Store.SaveRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		if run, err = w.s.cfg.Store.LoadRun(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+		now := run.UpdatedAt.Add(defaultGatePauseAnswerAfter + time.Minute)
+		w.s.gateClock = func() time.Time { return now }
+		if err := w.s.reconcileGateForRunID(context.Background(), id, gateTriggerSweep); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if w.gc.setCalls != 1 || !strings.HasPrefix(w.gc.last.Description, gatePausedDescriptionPrefix) {
+			t.Fatalf("posted %d statuses, last %q — want exactly the pause's failure", w.gc.setCalls, w.gc.last.Description)
+		}
+		w.gc.statuses = []forge.CommitStatus{w.gc.last}
+		w.s.gateSettles = nil // the forge alone must stop the second offer
+		if err := w.s.reconcileGateForRunID(context.Background(), id, gateTriggerSweep); err != nil {
+			t.Fatalf("second offer: %v", err)
+		}
+		if *w.launched != 0 {
+			t.Fatalf("launched %d runs — a paused run waits for its human, and a relaunch duplicates it", *w.launched)
+		}
+		if w.gc.setCalls != 1 {
+			t.Errorf("posted %d statuses in all, want the one answer", w.gc.setCalls)
+		}
+		if _, err := w.s.webhookDeliveries.GetByIdempotencyKey(context.Background(), relaunchIdem); err == nil {
+			t.Error("the head's relaunch claim was written for a paused run")
+		}
+	})
 	// The sweep tick lands between the engine's write and the runner's
 	// arming: the outcome event that follows the arming is the next offer.
 	t.Run("a run parked on a usage window is not dead while its arming settles", func(t *testing.T) {

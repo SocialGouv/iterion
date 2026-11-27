@@ -76,6 +76,11 @@ var operatorInfraPrefixes = []string{
 	// The merge-gate sweep's cadence: the server's net under the lossy
 	// outcome event, and what it spends of the forge's request budget.
 	"ITERION_GATE_SWEEP_",
+	// How long a run paused for a human may hold its merge-gate claim before
+	// the server answers it (pkg/server/forge_gate_paused.go): a bound on the
+	// server's repair of a required check, which a bot that lifted it would use
+	// to keep its own PR's check pending.
+	"ITERION_GATE_PAUSE_",
 	// The org purge's knobs: the run batch paces the nightly sweep of the
 	// process, and the force-sweep list lifts the guard that keeps an org's
 	// Mongo rows while one of its runs could not be deleted.
