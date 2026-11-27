@@ -1219,7 +1219,7 @@ func (f *gtForge) setCI(sha, status, conclusion string) {
 	if conclusion != "" {
 		c = conclusion
 	}
-	f.ci[sha] = map[string]any{"__typename": "CheckRun", "name": gtCI, "status": status, "conclusion": c}
+	f.ci[sha] = liveCheckRun(map[string]any{"__typename": "CheckRun", "name": gtCI, "status": status, "conclusion": c})
 	f.settle()
 }
 

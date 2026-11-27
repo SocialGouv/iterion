@@ -438,9 +438,11 @@ type contForge struct {
 	// viewer answers GraphQL's `viewer`; nil is the App as GraphQL spells it.
 	viewer map[string]any
 	// rollup is the check rollup on the head; nil is CI the base requires,
-	// passing.
-	rollup []map[string]any
-	seen   []string
+	// passing. rollupForbidden answers the rollup read with GitHub's
+	// FORBIDDEN error beside its data, as for a field the token may not read.
+	rollup          []map[string]any
+	rollupForbidden bool
+	seen            []string
 }
 
 func (f *contForge) requests() []string {
@@ -471,7 +473,7 @@ func (f *contForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("continuity WROTE to the forge: %s %s — it reads only", r.Method, r.URL.Path)
 	}
 	reads := gateReads{head: f.head, base: f.baseRef, reviews: f.reviews, endless: f.endless,
-		statuses: f.statuses, viewer: f.viewer, rollup: f.rollup}
+		statuses: f.statuses, viewer: f.viewer, rollup: f.rollup, rollupForbidden: f.rollupForbidden}
 	if !reads.serve(f.t, w, r) {
 		f.t.Errorf("continuity asked the forge an unexpected %s %s", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
@@ -490,11 +492,14 @@ type gateReads struct {
 	statuses   map[string][]map[string]any
 	viewer     map[string]any
 	rollup     []map[string]any
+	// rollupForbidden answers the rollup read with its data and GitHub's
+	// FORBIDDEN error on a field the token may not read.
+	rollupForbidden bool
 }
 
 // ciRequiredGreen is a CI check the base requires, passing: the build a
 // carried verdict leans on.
-var ciRequiredGreen = map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true}
+var ciRequiredGreen = liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": true})
 
 // graphQLReview is a REST-shaped review as GraphQL serves it: the author's
 // login without `[bot]`, its databaseId, the review's url, and its edit
@@ -563,10 +568,15 @@ func (g gateReads) serve(t *testing.T, w http.ResponseWriter, r *http.Request) b
 			if nodes == nil {
 				nodes = []map[string]any{ciRequiredGreen}
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{
+			answer := map[string]any{"data": map[string]any{"repository": map[string]any{
 				"pullRequest": map[string]any{"commits": map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{
 					"oid": g.head, "statusCheckRollup": map[string]any{"contexts": map[string]any{
-						"pageInfo": map[string]any{"hasNextPage": false}, "nodes": nodes}}}}}}}}}})
+						"pageInfo": map[string]any{"hasNextPage": false}, "nodes": nodes}}}}}}}}}}
+			if g.rollupForbidden {
+				answer["errors"] = []map[string]any{{"type": "FORBIDDEN", "message": "Resource not accessible by integration",
+					"path": []any{"repository", "pullRequest", "commits", "nodes", 0, "commit", "statusCheckRollup", "contexts", "nodes", 0, "checkSuite"}}}
+			}
+			_ = json.NewEncoder(w).Encode(answer)
 		case strings.Contains(q.Query, "viewer"):
 			viewer := g.viewer
 			if viewer == nil {
@@ -760,8 +770,10 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 		endless  bool
 		viewer   map[string]any
 		rollup   []map[string]any
-		over     map[string]string
-		check    func(t *testing.T, res map[string]any, reads []string)
+		// forbidden answers the rollup read with GitHub's FORBIDDEN error.
+		forbidden bool
+		over      map[string]string
+		check     func(t *testing.T, res map[string]any, reads []string)
 	}{
 		{
 			name:     "a pure rebase carries the verdict of X",
@@ -959,7 +971,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
 			rollup: []map[string]any{
 				{"__typename": "StatusContext", "context": "vetty/deps", "state": "PENDING", "isRequired": true},
-				{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false},
+				liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": nil, "isRequired": false}),
 			},
 			check: wantNoCarry("attests no build"),
 		},
@@ -971,12 +983,21 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 			check:    wantNoCarry("could not be read whole"),
 		},
 		{
+			// A rollup read the token may not make (GitHub answers FORBIDDEN
+			// beside the data) is a failed read, never a reading of the data.
+			name:      "a check rollup read answering FORBIDDEN carries nothing",
+			reviews:   []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
+			statuses:  map[string][]map[string]any{fx.x: greenStatus(1)},
+			forbidden: true,
+			check:     wantNoCarry("could not be read (ValueError: the GraphQL read answered errors)"),
+		},
+		{
 			// Required CI still running is the build the carry leans on: the
 			// forge holds the merge to it.
 			name:     "CI the base requires, still running, is a build the carry leans on",
 			reviews:  []map[string]any{greenOn(1, fx.x, "clean", fx.x, fresh)},
 			statuses: map[string][]map[string]any{fx.x: greenStatus(1)},
-			rollup:   []map[string]any{{"__typename": "CheckRun", "name": "ci/test", "status": "QUEUED", "conclusion": nil, "isRequired": true}},
+			rollup:   []map[string]any{liveCheckRun(map[string]any{"__typename": "CheckRun", "name": "ci/test", "status": "QUEUED", "conclusion": nil, "isRequired": true})},
 			check: func(t *testing.T, res map[string]any, _ []string) {
 				if res["carry"] != true {
 					t.Errorf("required CI still running did not count as the build: %v", res)
@@ -1168,7 +1189,7 @@ func TestDepUpdateGuardContinuityDecides(t *testing.T) {
 					base = tc.base
 				}
 				forge := &contForge{t: t, head: head, baseRef: base, reviews: reviews, endless: tc.endless,
-					statuses: tc.statuses, viewer: tc.viewer, rollup: tc.rollup}
+					statuses: tc.statuses, viewer: tc.viewer, rollup: tc.rollup, rollupForbidden: tc.forbidden}
 				res := runContinuity(t, fx.ws, fx.y, forge, tc.over)
 				t.Run(order, func(t *testing.T) { tc.check(t, res, forge.requests()) })
 				outs = append(outs, res)

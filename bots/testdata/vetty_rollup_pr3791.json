@@ -1,0 +1,1129 @@
+{
+ "_source": "GraphQL statusCheckRollup of SocialGouv/iterion#3791 (head 1382605fc), read 2026-11-26 with the check_rollup query; testsSuite lists the run ids of its 🧪 Tests suite 124138581566 (workflow 248906335), read from REST check-runs.",
+ "oid": "1382605fc789786b60918fb7a4964420aa1e60be",
+ "testsSuite": [
+  140128196136,
+  140128196420,
+  140128196426,
+  140128196438,
+  140128196441,
+  140128196501,
+  140128196502,
+  140128196539,
+  140128196550,
+  140128196551,
+  140128196560,
+  140128196571,
+  140128196603,
+  140128196607,
+  140128196634,
+  140128196668,
+  140128196729,
+  140128198379,
+  140128198400,
+  140128198459,
+  140128198460,
+  140130105250,
+  140134601258
+ ],
+ "nodes": [
+  {
+   "__typename": "CheckRun",
+   "name": "build",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128195410,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "native-images (ubuntu-latest, amd64, x86_64)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128195630,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "prep",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196517,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "prep",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196075,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "fs-scan",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128195853,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test-unit (0)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196603,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "prep",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196296,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "native-images (ubuntu-24.04-arm, arm64, aarch64)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128195329,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test-unit (1)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196668,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test-unit (2)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196502,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "publish",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128687885,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "image-scan",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128196821,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test-e2e",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128198400,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build-runner-devbox / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128277821,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128243794,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-slim / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128273394,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build-runner-devbox / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128280790,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128245418,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-slim / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128275819,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "studio",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196634,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build-runner-devbox / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128279255,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128245269,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-slim / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128275919,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test-native-exec",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196136,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build-runner-devbox / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128281525,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "build / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128246636,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "race-shard",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128198459,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-slim / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128275542,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "mongo-conformance",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128198379,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-full / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140129207422,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-full / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129208915,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "nats-conformance",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196438,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "cloud-e2e",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140128198460,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-full / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129209333,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-full / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129209958,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "vendor-check",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196550,
+   "isRequired": true,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "helm-lint",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196539,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-browser / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140129207402,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-browser / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129210315,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "golangci",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196560,
+   "isRequired": true,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-browser / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129209066,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "brand",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196607,
+   "isRequired": true,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-browser / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140129209622,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "desktop-vet-linux",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196729,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "desktop-vet-cross (windows)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196571,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-sec / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140130102440,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "desktop-vet-cross (darwin)",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196420,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-sec / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130104061,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "govulncheck",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196426,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-sec / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130104001,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "fmt-check",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196501,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-sec / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130104427,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "docs-links",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196441,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "docs-build",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128196551,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-rgaa / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140130332338,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-rgaa / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130333836,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "test",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140134601258,
+   "isRequired": true,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-rgaa / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130334698,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "race",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140130105250,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "base-rgaa / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140130335269,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (slim) / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140132386530,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (slim) / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388300,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (slim) / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388193,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (slim) / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132389926,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (full) / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140132387076,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (full) / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388812,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (full) / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388319,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (full) / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388740,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (sec) / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140132386547,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (sec) / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388583,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (sec) / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132387735,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (sec) / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132389002,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (browser) / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140132386680,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (browser) / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388481,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (browser) / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388752,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (browser) / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132389638,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (rgaa) / pr-validate",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140132386532,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (rgaa) / amd64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388716,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (rgaa) / arm64",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132388103,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "finalize / finalize (rgaa) / merge",
+   "status": "COMPLETED",
+   "conclusion": "SKIPPED",
+   "databaseId": 140132389610,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 15368
+    }
+   }
+  },
+  {
+   "__typename": "StatusContext",
+   "context": "revi/review",
+   "state": "FAILURE",
+   "isRequired": true
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Trivy",
+   "status": "COMPLETED",
+   "conclusion": "NEUTRAL",
+   "databaseId": 140128385818,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 57789
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "govulncheck",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128492745,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 57789
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Socket Security: Project Report",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128194110,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 156372
+    }
+   }
+  },
+  {
+   "__typename": "CheckRun",
+   "name": "Socket Security: Pull Request Alerts",
+   "status": "COMPLETED",
+   "conclusion": "SUCCESS",
+   "databaseId": 140128214269,
+   "isRequired": false,
+   "checkSuite": {
+    "app": {
+     "databaseId": 156372
+    }
+   }
+  }
+ ]
+}
