@@ -119,7 +119,9 @@ index: once every replica and runner pool runs #3831, the operator checks that
 `db.runs.dropIndex("tenant_status_created")`. Both value formats store every
 listing key as plain BSON (`TestRunListingKeysEncodeIdenticallyInBothValueFormats`);
 each match crosses the decode `LoadRun` uses, and one that does not decode is
-reported per id. Repo, bundle and node filters stay in Go and stop the limit
+reported per id. That decode reads the tenant by the strict canonical
+rule on every read (#3830): an alias, duplicate or non-string tenant key is
+refused `ErrInvalidRunDataIdentity`. Repo, bundle and node filters stay in Go and stop the limit
 pushdown. Equivalence with the id-by-id scan: `TestRunListingWindowNativeMongo`.
 
 ## PR reverse lookup

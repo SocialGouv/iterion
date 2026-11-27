@@ -279,7 +279,7 @@ func routeSchemas() map[string]routeOp {
 				{name: "limit", description: "Page size, 1..500 (default 50).", schemaType: "integer"},
 				{name: "cursor", description: "Keyset token from the previous page's next_cursor. A malformed value is refused with 400.", schemaType: "string"},
 			},
-			errors: map[int]string{401: "Authentication required", 403: "Super-admin required", 500: "Run store unavailable"},
+			errors: map[int]string{400: "Malformed limit, since or cursor", 401: "Authentication required", 403: "Super-admin required", 404: "Unknown org_id", 500: "Run store unavailable"},
 		},
 
 		// User administration (super-admin). The detail route is one

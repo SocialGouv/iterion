@@ -365,7 +365,163 @@ func TestAdminRuns_CrossOrgReadsAreAudited(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("opening a foreign-org run answered %d (%s), want 200 without an active-org error", code, body)
 	}
-	waitForAuditEvent(t, auditStore, func(e audit.Event) bool {
+	read := waitForAuditEvent(t, auditStore, func(e audit.Event) bool {
 		return e.Action == "run.cross_team_read" && e.TargetID == "run-b1x"
 	})
+	if read.TenantID != "team-b1" || read.Meta["team_id"] != "team-b1" || read.Meta["via"] != "super-admin" {
+		t.Fatalf("cross-team read row tenant %q meta %v, want the run's team team-b1 in tenant and meta.team_id", read.TenantID, read.Meta)
+	}
+}
+
+// TestAdminRuns_OrgAndTeamNarrowToTheTeam: an org plus a team inside it
+// answers that team's runs only — the team narrows the org, it is not
+// dropped in favour of the whole org (#3830). The audit row names the
+// team, so the answer must not reach past it.
+func TestAdminRuns_OrgAndTeamNarrowToTheTeam(t *testing.T) {
+	_, _, hs, adminTok, _ := newAdminRunsServer(t)
+	code, out := adminRunsGet(t, hs, adminTok, "?org_id=org-alpha&team_id=team-a1")
+	if code != 200 {
+		t.Fatalf("org+team: code %d, want 200", code)
+	}
+	got := map[string]bool{}
+	for _, row := range out.Runs {
+		if row.TeamID != "team-a1" {
+			t.Errorf("org+team answered run %s of team %s, want only team-a1's runs", row.ID, row.TeamID)
+		}
+		got[row.ID] = true
+	}
+	if len(got) != 2 || !got["run-a1x"] || !got["run-a1f"] {
+		t.Fatalf("org+team rows %v, want exactly run-a1x and run-a1f", got)
+	}
+}
+
+// crossOrgListRows joins the server's detached writes — every audit insert
+// the handler started is registered before it returns — and reads the
+// run.cross_org_list rows the audit store holds. The join closes the
+// registry, so it is the last thing a test does with the server.
+func crossOrgListRows(t *testing.T, s *Server, st audit.Store) []audit.Event {
+	t.Helper()
+	s.bgJoinBudget = 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	s.joinBackgroundWorkers(ctx)
+	events, err := st.ListPlatform(context.Background(), audit.Page{Action: "run.cross_org_list"})
+	if err != nil {
+		t.Fatalf("list platform audit: %v", err)
+	}
+	return events
+}
+
+// TestAdminRuns_EarlyAnswersAreAudited: the answers the handler gives
+// before it reaches the store — an org plus a team outside it (empty
+// page), an org with no team (empty page), an unknown org (404), a
+// malformed parameter (400) — are
+// still the super-admin's cross-org read, so each leaves exactly one
+// run.cross_org_list row naming the ids the request asked for (#3830).
+func TestAdminRuns_EarlyAnswersAreAudited(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, org, team, scope string
+		code                          int
+	}{
+		{"org with a foreign team", "?org_id=org-alpha&team_id=team-b1", "org-alpha", "team-b1", "team-b1", 200},
+		{"org without teams", "?org_id=org-empty", "org-empty", "", "org-empty", 200},
+		{"unknown org", "?org_id=org-nope", "org-nope", "", "org-nope", 404},
+		{"unknown org with a team", "?org_id=org-nope&team_id=team-a1", "org-nope", "team-a1", "team-a1", 404},
+		{"malformed cursor", "?org_id=org-alpha&cursor=not-a-cursor", "org-alpha", "", "org-alpha", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auditStore, s, hs, adminTok, _ := newAdminRunsServer(t)
+			if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{ID: "org-empty", Name: "Empty Org", Slug: "empty"}); err != nil {
+				t.Fatalf("seed org-empty: %v", err)
+			}
+			code, out := adminRunsGet(t, hs, adminTok, tc.query)
+			if code != tc.code || len(out.Runs) != 0 {
+				t.Fatalf("%s: code %d rows %d, want %d and no row", tc.query, code, len(out.Runs), tc.code)
+			}
+			rows := crossOrgListRows(t, s, auditStore)
+			if len(rows) != 1 {
+				t.Fatalf("%s left %d run.cross_org_list rows, want exactly 1", tc.query, len(rows))
+			}
+			ev := rows[0]
+			if ev.ActorID != "root" || ev.ActorKind != "super_admin" || ev.Scope != audit.ScopePlatform {
+				t.Fatalf("audit row actor %q/%q scope %q, want the super-admin at platform scope", ev.ActorID, ev.ActorKind, ev.Scope)
+			}
+			if ev.TenantID != tc.scope || ev.Meta["team_id"] != tc.team || ev.Meta["org_id"] != tc.org {
+				t.Fatalf("audit row tenant %q meta %v, want scope %q, the requested org %q and team %q", ev.TenantID, ev.Meta, tc.scope, tc.org, tc.team)
+			}
+		})
+	}
+}
+
+// TestAdminRuns_RefusedCallerLeavesNoAuditRow: at handler altitude a
+// non-super-admin is refused 403 before any lookup, whatever the filters
+// ask — and the refusal leaves no cross-org audit row, since nothing was
+// read.
+func TestAdminRuns_RefusedCallerLeavesNoAuditRow(t *testing.T) {
+	for _, query := range []string{"", "?org_id=org-alpha&team_id=team-b1", "?org_id=org-nope"} {
+		t.Run(query, func(t *testing.T) {
+			auditStore, s, _, _, _ := newAdminRunsServer(t)
+			req := httptest.NewRequest("GET", "/api/admin/runs"+query, nil).WithContext(auth.WithIdentity(context.Background(), auth.Identity{
+				UserID: "u1", TeamID: "team-a1", Role: identity.RoleAdmin,
+			}))
+			w := httptest.NewRecorder()
+			s.handleAdminListRuns(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("non-super-admin on %q answered %d, want 403", query, w.Code)
+			}
+			if rows := crossOrgListRows(t, s, auditStore); len(rows) != 0 {
+				t.Fatalf("a refused caller left %d run.cross_org_list rows, want none", len(rows))
+			}
+		})
+	}
+}
+
+// TestAdminRuns_AuditRowNamesTheRequest: the one run.cross_org_list row
+// names what the request asked for — the requested org and team (empty
+// when absent, never the org id recorded as a team) and the scope kind —
+// whatever the store then answers.
+func TestAdminRuns_AuditRowNamesTheRequest(t *testing.T) {
+	for _, tc := range []struct {
+		query, tenant, org, team, kind string
+		code                           int
+	}{
+		{"", "", "", "", "platform", 200},
+		{"?org_id=org-alpha", "org-alpha", "org-alpha", "", "org", 200},
+		{"?org_id=org-alpha&team_id=team-a1", "team-a1", "org-alpha", "team-a1", "org_team", 200},
+		{"?team_id=team-b1", "team-b1", "", "team-b1", "team", 200},
+		{"?org_id=org-nope", "org-nope", "org-nope", "", "org", 404},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			auditStore, s, hs, adminTok, _ := newAdminRunsServer(t)
+			if code, _ := adminRunsGet(t, hs, adminTok, tc.query); code != tc.code {
+				t.Fatalf("%q: code %d, want %d", tc.query, code, tc.code)
+			}
+			rows := crossOrgListRows(t, s, auditStore)
+			if len(rows) != 1 {
+				t.Fatalf("%q left %d run.cross_org_list rows, want exactly 1", tc.query, len(rows))
+			}
+			ev := rows[0]
+			if ev.TenantID != tc.tenant || ev.Meta["org_id"] != tc.org || ev.Meta["team_id"] != tc.team || ev.Meta["scope_kind"] != tc.kind {
+				t.Fatalf("%q: audit row tenant %q meta %v, want tenant %q org_id %q team_id %q scope_kind %q", tc.query, ev.TenantID, ev.Meta, tc.tenant, tc.org, tc.team, tc.kind)
+			}
+		})
+	}
+}
+
+// TestAdminRuns_LimitOutsideItsRangeIsRefused: the page size is 1..500 —
+// 0 is not "no limit", it is refused like a negative or a non-number; a
+// size above the cap is capped, and 1 answers one row and a cursor.
+func TestAdminRuns_LimitOutsideItsRangeIsRefused(t *testing.T) {
+	_, _, hs, adminTok, _ := newAdminRunsServer(t)
+	for _, q := range []string{"?limit=0", "?limit=-1", "?limit=abc"} {
+		if code, out := adminRunsGet(t, hs, adminTok, q); code != 400 {
+			t.Errorf("%s: code %d rows %d, want 400", q, code, len(out.Runs))
+		}
+	}
+	if code, out := adminRunsGet(t, hs, adminTok, "?limit=1"); code != 200 || len(out.Runs) != 1 || out.NextCursor == "" {
+		t.Fatalf("?limit=1: code %d rows %d cursor %q, want one row and a next cursor", code, len(out.Runs), out.NextCursor)
+	}
+	if code, out := adminRunsGet(t, hs, adminTok, "?limit=501"); code != 200 || len(out.Runs) != 4 {
+		t.Fatalf("?limit=501: code %d rows %d, want the cap applied and all 4 runs", code, len(out.Runs))
+	}
 }

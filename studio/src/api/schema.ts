@@ -11645,6 +11645,13 @@ export interface operations {
                     "application/json": components["schemas"]["adminRunsResponse"];
                 };
             };
+            /** @description Malformed limit, since or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
             401: {
                 headers: {
@@ -11654,6 +11661,13 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown org_id */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

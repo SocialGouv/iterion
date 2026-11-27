@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -35,20 +36,27 @@ type tenantHeader struct {
 // document: none is "", exactly one exact "tenant_id" string is that tenant,
 // anything else — a duplicate, a case alias, a non-string — is an invalid
 // identity, never read leniently.
+//
+// A refusal wraps ErrInvalidRunDataIdentity with the offending key shape —
+// the keys and the BSON type, never the values.
 func canonicalTenant(headers []tenantHeader) (string, error) {
 	switch len(headers) {
 	case 0:
 		return "", nil
 	case 1:
 	default:
-		return "", store.ErrInvalidRunDataIdentity
+		keys := make([]string, len(headers))
+		for i, h := range headers {
+			keys[i] = h.key
+		}
+		return "", fmt.Errorf("%w: duplicate tenant keys %q", store.ErrInvalidRunDataIdentity, keys)
 	}
 	if headers[0].key != "tenant_id" {
-		return "", store.ErrInvalidRunDataIdentity
+		return "", fmt.Errorf("%w: tenant key alias %q", store.ErrInvalidRunDataIdentity, headers[0].key)
 	}
 	tenant, ok := headers[0].value.StringValueOK()
 	if !ok {
-		return "", store.ErrInvalidRunDataIdentity
+		return "", fmt.Errorf("%w: tenant_id is BSON %s, not a string", store.ErrInvalidRunDataIdentity, headers[0].value.Type)
 	}
 	return tenant, nil
 }
@@ -81,16 +89,21 @@ func observesTenant(ctx context.Context) bool {
 	return observed
 }
 
-// checkRunDocumentTenant compares the tenant ctx's binding observed with the
-// canonical tenant of the whole run document raw, whose header the caller
-// compared (CheckRunDataBinding).
+// checkRunDocumentTenant applies the strict tenant rule to the whole run
+// document raw on every read, bound or not, then compares the canonical
+// tenant with the one ctx's binding observed, when it observed one (the caller
+// compared the header, CheckRunDataBinding). The rule is unconditional because
+// the struct decoder matches tenant_id case-insensitively: an alias, duplicate
+// or non-string tenant key would otherwise decode under a tenant the store's
+// filters never matched. A document with no tenant key — a tenantless run —
+// passes, its tenant "".
 func checkRunDocumentTenant(ctx context.Context, raw bson.Raw) error {
-	if !observesTenant(ctx) {
-		return nil
-	}
 	tenant, err := documentCanonicalTenant(raw)
 	if err != nil {
 		return err
+	}
+	if !observesTenant(ctx) {
+		return nil
 	}
 	return store.CheckRunObservedTenant(ctx, tenant)
 }

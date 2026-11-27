@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/SocialGouv/iterion/pkg/audit"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -143,5 +146,35 @@ func TestIssueByIDThroughRequireAuth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("through the full chain: %d — the choke point must re-scope the board routes to the issue's team", resp.StatusCode)
+	}
+}
+
+// A super-admin reading another team's issue by id crosses the named,
+// audited predicate: exactly one issue.cross_team_read row, at platform
+// scope, naming the issue and — in tenant and meta.team_id — the issue's
+// team.
+func TestIssueByIDSuperAdminCrossTeamReadIsAudited(t *testing.T) {
+	srv, storeA, _ := newIssueScopeServer(t)
+	auditStore := audit.NewMemoryStore()
+	srv.auditStore = auditStore
+	id := issueIn(t, storeA, "team A's card")
+	code, got, tenant, _ := scopedHeader(t, srv, http.MethodGet, "/api/v1/native/issues/"+id, auth.Identity{UserID: "root", IsSuperAdmin: true}, "")
+	if code != http.StatusOK || got.TeamID != "tenant-A" || tenant != "tenant-A" {
+		t.Fatalf("super-admin read by id: %d %+v %q, want 200 re-anchored on tenant-A", code, got, tenant)
+	}
+	srv.bgJoinBudget = 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	srv.joinBackgroundWorkers(ctx)
+	rows, err := auditStore.ListPlatform(context.Background(), audit.Page{Action: "issue.cross_team_read"})
+	if err != nil {
+		t.Fatalf("list platform audit: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("issue.cross_team_read rows: %d, want exactly 1", len(rows))
+	}
+	ev := rows[0]
+	if ev.TargetID != id || ev.TenantID != "tenant-A" || ev.Meta["team_id"] != "tenant-A" || ev.Meta["via"] != "super-admin" {
+		t.Fatalf("issue.cross_team_read row target %q tenant %q meta %v, want issue %s in tenant-A with meta.team_id tenant-A", ev.TargetID, ev.TenantID, ev.Meta, id)
 	}
 }
