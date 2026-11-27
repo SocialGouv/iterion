@@ -16,9 +16,7 @@ The loop is:
    [adversarial-review-loop.md](adversarial-review-loop.md). Measured on this
    repo: five consecutive gate verdicts at ≥ 1 medium on a fresh line (~6 h of
    queue) against one 15-minute local round followed by a first verdict at
-   0 findings. That page also carries the **round budget** — a ceiling on cost
-   by change size (≤ 8 files → 5 local rounds, 10 if the diff blocks · 9–25 →
-   20 · > 25 → 50), never a
+   0 findings. That page carries the **round budget** — a ceiling, never a
    target: what decides another round is whether the last one still returned
    verified high or critical findings.
 2. **The gate closes the loop; the local round never does.** A sterile local
@@ -33,6 +31,9 @@ The loop is:
    written explicitly when nobody attacked the change — format, what survives
    the squash, and rationale in
    [adversarial-review-loop.md](adversarial-review-loop.md#say-what-the-review-cost-in-the-commit).
+
+**Before pushing:** `task check`; CI needs the `ci:run` label
+([on demand](../../merge-policy.md#pull-request-ci-on-demand)).
 
 ## The operator direct-landing lane (decided 2026-10-22)
 

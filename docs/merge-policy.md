@@ -197,8 +197,9 @@ green.
   `arc-runners` only: once a class variable is set, a dead scale set behind
   it stalls that class unpaged — for `CI_SMALL_RUNNER`, the required `test`,
   `vendor-check`, `brand` and the queue branch's `revi/review` mirror (and
-  the unrequired `fmt-check`); for `CI_LARGE_RUNNER`, the required `golangci`
-  and, through its legs, `test` — until the queue's
+  the unrequired `fmt-check`), and with `brand` the `golangci` and
+  `fmt-check` that wait behind it (#3738); for `CI_LARGE_RUNNER`, the
+  required `golangci` and, through its legs, `test` — until the queue's
   `check_response_timeout_minutes`; for `CI_HEAVY_RUNNER` no queue check, but
   a `ci:full` pull request's required `test` (through `test-e2e`) and its
   `race` (through `race-shard`) wait too, and with them the admin-merge lane
@@ -236,10 +237,11 @@ debounced push (#3737). So each layer gates where it pays:
 
 | layer | pull request | merge queue | light push to `main` | heavy push, nightly, dispatch |
 | --- | --- | --- | --- | --- |
-| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `brand`, `fmt-check` | runs | runs | runs | runs |
+| `test-unit`, `studio`, `test-native-exec`, `vendor-check`, `golangci`, `fmt-check` | [on demand](#pull-request-ci-on-demand): runs when labelled `ci:run` or `ci:full`, or opened by a bot or from a fork | runs | runs | runs |
+| `brand` | runs | runs | runs | runs |
 | `race-shard`, `test-e2e` (heavy legs) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
 | `mongo-conformance`, `cloud-e2e` (heavy, no aggregator) | skipped, unless labelled `ci:full` | skipped | skipped | runs |
-| other advisory jobs | runs | skipped | runs | runs |
+| other advisory jobs | on demand, like the light layer | skipped | runs | runs |
 | `revi/review` | runs | mirrored | — | — |
 
 A push to `main` is **light** only behind a **green heavy run** on `main`
@@ -294,8 +296,7 @@ To run the heavy jobs on a pull request — `race-shard` and `test-e2e` for a
 change to concurrency, the race-sensitive engine, or e2e itself;
 `mongo-conformance` for a change to anything Mongo-backed;
 `cloud-e2e` for a change to `charts/` or the cloud stack — add the `ci:full`
-label, then push: a label alone starts no run, since `labeled` is not among
-the triggers.
+label: labelling it starts the run ([on demand](#pull-request-ci-on-demand)).
 A light pull request's green `test` and `race` never ran the heavy legs, so it
 is not admin-mergeable: an admin merge also gives up the queue's rebuild
 against the entries ahead of it, so it owes the heavy legs on the pull request
@@ -319,6 +320,72 @@ four hours. The mode's exit criteria (a regression rate, a flake count, an
 untriaged red `main`) are in the ADR, and ending it puts `race` and
 `mongo-conformance` back in the ruleset and the heavy legs back in the queue,
 in one change.
+
+## Pull request CI on demand
+
+Decided 2026-11-26 (#3738). A pull request run cost 105 runner-minutes and 19
+jobs, about 33 times a day, and for a pull request the
+[train](#the-extended-train-lane-decided-2026-11-25) lands it duplicated the
+local gate. So a session's pull request runs **no CI unless it asks**:
+
+- **The `ci:run` label** runs the light layer; `ci:full` runs it with the
+  heavy layer, as before. Both are repository labels: `ci:run` was created
+  for this policy, and `ci:full`'s description, which still asks for a push
+  after labelling, changes when it lands. **Labelling starts the run**
+  (`labeled` is a trigger of `tests.yml`): no push needed. Re-running an
+  older run does not help — a rerun reads the labels of the event that
+  started it.
+- **A bot's pull request** — its author's account is of type `Bot`, which
+  every GitHub App's is (renovate, tokenbureau, dependabot) — and **a fork's**
+  run it automatically.
+- **Everything else is red, on purpose.** On an unlabelled session pull
+  request every job but `brand` skips, and the required `test` (and the held
+  `race`) **fail** with a message naming this policy and both ways out: add
+  `ci:run`, or land the pull request through the train (`task ci:train`,
+  `scripts/ci/train`), which runs the gate locally. The train refuses a pull
+  request that touches `.github/`, `scripts/ci/`, `Taskfile.yml` or
+  `devbox.*` (its own judge): for those, only the label serves. Never a
+  silent skip: a skipped required check counts as a success, and a pull
+  request nothing tested would be green — that red is what lets the merge
+  queue go (#3757) without anything landing ungated by accident.
+
+**A label is a synchronize.** `labeled` fires for every label (`epic:…`,
+renovate's `dependencies` a second after it opens), and its payload already
+carries the new label. Every pull request event — opened, synchronize,
+reopened, labeled — is judged the same way, on the labels the pull request
+carries, the author and the fork: an unrelated label reruns the light layer
+of a pull request that asked for CI and refuses again one that did not, and
+like any pull request run it cancels the run in progress on that head, which
+it redoes. Labels are rare (7 `labeled` events on the last 40 pull requests,
+none more than a minute after the first). Removing `ci:run` starts nothing:
+the last verdict stands until the next event on the pull request.
+
+**Label before pushing.** A push followed by a label — or `gh pr create
+--label`, whose label lands beside its `opened` event — creates two runs on
+one head in no guaranteed order, each judging the labels of its own
+snapshot, and the later one cancels the other: if the unlabelled snapshot
+comes last, a pull request that asked for CI ends refused. So add `ci:run`
+BEFORE pushing, and the synchronize payload already carries it; open a new
+pull request first and label it once its `opened` run exists. The refusal
+says so when the pull request already carries the label: push, or remove
+and re-add it.
+
+`vendor-check`, `golangci` and `fmt-check` wait for `brand`. On a refused
+pull request they skip, and a skipped job reports success the moment it is
+created; created at the run's start, before `test` — which is created only
+once its legs concluded — they would for that instant be the newest, green,
+checks of their names over the run before. Behind `brand`, whose check is
+pending from the run's start, they are created after `test`. "Re-run failed
+jobs" on a red `brand` therefore reruns the three jobs behind it too.
+
+The merge queue, a push to `main`, the nightly and a dispatch keep their
+layers. What a requested run runs is still the whole light layer: running
+only what a diff can reach is #3739, which waits on #3758.
+
+**Before pushing**, a session runs `task check` (the
+[review-and-merge](agents/workflow/review-and-merge.md) discipline), adds
+`ci:run` when it wants CI's witness — before the push, so the push's run
+carries it — or hands the pull request to the train.
 
 ## main-watch: a red main is rerun, quarantined or reverted
 
@@ -497,8 +564,10 @@ gate.** What it owes:
    carry). On a [light pull request](#light-runs-heavy-main) `test` and
    `race` turn green with the heavy legs skipped and `mongo-conformance`
    skipped: before the admin merge the pull request carries the `ci:full`
-   label, has been pushed since, and every `race-shard (n)`, `test-e2e (n)`
-   and `mongo-conformance` reads `success` on its head, not `skipped`.
+   label — labelling it starts the heavy run, no push needed
+   ([on demand](#pull-request-ci-on-demand)) — and every `race-shard (n)`,
+   `test-e2e (n)` and `mongo-conformance` reads `success` on its head, not
+   `skipped`.
 2. **A local adversarial loop, and the trailer says which kind.** At the bar
    [the loop](agents/workflow/adversarial-review-loop.md) states — a round on
    the diff, each finding AND its proposed fix verified independently, a
@@ -587,11 +656,12 @@ Before using it, the same proofs the queue would have demanded must already be
 green **on the PR head**: every required check (`test`, `vendor-check`,
 `golangci`, `brand`), the held `race` and `mongo-conformance`, and
 `revi/review`. A light pull request's `test` and `race` are green with the
-heavy legs skipped, so the PR first carries the `ci:full` label and a push
-after it, and every `race-shard (n)`, `test-e2e (n)` and `mongo-conformance`
-reads `success` on the head, not `skipped`. So an incident fix is **opened
-with the `ci:full` label**: opened light, it pays a light cycle, then the push
-after the label pays the heavy one before the admin merge can happen. And the
+heavy legs skipped, so the PR first carries the `ci:full` label, and every
+`race-shard (n)`, `test-e2e (n)` and `mongo-conformance` reads `success` on
+the head, not `skipped`. So an incident fix is **opened with the `ci:full`
+label**: labelling starts the heavy run on its head, no push needed
+([on demand](#pull-request-ci-on-demand)), and the admin merge waits for it.
+And the
 operator runs `task ci:gate` on the fix rebased onto current `main`, the
 integrated tree no pull request run tested. With that, the bypass skips the
 *rebuild against the queue's other members*; without it, it also skips

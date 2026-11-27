@@ -63,7 +63,9 @@ jobs:
       without the `ci:full` label, or a push heavy-gate decided light — it
       accepts `skipped` from test-e2e, which runs on the debounced push
       instead; on a heavy push, the nightly, a dispatch and a `ci:full` pull
-      request a skipped leg is red (#3683, #3691, #3737).
+      request a skipped leg is red (#3683, #3691, #3737). On a pull request
+      that did not ask for CI — no `ci:run` or `ci:full` label, neither a
+      bot's nor a fork's — it fails by policy (#3738).
     aggregates: [test-unit, test-e2e, studio, test-native-exec]
 
   race:
@@ -72,7 +74,8 @@ jobs:
     disposition: unexpressible
     reason: >-
       the same shape, over race-shard and test-native-exec; on a light run it
-      accepts `skipped` from race-shard alone (#3683, #3691, #3737). Out of the
+      accepts `skipped` from race-shard alone (#3683, #3691, #3737), and reads
+      the pull request CI policy as `test` does (#3738). Out of the
       ruleset while the experimental delivery mode lasts, and back in it when
       the mode ends (docs/adr/173-experimental-delivery-mode.md).
     aggregates: [race-shard, test-native-exec]
@@ -139,8 +142,9 @@ jobs:
       for e2e is `task test:race` (race-shard's member, over `./...`). The job
       skips a light run — the merge queue and a pull request without the
       `ci:full` label — and runs on a heavy push to `main` (the debounced push
-      heavy-gate decides, #3737), the nightly and a dispatch (#3683, #3691); a
-      local run has no such split.
+      heavy-gate decides, #3737), the nightly and a dispatch (#3683, #3691);
+      on a pull request, on every run of one carrying `ci:full`, labelling
+      it included (#3738). A local run has no such split.
 
   studio:
     required: no
@@ -184,7 +188,8 @@ jobs:
       also pins yq by digest and builds the ultra11y engine first. The job skips
       a light run — the merge queue, an unlabelled pull request and a push to
       `main` that heavy-gate decides light — and runs on a heavy push to
-      `main`, the nightly and a dispatch (#3683, #3691, #3737).
+      `main`, the nightly and a dispatch (#3683, #3691, #3737), and on every
+      run of a pull request carrying `ci:full`, labelling it included (#3738).
 
   # ---- the other required contexts, and the held mongo-conformance ----
   vendor-check:
@@ -210,8 +215,9 @@ jobs:
       the targeted lines `docs/development.md`'s regex cannot see. Needs docker, and
       refuses with exit 2 where this process cannot reach the published port.
       The job is heavy (#3691): it skips the merge queue, a pull request
-      without `ci:full` and a push to `main` that heavy-gate decides light
-      (#3737), and is out of the ruleset until the experimental
+      without `ci:full` (#3738: labelling it starts the run) and a push to
+      `main` that heavy-gate decides light (#3737), and is out of the
+      ruleset until the experimental
       delivery mode ends (docs/adr/173-experimental-delivery-mode.md).
 
   golangci:
@@ -305,7 +311,7 @@ jobs:
       can match. It skips the merge queue and a light pull request (#3683,
       #3691): it runs on a heavy push to `main` (the debounced push
       heavy-gate decides, #3737), the nightly, a dispatch and a pull request
-      labelled `ci:full`.
+      carrying `ci:full`, labelling it included (#3738).
 
   govulncheck:
     required: no

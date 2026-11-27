@@ -168,7 +168,7 @@ func TestLightGreenIsNotAdminMergeable(t *testing.T) {
 		}
 		aggregators++
 		needs, _ := job["needs"].([]any)
-		vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), lightRunEnv + "=true"}
+		vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), lightRunEnv + "=true", prCIEnv + "=run"}
 		for k, v := range env {
 			for _, l := range needs {
 				if v == fmt.Sprintf("${{ needs.%v.result }}", l) {
@@ -246,7 +246,7 @@ func TestCiFullGuidanceNamesEveryOptInJob(t *testing.T) {
 	}
 	optIn := 0
 	for name, job := range wf.Jobs {
-		if !strings.Contains(job.If, "'ci:full'") {
+		if !strings.Contains(job.If, fullSuite) {
 			continue
 		}
 		optIn++

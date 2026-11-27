@@ -355,9 +355,11 @@ var heldChecks = map[string]bool{
 // behind a required aggregator and are deliberately NOT required themselves —
 // the aggregator speaks for them. The contract this bucket enforces:
 //
-//   - Exactly tapSkip as its job-level `if:`, and nothing else — the one
-//     verified condition its aggregator carries too, so the leg skips where
-//     the aggregator skips and runs everywhere it runs. A leg any other
+//   - Exactly askedIf as its job-level `if:` (heavyLegIf on a heavy leg),
+//     and nothing else — the light literal its aggregator reads through
+//     prCIEnv and the one verified condition its aggregator carries too, so
+//     the leg runs everywhere the aggregator verifies legs and skips where
+//     the aggregator skips or refuses by policy. A leg any other
 //     `if:` skips reports SUCCESS on the pull request (the guarantee dies,
 //     silently) while in the queue its aggregator re-verifies a `skipped`
 //     into a red verdict — a queue entry that can never pass, forever. A leg
@@ -403,7 +405,7 @@ var heavyLegs = map[string]bool{
 // leg carries, combined with fullSuite, behind `!cancelled()` — a heavy leg
 // `needs:` heavyGateJob to read its output, and without a status function a
 // job whose need skipped (every event but push) or failed is skipped too.
-const heavyLegIf = "${{ !cancelled() && " + fullSuite + " && " + tapSkip + " }}"
+const heavyLegIf = "${{ !cancelled() && " + lightLiteral + " && " + fullSuite + " && " + tapSkip + " }}"
 
 // heavyAdvisoryJobs are the heavy jobs no aggregator speaks for: they skip
 // every light run, the merge queue included, and run with the heavy legs.
@@ -412,10 +414,59 @@ var heavyAdvisoryJobs = map[string]bool{
 	"mongo-conformance": true,
 }
 
-// heavyAdvisoryIf is the one `if:` a heavy advisory job carries: fullSuite
-// alone, which already keeps it out of the merge queue, behind the same
-// `!cancelled()` as heavyLegIf and for the same reason.
-const heavyAdvisoryIf = "${{ !cancelled() && " + fullSuite + " }}"
+// heavyAdvisoryIf is the one `if:` a heavy advisory job carries: lightLiteral
+// and fullSuite, the latter already keeping it out of the merge queue, behind
+// the same `!cancelled()` as heavyLegIf and for the same reason.
+const heavyAdvisoryIf = "${{ !cancelled() && " + lightLiteral + " && " + fullSuite + " }}"
+
+// PULL REQUEST CI ON DEMAND (#3738). A pull request runs the light layer only
+// when it asks: labelled `ci:run` (or `ci:full`, which keeps meaning the heavy
+// layer too), opened by a bot, or from a fork. lightLiteral says so, and is
+// true on every event that is no pull request, so the merge queue, push, the
+// nightly and a dispatch keep their layers. It reads the labels the pull
+// request carries, the same way on every activity type: a `labeled` payload
+// already holds the new label, so any label is a synchronize of the same
+// head, and nothing reads which label the event added. The bot is read from
+// the author's account type — every GitHub App's user is of type `Bot`
+// (renovate, tokenbureau, dependabot) — never from a list of names. Every job
+// but tapVerifierJob, heavyGateJob and the aggregators carries it, byte for
+// byte, in front of its own condition.
+const lightLiteral = `(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') || contains(github.event.pull_request.labels.*.name, 'ci:full') || github.event.pull_request.user.type == 'Bot' || github.event.pull_request.head.repo.full_name != github.repository)`
+
+// askedIf is the one `if:` a gated light leg carries: the light literal and
+// the tap skip. On every event that is no pull request the light literal is
+// true, so in the merge queue it reduces to tapSkip — event_layers_test.go
+// evaluates it there rather than trusting this sentence.
+const askedIf = "${{ " + lightLiteral + " && " + tapSkip + " }}"
+
+// requiredOwnIf is the one `if:` a required job that does its own work carries
+// (vendor-check, golangci, fmt-check): askedIf behind `!cancelled()`, with
+// `needs: [tapVerifierJob]`. On a refused pull request it skips, and a job
+// skipped by its `if:` reports SUCCESS the moment GitHub creates it: without
+// a need it is created in the run's first instant, while `test` is created
+// only once its legs concluded — so for that gap the newest check run of its
+// name would be green, over the red run before it, before any refusal
+// exists. Behind tapVerifierJob, whose check run is pending from the run's
+// first instant and concludes only after its steps ran on a runner, it is
+// created after `test`, whose legs all skip in that first instant.
+// `!cancelled()` keeps a red brand from skipping it.
+const requiredOwnIf = "${{ !cancelled() && " + lightLiteral + " && " + tapSkip + " }}"
+
+// advisoryIf is the one `if:` an advisory job that is not heavy carries: out of
+// the merge queue, and in the light layer.
+const advisoryIf = "${{ github.event_name != 'merge_group' && " + lightLiteral + " }}"
+
+// prCIEnv is the env key, and prCIValue its exact value, through which an
+// aggregator learns the policy: `refused` on a pull request that did not ask
+// for CI, `run` everywhere else.
+const (
+	prCIEnv   = "PR_CI"
+	prCIValue = "${{ (!" + lightLiteral + " && 'refused') || 'run' }}"
+)
+
+// deciderJobs are needed for their outputs alone: no aggregator re-verifies
+// their result as a leg's.
+var deciderJobs = map[string]bool{heavyGateJob: true}
 
 // heavyGateJob is the decider of the debounced push (#3737): on a push to
 // main it answers `heavy=true` or `heavy=false` from the run history, and
@@ -451,13 +502,14 @@ const (
 // tap half is the same literal the heavy jobs and the verifier share.
 const aggregatorIf = "${{ !cancelled() && " + tapSkip + " }}"
 
-// aggregatedLegs returns the legs a job's `needs:` names, heavyGateJob left
-// out: the decider is needed for its output, never re-verified as a leg. A
-// job whose legs are empty is no aggregator, whatever else it needs.
+// aggregatedLegs returns the legs a job's `needs:` names, the deciderJobs and
+// tapVerifierJob left out: a decider is needed for its output and the tap
+// verifier for ordering (requiredOwnIf), neither re-verified as a leg. A job
+// whose legs are empty is no aggregator, whatever else it needs.
 func aggregatedLegs[T any](needs []T) []string {
 	var legs []string
 	for _, n := range needs {
-		if leg := fmt.Sprint(n); leg != heavyGateJob {
+		if leg := fmt.Sprint(n); !deciderJobs[leg] && leg != tapVerifierJob {
 			legs = append(legs, leg)
 		}
 	}
@@ -524,8 +576,11 @@ func skipsMergeGroup(cond string) bool {
 //     refuses the condition rather than judging it, because judging means
 //     matching spellings and the spellings do not run out. Two conditions
 //     are admitted, each compared byte for byte rather than read, each tied
-//     to the role of the job that carries it: tapSkip on a required job that
-//     does its own work (and on every gated leg), whose verifier
+//     to the role of the job that carries it: requiredOwnIf — the light
+//     literal (#3738), true on every event that is no pull request, and the
+//     tap skip, behind `!cancelled()` and `needs: [brand]` — on a required
+//     job that does its own work (askedIf on every gated leg), whose tap
+//     verifier
 //     TestTheTapSkipIsVerifiedWhereNothingSkipsIt holds in place; and
 //     aggregatorIf on a required aggregator — the same tap skip combined
 //     with `!cancelled()`, the trio TestAggregatorsReVerifyEveryLeg holds.
@@ -554,11 +609,14 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// both read that success. It neutralises every guard in this
 			// file at once, so it is refused rather than judged.
 			t.Errorf("job %q carries continue-on-error: true — a failing job would report success to its aggregator and to the ruleset. Nothing that feeds a required verdict may carry it", name)
-		case requiredChecks[name] && name != tapVerifierJob && len(job.Needs) == 0 && sameExpression(job.If, tapSkip):
+		case requiredChecks[name] && name != tapVerifierJob && len(job.Needs) == 1 && job.Needs[0] == tapVerifierJob && sameExpression(job.If, requiredOwnIf):
 			// The one admitted condition on a required job that does its own
-			// work: a Homebrew tap update skips the heavy jobs, and the
-			// verifier that makes it safe lives in a job that can never
-			// carry it.
+			// work: the light literal — true on every event that is no pull
+			// request, event_layers_test.go evaluates it in the merge queue —
+			// and the tap skip, whose verifier lives in a job that can never
+			// carry it, behind `!cancelled()` and a need on that verifier
+			// (requiredOwnIf says why). Where the light literal is false the
+			// aggregators go red by policy (#3738).
 		case (requiredChecks[name] || heldChecks[name]) && len(aggregatedLegs(job.Needs)) > 0 && sameExpression(job.If, aggregatorIf):
 			// The one admitted condition on a required or held AGGREGATOR: the
 			// run-state spelling that keeps a failed leg from skipping it,
@@ -575,7 +633,7 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// `contains(…)`. A widened matcher finds one more spelling every
 			// round; the set is closed instead, and each member is compared
 			// byte for byte against the role of the job that carries it.
-			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check carries no `if:` other than tapSkip (%q), byte for byte, or on an aggregator exactly %q; %q carries none at all. If another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, tapSkip, aggregatorIf, tapVerifierJob)
+			t.Errorf("job %q is a REQUIRED check and carries a job-level `if:` (%q) — a job its `if:` skips reports SUCCESS, so any condition false inside the merge queue satisfies the gate with a check that never ran. A required check that does its own work carries exactly %q with needs [%s] (it has %v), an aggregator exactly %q, and %q none at all. If another one truly must, teach this test to EVALUATE it before adding it here", name, job.If, requiredOwnIf, tapVerifierJob, job.Needs, aggregatorIf, tapVerifierJob)
 		case heavyLegs[name] && !gatedJobs[name]:
 			t.Errorf("job %q is a heavy leg but not a gated leg: heavyLegs is a subset of gatedJobs", name)
 		case heavyLegs[name] && sameExpression(job.If, heavyLegIf):
@@ -585,10 +643,11 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// (event_layers_test.go evaluates it per event).
 		case heavyLegs[name]:
 			t.Errorf("job %q is a heavy leg and carries `if:` %q, want exactly %q — the light-run skip and the tap skip, nothing else. A heavy leg without the light skip spends its ARC pods on every pull request push and queue build (#3683, #3691); with any other condition, its aggregator's forgiveness and its skip read different runs", name, job.If, heavyLegIf)
-		case gatedJobs[name] && sameExpression(job.If, tapSkip):
-			// A leg carries the tap skip its aggregator carries: it runs
-			// everywhere its aggregator runs and skips exactly where the
-			// aggregator skips with it.
+		case gatedJobs[name] && sameExpression(job.If, askedIf):
+			// A leg carries the tap skip its aggregator carries, and the
+			// light literal its aggregator reads through prCIEnv: it runs
+			// everywhere its aggregator verifies legs, and where it skips the
+			// aggregator either skips with it or fails by policy.
 		case gatedJobs[name]:
 			// Any other `if:` on a leg is worse on both sides: skipped on the
 			// pull request (SUCCESS — the guarantee dies silently) while in
@@ -597,7 +656,7 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			// skip spends, on every tap entry, the heavy minutes the skip
 			// exists to save — verified by nobody, since its aggregator
 			// skipped.
-			t.Errorf("job %q is a gated leg and carries `if:` %q, want exactly tapSkip (%q) — legs run everywhere their aggregator runs and skip exactly where it skips. Carry the tap skip and nothing else, or rename the job out of gatedJobs if it no longer feeds an aggregator", name, job.If, tapSkip)
+			t.Errorf("job %q is a gated leg and carries `if:` %q, want exactly askedIf (%q) — legs run everywhere their aggregator verifies them and skip exactly where it skips or refuses. Carry the light literal and the tap skip and nothing else, or rename the job out of gatedJobs if it no longer feeds an aggregator", name, job.If, askedIf)
 		case heavyAdvisoryJobs[name] && !sameExpression(job.If, heavyAdvisoryIf):
 			t.Errorf("job %q is a heavy advisory job and carries `if:` %q, want exactly %q — out of every light run, the merge queue and an unlabelled pull request, like the heavy legs", name, job.If, heavyAdvisoryIf)
 		case heavyAdvisoryJobs[name]:
@@ -610,6 +669,10 @@ func TestEveryJobPicksASideOfTheMergeQueue(t *testing.T) {
 			t.Errorf("job %q is a held check and carries `if:` %q with needs %v: a held aggregator carries exactly %q, a held job of its own work is a heavy advisory job", name, job.If, job.Needs, aggregatorIf)
 		case !requiredChecks[name] && !gatedJobs[name] && !skips:
 			t.Errorf("job %q is advisory and does NOT skip merge_group (if: %q) — it holds a queue slot for a verdict nobody can act on; add `if: github.event_name != 'merge_group'` verbatim, spaces included, or add it to the ruleset and to requiredChecks here", name, job.If)
+		case !requiredChecks[name] && !gatedJobs[name] && !sameExpression(job.If, advisoryIf):
+			// An advisory job outside the light layer runs on every pull
+			// request, asked or not (#3738): the minutes the policy saves.
+			t.Errorf("job %q is advisory and carries `if:` %q, want exactly %q — out of the merge queue and inside the light layer, so a pull request that did not ask for CI does not run it", name, job.If, advisoryIf)
 		}
 	}
 	// A step-level continue-on-error is the job-level one in disguise: the
@@ -709,7 +772,7 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 			t.Errorf("job %q needs %v but carries `if:` %q — with plain needs, a failed leg SKIPS this job and a skipped check reports SUCCESS. Carry exactly %s", name, job.Needs, job.If, aggregatorIf)
 		}
 		for _, leg := range job.Needs {
-			if leg == heavyGateJob {
+			if deciderJobs[leg] {
 				// Needed for its output, which LIGHT_RUN reads; it is no
 				// leg, and TestHeavyLayerRunsOnTheDebouncedPush holds it.
 				continue
@@ -745,9 +808,15 @@ func TestAggregatorsReVerifyEveryLeg(t *testing.T) {
 		case !needsHeavy && carries:
 			t.Errorf("job %q needs no heavy leg yet carries %s: nothing it aggregates may be forgiven a skip", name, lightRunEnv)
 		}
+		// The policy (#3738) reaches the step through prCIEnv, rendered from
+		// the light literal byte for byte — never through another spelling
+		// that could read `run` where the legs skipped.
+		if got := job.Env[prCIEnv]; !sameExpression(got, prCIValue) {
+			t.Errorf("job %q carries %s=%q, want exactly %q", name, prCIEnv, got, prCIValue)
+		}
 		for key, value := range job.Env {
-			if key != lightRunEnv && strings.Contains(value, "pull_request") {
-				t.Errorf("job %q reads the event through %s=%q: only %s may tell its step about the pull request", name, key, value, lightRunEnv)
+			if key != lightRunEnv && key != prCIEnv && strings.Contains(value, "pull_request") {
+				t.Errorf("job %q reads the event through %s=%q: only %s and %s may tell its step about the pull request", name, key, value, lightRunEnv, prCIEnv)
 			}
 		}
 	}
@@ -786,10 +855,14 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 		env, _ := job["env"].(map[string]any)
 		steps, _ := job["steps"].([]any)
 		// green runs the steps with legs[leg] = result for the named legs and
-		// success for every other, and the light key at light.
+		// success for every other, the light key at light and the policy key
+		// at `run`, the value it renders on every event whose legs ran.
 		green := func(light string, results map[string]string) bool {
 			vars := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 			for k, v := range env {
+				if v == prCIValue {
+					vars = append(vars, k+"=run")
+				}
 				if v == lightRunValue {
 					vars = append(vars, k+"="+light)
 				}
@@ -832,7 +905,7 @@ func TestAggregatorsGoRedOnEveryRedLeg(t *testing.T) {
 			}
 			for _, leg := range needs {
 				leg := fmt.Sprint(leg)
-				if leg == heavyGateJob {
+				if deciderJobs[leg] {
 					continue
 				}
 				for _, r := range []string{"failure", "cancelled", "skipped"} {
