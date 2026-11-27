@@ -2,6 +2,7 @@ import { useDocumentStore } from "@/store/document";
 import { useUIStore } from "@/store/ui";
 import type { BudgetBlock, InteractionMode, WorktreeMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
+import { dslNameError } from "@/lib/dslName";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import {
   TextField,
@@ -83,6 +84,7 @@ export default function WorkflowSettingsForm() {
         onChange={(v) => { updateWorkflow(workflow.name, { name: v }); setActiveWorkflowName(v); }}
         validate={(v) => {
           if (!v.trim()) return "Name cannot be empty";
+          if (dslNameError(v)) return dslNameError(v);
           const existing = new Set((document?.workflows ?? []).map((w) => w.name));
           existing.delete(workflow.name);
           if (existing.has(v)) return "Workflow name already exists";
