@@ -141,12 +141,14 @@ interface AuthCtx extends AuthState {
   // way — the user's "sign in anyway", which moves the record to ABANDONED
   // (the notice stays) and lets this sign-in land (I4).
   signIn: (email: string, password: string, options?: { anyway?: boolean }) => Promise<void>;
+  // signUp answers the registration's session: its active team is the one a
+  // registration that honoured an invitation joined.
   signUp: (input: {
     email: string;
     password: string;
     name?: string;
     invitation?: string;
-  }, options?: { anyway?: boolean }) => Promise<void>;
+  }, options?: { anyway?: boolean }) => Promise<AuthSession>;
   signOut: () => Promise<void>;
   // Present the logout again for a sign-out still pending, and answer what it
   // came to ("none" when none is): the state says it too
@@ -815,6 +817,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await settleBeforeCredential(options?.anyway === true);
       const session = await apiRegister(input);
       await establishIdentity(session, "sign-in");
+      return session;
     },
     [establishIdentity, settleBeforeCredential],
   );
