@@ -69,7 +69,7 @@ func passScanDir(t *testing.T, wf *ir.Workflow, sharedScanDir, runID string) str
 
 // secEdgeScanDir renders the scan_dir one edge carries into one node. A tool
 // command resolves {{input.X}} and {{vars.X}} but not {{outputs.X}}
-// (catalog_command_refs_test.go pins that), so the edge mapping is the whole
+// (internal/sweep/catalogcorpus/catalog_command_refs_test.go pins that), so the edge mapping is the whole
 // transport: an edge left at {{vars.scan_dir}} sends its node back to the
 // shared directory, and the assertions below see it.
 func secEdgeScanDir(t *testing.T, wf *ir.Workflow, from, to string, subs map[string]string) string {

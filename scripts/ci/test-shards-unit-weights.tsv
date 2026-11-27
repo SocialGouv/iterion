@@ -7,22 +7,30 @@
 # legs keep their own table (test-shards-weights.tsv): the detector (with cgo)
 # and the co-packing reorder the costs (the unit reading ran unsharded). e2e
 # (test-e2e's) and pkg/sandbox/kubernetes (test-native-exec's) carry no row.
-# internal/sweep/authorcorpus carries the corpus benches moved out of pkg/cli
-# (#3758): 64 s, the moved tests' CI duration in #3758's measurement, taken off pkg/cli's row.
-# The internal/sweep/authorreading row (#3758) carries the seconds its tests took inside
-# pkg/server in that run; pkg/server's row predates their move out of it.
-# internal/sweep/runtime{catalog,seams} left pkg/runtime after that run
-# (#3758): their rows are local `ok`-line durations in the same build mode,
-# and pkg/runtime's row still counts their share until the next refresh.
-# The internal/sweep/e2ematrix row (#3758, 2026-11-26) is a local reading of one of the packages
-# split out of bots, which keeps its own row until the next refresh.
-github.com/SocialGouv/iterion/bots	751
-github.com/SocialGouv/iterion/pkg/server	518
+# #3758 moved the whole-tree sweeps of bots, pkg/server, pkg/runtime, pkg/cli and
+# pkg/backend/model into internal/sweep/*. Their rows, and the seconds taken off
+# their source packages' rows, are ESTIMATES until the next CI refresh:
+# - internal/sweep/authorcorpus: 64 s, the moved tests' CI duration in #3758's
+#   measurement, taken off pkg/cli's row (116 -> 52).
+# - internal/sweep/authorreading: 38 s, the seconds its tests took inside pkg/server in
+#   the run above.
+# - every other internal/sweep row is a local `ok`-line duration in this build mode
+#   (CGO_ENABLED=0, -count=1, one run per package on a loaded workstation):
+#   runtimecatalog 42, runtimeseams 18 and e2ematrix 20 read on 2026-11-26;
+#   catalogcorpus 33 and publishedtree 24 read on 2026-11-27, in the same pass that
+#   found these under 10 s and so left out: mintchokepoint 5, catalogclaims 3,
+#   modelseams 1, itertoken 1, and serversurface, sandboximages, runtimedocs under 1.
+# - the source rows lose what moved out of them: bots 751 -> 671 (catalogcorpus,
+#   publishedtree, e2ematrix, catalogclaims), pkg/server 518 -> 475 (authorreading,
+#   mintchokepoint), pkg/runtime 225 -> 165 (runtimecatalog, runtimeseams),
+#   pkg/backend/model 206 -> 205 (modelseams).
+github.com/SocialGouv/iterion/bots	671
+github.com/SocialGouv/iterion/pkg/server	475
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
 github.com/SocialGouv/iterion/pkg/scripthost	369
-github.com/SocialGouv/iterion/pkg/runtime	225
-github.com/SocialGouv/iterion/pkg/backend/model	206
+github.com/SocialGouv/iterion/pkg/backend/model	205
 github.com/SocialGouv/iterion/internal/fswatch	175
+github.com/SocialGouv/iterion/pkg/runtime	165
 github.com/SocialGouv/iterion/pkg/runview	135
 github.com/SocialGouv/iterion/pkg/runner	127
 github.com/SocialGouv/iterion/internal/automaintguard	98
@@ -38,10 +46,12 @@ github.com/SocialGouv/iterion/internal/sweep/authorreading	38
 github.com/SocialGouv/iterion/pkg/internal/proc	37
 github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools	34
 github.com/SocialGouv/iterion/charts/iterion	33
+github.com/SocialGouv/iterion/internal/sweep/catalogcorpus	33
 github.com/SocialGouv/iterion/cmd/iterion	32
 github.com/SocialGouv/iterion/pkg/git	28
 github.com/SocialGouv/iterion/pkg/store	26
 github.com/SocialGouv/iterion/internal/pricingtest	24
+github.com/SocialGouv/iterion/internal/sweep/publishedtree	24
 github.com/SocialGouv/iterion/pkg/backend/mcp	23
 github.com/SocialGouv/iterion/pkg/dsl/parser	22
 github.com/SocialGouv/iterion/pkg/assistantmission	20

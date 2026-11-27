@@ -102,7 +102,7 @@ security bot = drop `skills/lang-rust.md`; no `main.bot` or schema edit.
   (`p/default` is Semgrep's universal cross-language pack — the metrics-off
   floor, since `--config=auto --metrics=off` is rejected by semgrep; only
   per-**language** packs like `p/golang` / `p/python` are violations, which
-  is exactly what `catalog_universality_test.go` matches).
+  is exactly what `internal/sweep/catalogcorpus/catalog_universality_test.go` matches).
 - `npm install -g @anthropic-ai/claude-code` in a sandbox `post_create`
   (bootstrapping the runtime, not the target's stack).
 - Prose in a `prompt:` block that *mentions* `go test` / `npm install` as

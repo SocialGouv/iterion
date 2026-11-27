@@ -326,7 +326,7 @@ func promptSurfacesOf(w *ir.Workflow, n ir.Node) []promptSurface {
 
 // renderedInputNames is THE reading of "a channel of this node renders it",
 // shared by the ratchet above and by the prose guard
-// (prompt_prose_input_refs_test.go): render the given bodies through the real
+// (internal/sweep/catalogcorpus/prompt_prose_input_refs_test.go): render the given bodies through the real
 // resolver with a distinct marker as each field's value, and report the
 // fields whose marker comes out. Two guards asking the same question ask it
 // of the same renderer, so they cannot disagree about one field.
@@ -394,8 +394,8 @@ func stripSkillsDeclarations(src string) string {
 // (ADR-051), which the parser rejects with E002. That bot passed CI because the
 // two tests that DO load every catalog bot both bail on a parse/compile failure
 // ("another test's job") without ever failing:
-//   - bundle_consistency_test.go: `if pr.File == nil { continue }`
-//   - catalog_typing_test.go: only inspects four typing codes
+//   - internal/sweep/catalogcorpus/bundle_consistency_test.go: `if pr.File == nil { continue }`
+//   - internal/sweep/catalogcorpus/catalog_typing_test.go: only inspects four typing codes
 //
 // So a non-parseable bot sailed through CI and only surfaced in prod as a 502
 // on the review-pr webhook (`launch failed: parse error … expected agent
@@ -422,7 +422,7 @@ func teamBotFiles(t *testing.T) []string { return catalogRootFiles(t, bundleRoot
 
 // exampleFragments are the .bot files under examples/ that are not
 // workflows: declaration catalogues meant to be pasted into one
-// (examples_cursors_test.go compiles the cursor catalogue inside a workflow).
+// (internal/sweep/catalogcorpus/examples_cursors_test.go compiles the cursor catalogue inside a workflow).
 // Discovery routes them anyway, so each is named in routableNonWorkflows too —
 // and dropping it from either list reddens the other.
 var exampleFragments = map[string]bool{"../examples/cursors/cursors.bot": true}
@@ -643,7 +643,7 @@ type nodeReading struct {
 }
 
 // promptSurface is one prompt body the runtime resolves against a node's own
-// input, named as the mirror guard names it (catalog_input_mapping_test.go,
+// input, named as the mirror guard names it (internal/sweep/catalogcorpus/catalog_input_mapping_test.go,
 // inputReadsOf).
 type promptSurface struct {
 	surface string

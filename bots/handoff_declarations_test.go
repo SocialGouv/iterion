@@ -119,7 +119,7 @@ func TestProducedNodesExist(t *testing.T) {
 // compiler what a node and a var ARE rather than pattern-matching the source.
 // A line scanner cannot tell `schema converge:` from `agent converge:`; the IR
 // cannot express that confusion. Every catalog bot is compiled by
-// internal/sweep/catalogcorpus already (catalog_parse_compile_test.go), so this
+// internal/sweep/catalogcorpus/catalog_parse_compile_test.go already, so this
 // adds no new dependency.
 func compileBot(t *testing.T, name string) *ir.Workflow {
 	t.Helper()

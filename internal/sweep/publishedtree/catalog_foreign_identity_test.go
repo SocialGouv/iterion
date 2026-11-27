@@ -265,11 +265,21 @@ func permittedHost(host string) bool {
 // sweep in `vendor/`, where several hundred third-party READMEs name several
 // hundred hosts nobody here chose.
 //
-// No file in the scope is exempt. This guard names every host by
-// construction (the allowlist, the bite test's fixtures), and it lies under
-// internal/sweep/, outside the scope: a file of the same name inside it is
-// judged like any other, because a fixture in a test is as public as a skill.
-var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "charts", "ci", ":(glob)*.md"}
+// `internal/sweep` is where the whole-tree test files of `bots/` and the heavy
+// packages live: a fixture in one of them is as public as a skill, and each of
+// them sat under `bots/` (in the scope) before it moved.
+//
+// One file in the scope is exempt: this guard, which names every host by
+// construction (the allowlist, the bite test's fixtures). It is matched by its
+// full path from the root (theGuardItself), never by its base name, so a file
+// of the same name anywhere else is judged like any other.
+var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "charts", "ci", "internal/sweep", ":(glob)*.md"}
+
+// theGuardItself is this file, as the tree spells it from the module root.
+// TestTheGuardExemptsItsOwnPathOnly holds it to the file's real location, so
+// a move or a rename fails there instead of leaving an exemption that hides
+// nothing — or a stranger.
+const theGuardItself = "internal/sweep/publishedtree/catalog_foreign_identity_test.go"
 
 // catalogFiles is the set this guard judges: the tracked files of
 // catalogScope, read from git rather than from the checkout.
@@ -283,7 +293,30 @@ var catalogScope = []string{"bots", "examples", "docs", "skills", "scripts", "ch
 func catalogFiles(t *testing.T) (root string, files []string) {
 	t.Helper()
 	root = sweepwalk.ModuleRoot(t)
-	return root, trackedFilesIn(t, root, catalogScope...)
+	files, dropped := withoutTheGuardItself(t, root, trackedFilesIn(t, root, catalogScope...))
+	if dropped != 1 {
+		t.Fatalf("the self-exemption %s matched %d tracked file(s), want exactly 1 — the scope no longer "+
+			"holds this guard where it says it does", theGuardItself, dropped)
+	}
+	return root, files
+}
+
+// withoutTheGuardItself drops theGuardItself from files, matched on the path
+// relative to root and nothing shorter, and reports how many it dropped.
+func withoutTheGuardItself(t *testing.T, root string, files []string) (kept []string, dropped int) {
+	t.Helper()
+	for _, full := range files {
+		rel, err := filepath.Rel(root, full)
+		if err != nil {
+			t.Fatalf("%s does not lie under %s: %v", full, root, err)
+		}
+		if filepath.ToSlash(rel) == theGuardItself {
+			dropped++
+			continue
+		}
+		kept = append(kept, full)
+	}
+	return kept, dropped
 }
 
 // trackedFilesIn lists the files git TRACKS under the named subdirectories of
@@ -418,6 +451,65 @@ func TestCatalogForeignIdentityGuardBites(t *testing.T) {
 			t.Errorf("the guard did NOT catch %q — it would let a third party's infrastructure "+
 				"ship in the public catalog", host)
 		}
+	}
+}
+
+// The exemption is this file at its own path, and nothing else: the base
+// name alone once hid every in-scope file called catalog_foreign_identity_test.go.
+// The path constant is held to this package's directory (the test process's
+// working directory) and to the file declaring this test, so moving or
+// renaming the guard without the exemption fails here.
+func TestTheGuardExemptsItsOwnPathOnly(t *testing.T) {
+	root := sweepwalk.ModuleRoot(t)
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkgDir, err := filepath.Rel(root, wd)
+	if err != nil {
+		t.Fatalf("the package directory %s does not lie under the module root %s: %v", wd, root, err)
+	}
+	if want := filepath.ToSlash(filepath.Dir(filepath.FromSlash(theGuardItself))); filepath.ToSlash(pkgDir) != want {
+		t.Fatalf("theGuardItself lies in %q and this package is %q — the exemption no longer names the guard", want, filepath.ToSlash(pkgDir))
+	}
+	self, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(theGuardItself)))
+	if err != nil {
+		t.Fatalf("theGuardItself names %s, which does not read: %v", theGuardItself, err)
+	}
+	if !strings.Contains(string(self), "\nfunc TestTheGuardExemptsItsOwnPathOnly(") {
+		t.Fatalf("%s does not declare this test — the exemption names another file", theGuardItself)
+	}
+
+	dir := t.TempDir()
+	namesakes := []string{
+		filepath.Join(dir, "bots", "zz", "catalog_foreign_identity_test.go"),
+		filepath.Join(dir, "internal", "sweep", "catalogcorpus", "catalog_foreign_identity_test.go"),
+		filepath.Join(dir, "internal", "sweep", "publishedtree", "zz", "catalog_foreign_identity_test.go"),
+	}
+	guard := filepath.Join(dir, filepath.FromSlash(theGuardItself))
+	for _, path := range append([]string{guard}, namesakes...) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("// mirror at https://forge.internal.acme-industries.fr/team/repo\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept, dropped := withoutTheGuardItself(t, dir, append([]string{guard}, namesakes...))
+	if dropped != 1 {
+		t.Errorf("dropped %d file(s), want exactly the guard's own path", dropped)
+	}
+	flagged := map[string]bool{}
+	for _, hit := range scanForeignHosts(t, dir, kept) {
+		flagged[filepath.Join(dir, hit.file)] = true
+	}
+	for _, path := range namesakes {
+		if !flagged[path] {
+			t.Errorf("%s names a private forge and was not flagged — the exemption reaches past the guard's own path", path)
+		}
+	}
+	if flagged[guard] {
+		t.Errorf("the guard's own path was judged — its allowlist and fixtures would fail the guard")
 	}
 }
 

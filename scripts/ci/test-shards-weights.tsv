@@ -7,21 +7,23 @@
 # stale or missing row only degrades the balance — it never errors.
 # race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
 # (under -race in test-native-exec), so neither carries a row here.
-# internal/sweep/authorcorpus carries the corpus benches moved out of pkg/cli
-# (#3758): their 64 s unit duration (#3758's measurement) scaled by pkg/cli's race/unit ratio
-# (583/116), taken off pkg/cli's row.
-# The internal/sweep/authorreading and mintchokepoint rows (#3758) carry the unit seconds their tests took
-# inside pkg/server, scaled by pkg/server's race/unit ratio (1070/518);
-# pkg/server's row predates their move out of it.
-# internal/sweep/runtime{catalog,seams} left pkg/runtime after that run
-# (#3758): their rows are local `ok`-line durations in the same build mode,
-# and pkg/runtime's row still counts their share until the next refresh.
-# The internal/sweep/{publishedtree,catalogcorpus,e2ematrix,catalogclaims} rows (#3758, 2026-11-26) are local -race readings of the
-# packages split out of bots, which keeps its own row until the next refresh.
-github.com/SocialGouv/iterion/bots	1564
-github.com/SocialGouv/iterion/pkg/server	1070
+# #3758 moved the whole-tree sweeps of bots, pkg/server, pkg/runtime, pkg/cli and
+# pkg/backend/model into internal/sweep/*. Their rows, and the seconds taken off
+# their source packages' rows, are ESTIMATES until the next CI refresh:
+# - internal/sweep/authorcorpus: the moved benches' 64 s unit duration (#3758's
+#   measurement) scaled by pkg/cli's race/unit ratio (583/116), taken off pkg/cli's row.
+# - internal/sweep/authorreading and mintchokepoint: the unit seconds their tests took
+#   inside pkg/server, scaled by pkg/server's race/unit ratio (1070/518).
+# - internal/sweep/runtime{catalog,seams}: local `ok`-line durations in this build mode.
+# - internal/sweep/{publishedtree,catalogcorpus,e2ematrix,catalogclaims}: local -race
+#   readings (2026-11-26).
+# - the source rows lose those rows: bots 1564 -> 1402, pkg/server 1070 -> 978,
+#   pkg/runtime 745 -> 607. modelseams, itertoken, serversurface, sandboximages and
+#   runtimedocs ran under 2 s each without -race and carry no row.
+github.com/SocialGouv/iterion/bots	1402
+github.com/SocialGouv/iterion/pkg/server	978
 github.com/SocialGouv/iterion/internal/fswatch	945
-github.com/SocialGouv/iterion/pkg/runtime	745
+github.com/SocialGouv/iterion/pkg/runtime	607
 github.com/SocialGouv/iterion/pkg/auth	607
 github.com/SocialGouv/iterion/pkg/backend/model	559
 github.com/SocialGouv/iterion/pkg/backend/delegate	489
