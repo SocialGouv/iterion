@@ -3,6 +3,18 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.41.0](https://github.com/SocialGouv/iterion/compare/v7.40.4...v7.41.0) (2026-11-27)
+
+### Features
+
+* **server,runner:** the engine floor reads the live fleet — draining and superseded pods no longer hold it ([#3848](https://github.com/SocialGouv/iterion/issues/3848)) ([#3866](https://github.com/SocialGouv/iterion/issues/3866)) ([78a5034](https://github.com/SocialGouv/iterion/commit/78a50344cf0b822e765ddedee4308c0d52b39e21)), closes [#3760](https://github.com/SocialGouv/iterion/issues/3760), references [#3760](https://github.com/SocialGouv/iterion/issues/3760)
+
+    <details><summary>why</summary>
+
+    The bot-push engine floor (a bundle's requires.iterion against the lowest build that can run it) read the runs of the past seven days, so after every roll the previous build kept refusing pushes the new fleet could run: while its pods drained, and for days after they were gone (#3760; a v7.40.1 pod draining after the v7.40.3 roll on 27/11).
+
+    </details>
+
 ## [7.40.4](https://github.com/SocialGouv/iterion/compare/v7.40.3...v7.40.4) (2026-11-27)
 
 ### Features
