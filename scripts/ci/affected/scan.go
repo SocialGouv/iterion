@@ -474,16 +474,18 @@ func relativeReads(root string, f *scanFile) []evidence {
 			if consumed[n] {
 				return true
 			}
-			// Outside a Join, a bare ".." is a traversal fragment, not a
-			// path, and so is a "../" that stops short of the root: a
-			// table's malicious input, the head of a concatenation
-			// ("../" + name), a prefix to test or trim. A climb that reaches
-			// the root stays a read ("../" in a top-level package, "../.."
-			// two levels down): tests name the root that way before joining
-			// onto it. The bare ".." stays a fragment even at the top level:
-			// bots/ tests use it as traversal input, and reading it as the
-			// root would anchor their literals on the root.
-			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && !(s == "../" && path.Join(f.dir, "..") != ".") && !strings.ContainsAny(s, " \t\n") {
+			// Outside a Join, a bare ".." or a lone "../" is a traversal
+			// fragment, not a path: a table's malicious input, the head of a
+			// concatenation ("../" + name), a prefix to test or trim. A
+			// deeper climb ("../..") stays a read: tests name the root that
+			// way before joining onto it. In a top-level package the lone
+			// climb is the root itself, and it still counts as a fragment:
+			// bots/ and e2e/ tests use it as text, and reading it as the root
+			// would anchor all of the package's literals on the root and fail
+			// the guard. A read written that way goes unseen: the one the
+			// tree holds, a bots/ test's filepath.Abs(".."), reads only under
+			// bots/.
+			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && s != "../" && !strings.ContainsAny(s, " \t\n") {
 				add(n, s)
 			}
 		}

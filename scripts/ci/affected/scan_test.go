@@ -114,12 +114,14 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 	}
 }
 
-// TestASingleClimbIsAFragmentADeeperOneIsTheRoot holds the line between the
-// two: below the top level, "../" outside a Join names no file (a table's
-// malicious input, the head of a concatenation, a prefix to trim), so it reads
-// nothing; a climb that reaches the root is how a test names it before joining
-// onto it — "../.." two levels down, and "../" itself in a top-level package.
-func TestASingleClimbIsAFragmentADeeperOneIsTheRoot(t *testing.T) {
+// TestALoneClimbIsAFragmentADeeperOneIsARead holds the line between the two:
+// "../" outside a Join names no file (a table's malicious input, the head of a
+// concatenation, a prefix to test or trim), so it reads nothing, at any depth;
+// "../.." is how a test names the root before joining onto it. The top-level
+// package is where the two would blur — there "../" is the root itself — and
+// it stays a fragment: counting it would anchor the package on the root and
+// fail the guard on every traversal test it holds.
+func TestALoneClimbIsAFragmentADeeperOneIsARead(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":    "module example.com/m\n",
 		"docs/x.md": "x",
@@ -135,9 +137,12 @@ import ("os"; "path/filepath"; "testing")
 func TestB(t *testing.T) { root := "../.."; os.ReadFile(filepath.Join(root, "docs", "x.md")) }
 `,
 		"top/top_test.go": `package top
-import ("os"; "testing")
-const page = "docs/x.md"
-func TestTop(t *testing.T) { os.ReadFile("../" + page) }
+import ("strings"; "testing")
+func TestTop(t *testing.T) {
+	for _, tc := range []struct{ name, runID string }{{"double-dot-slash", "../"}, {"docs", "docs/x.md"}} { _ = tc }
+	rel := t.Name()
+	_ = strings.HasPrefix(rel, "../")
+}
 `,
 	})
 	ev, err := scanTree(root, "example.com/m")
@@ -156,10 +161,8 @@ func TestTop(t *testing.T) { os.ReadFile("../" + page) }
 	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(b, want) {
 		t.Errorf(`pkg/b: scan = %v, want %v: "../.." names the root`, b, want)
 	}
-	top := got["top"]
-	slices.Sort(top)
-	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(top, want) {
-		t.Errorf(`top: scan = %v, want %v: in a top-level package "../" names the root`, top, want)
+	if len(got["top"]) > 0 {
+		t.Errorf(`top: scan = %v, want nothing: a lone "../" in a top-level package is a traversal input or a prefix, not the root`, got["top"])
 	}
 }
 
