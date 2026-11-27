@@ -221,7 +221,7 @@ jobs:
     members: ["ci:golangci"]
     inlined: ["ci:golangci"]
     equivalence: >-
-      `golangci-lint run --timeout 10m`, the job's command verbatim, on the
+      `golangci-lint run --timeout 15m`, the job's command verbatim, on the
       version devbox pins (2.12.2 — the same the job installs by digest). NOT
       `task lint`: that has `deps: [fmt, vet]` and `fmt` runs `go fmt ./...`,
       which REWRITES tracked source. A member that repairs the defect CI fails
