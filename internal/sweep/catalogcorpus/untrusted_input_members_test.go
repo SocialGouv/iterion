@@ -59,8 +59,9 @@ func untrustedInputMemberLines(t *testing.T) (lines []string, members int) {
 // It is a test of its own rather than a branch of the guard below so that one
 // `-run` selects the generator alone — which is what the task does. Being a
 // separate test is NOT what stops the gate reading back what this run just
-// wrote: `go test ./bots/` runs both, this one first. The gate refuses the
-// variable instead, where refusing is the only thing that holds.
+// wrote: `go test ./internal/sweep/catalogcorpus/` runs both, this one first.
+// The gate refuses the variable instead, where refusing is the only thing
+// that holds.
 func TestRecordTheUntrustedInputBoundaryClass(t *testing.T) {
 	out := strings.TrimSpace(os.Getenv(untrustedInputMembersOutEnv))
 	if out == "" {
@@ -83,10 +84,10 @@ func TestRecordTheUntrustedInputBoundaryClass(t *testing.T) {
 // BOUNDARY paragraph, so it is a reviewed list, not a side effect of a
 // predicate someone widened.
 func TestTheUntrustedInputBoundaryClassIsTheFrozenOne(t *testing.T) {
-	// The generator writes the very file this gate reads, and `go test ./bots/`
-	// runs it first: a green under that variable would judge the class against
-	// what the same run had just produced. Refused rather than trusted to a
-	// file layout.
+	// The generator writes the very file this gate reads, and
+	// `go test ./internal/sweep/catalogcorpus/` runs it first: a green under
+	// that variable would judge the class against what the same run had just
+	// produced. Refused rather than trusted to a file layout.
 	if out := strings.TrimSpace(os.Getenv(untrustedInputMembersOutEnv)); out != "" {
 		t.Fatalf("%s=%s is set: the recorder may have written the list this gate reads in the same run, so a green here would judge the class against itself — unset it, or run only %s",
 			untrustedInputMembersOutEnv, out, untrustedInputMembersGenTask)

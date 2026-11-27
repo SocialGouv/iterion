@@ -16,15 +16,22 @@
 #   the run above.
 # - every other internal/sweep row is a local `ok`-line duration in this build mode
 #   (CGO_ENABLED=0, -count=1, one run per package on a loaded workstation):
-#   runtimecatalog 42, runtimeseams 18 and e2ematrix 20 read on 2026-11-26;
-#   catalogcorpus 33 and publishedtree 24 read on 2026-11-27, in the same pass that
-#   found these under 10 s and so left out: mintchokepoint 5, catalogclaims 3,
-#   modelseams 1, itertoken 1, and serversurface, sandboximages, runtimedocs under 1.
-# - the source rows lose what moved out of them: bots 751 -> 671 (catalogcorpus,
-#   publishedtree, e2ematrix, catalogclaims), pkg/server 518 -> 475 (authorreading,
+#   runtimecatalog 42, runtimeseams 18 and e2ematrix 20 read on 2026-11-26. The
+#   same pass found these under 10 s and so left them out: mintchokepoint 5,
+#   catalogclaims 3, modelseams 1, itertoken 1, and serversurface, sandboximages,
+#   runtimedocs under 1.
+# - catalogcorpus and publishedtree are left out too: their loaded-workstation
+#   readings (33 s, 24 s) measured the load, not the package. Each compiled test
+#   binary (CGO_ENABLED=0), run ALONE from its own package directory with
+#   -test.count=1 on 2026-11-27 (#3758's review round), took 6.9 s and 4.8 s of
+#   wall at GOMAXPROCS=32, 5.3 s and 4.6 s at GOMAXPROCS=4: about 7 s and 5 s,
+#   under the 10 s floor. A rerun of the same binaries beside other sessions'
+#   gates (load ~33 on 32 cores) took 11-15 s and 8 s.
+# - the source rows lose what moved out of them: bots 751 -> 716 (catalogcorpus 7,
+#   publishedtree 5, e2ematrix 20, catalogclaims 3), pkg/server 518 -> 475 (authorreading,
 #   mintchokepoint), pkg/runtime 225 -> 165 (runtimecatalog, runtimeseams),
 #   pkg/backend/model 206 -> 205 (modelseams).
-github.com/SocialGouv/iterion/bots	671
+github.com/SocialGouv/iterion/bots	716
 github.com/SocialGouv/iterion/pkg/server	475
 github.com/SocialGouv/iterion/pkg/backend/delegate	422
 github.com/SocialGouv/iterion/pkg/scripthost	369
@@ -46,12 +53,10 @@ github.com/SocialGouv/iterion/internal/sweep/authorreading	38
 github.com/SocialGouv/iterion/pkg/internal/proc	37
 github.com/SocialGouv/iterion/pkg/claw/pkg/api/tools	34
 github.com/SocialGouv/iterion/charts/iterion	33
-github.com/SocialGouv/iterion/internal/sweep/catalogcorpus	33
 github.com/SocialGouv/iterion/cmd/iterion	32
 github.com/SocialGouv/iterion/pkg/git	28
 github.com/SocialGouv/iterion/pkg/store	26
 github.com/SocialGouv/iterion/internal/pricingtest	24
-github.com/SocialGouv/iterion/internal/sweep/publishedtree	24
 github.com/SocialGouv/iterion/pkg/backend/mcp	23
 github.com/SocialGouv/iterion/pkg/dsl/parser	22
 github.com/SocialGouv/iterion/pkg/assistantmission	20

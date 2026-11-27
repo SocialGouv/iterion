@@ -35,8 +35,8 @@ func catalogTemplates(t *testing.T) []string {
 }
 
 // catalogRegenInputs are the roots RegenerateWhatsNextCatalog discovers bots
-// under (botregistry.DefaultPaths): the tracked files under them are the
-// whole of what the regeneration reads.
+// under (botregistry.DefaultPaths): the files git sees under them, tracked or
+// untracked and not ignored, are the whole of what the regeneration reads.
 var catalogRegenInputs = []string{botregistry.BotsDirName, "examples", ".botz"}
 
 // TestCommittedCatalogIsFresh fails when the committed generated catalog
@@ -49,19 +49,20 @@ var catalogRegenInputs = []string{botregistry.BotsDirName, "examples", ".botz"}
 // When this fails, run `iterion bots regen-catalog` and commit the result
 // alongside the manifest change.
 //
-// The regeneration runs on a COPY of the tracked inputs, never on the
-// checkout: it rewrites every owner's catalog in place, and a test that
-// rewrites tracked files races every other test binary reading them — go
-// test runs packages concurrently, and catalogclaims reads these very
-// catalogs. The copy is compared file by file with the checkout, so whatever
-// the regeneration rewrites is judged, an owner this test does not name
-// included.
+// The regeneration runs on a COPY of the inputs, never on the checkout: it
+// rewrites every owner's catalog in place, and a test that rewrites tracked
+// files races every other test binary reading them — go test runs packages
+// concurrently, and catalogclaims reads these very catalogs. The inputs are every file git sees under the roots — tracked,
+// and untracked unless ignored — so a new bot judged before its first
+// `git add` already counts, exactly as it will once committed. The copy is
+// compared file by file with the checkout, so whatever the regeneration
+// rewrites is judged, an owner this test does not name included.
 func TestCommittedCatalogIsFresh(t *testing.T) {
 	repoRoot, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scratch, copied := copyTrackedInputs(t, repoRoot, catalogRegenInputs...)
+	scratch, copied := copyCheckoutInputs(t, repoRoot, catalogRegenInputs...)
 
 	// Every bundle shipping the static template owns a generated catalog
 	// (whats-next, issue-triage, …), committed beside it. The template roots
@@ -104,15 +105,17 @@ func TestCommittedCatalogIsFresh(t *testing.T) {
 	}
 }
 
-// copyTrackedInputs copies the files git tracks under the named roots of
-// repoRoot into a fresh temporary directory, at the same relative paths and
-// modes, and returns that directory with the bytes it copied, keyed by
-// slash-separated path. The bytes are the checkout's, so an edit not yet
-// committed is judged; a file git does not track is not an input, so the
-// verdict does not move with what lies around in the checkout.
-func copyTrackedInputs(t *testing.T, repoRoot string, roots ...string) (string, map[string][]byte) {
+// copyCheckoutInputs copies the files git sees under the named roots of
+// repoRoot — tracked ones, and untracked ones that no ignore rule excludes
+// (`git ls-files -co --exclude-standard`) — into a fresh temporary directory,
+// at the same relative paths and modes, and returns that directory with the
+// bytes it copied, keyed by slash-separated path. The bytes are the
+// checkout's, so an edit or a new file not yet committed is judged; an
+// ignored file (a build output, a local scratch) is not an input, so the
+// verdict does not move with what the ignore rules keep out of commits.
+func copyCheckoutInputs(t *testing.T, repoRoot string, roots ...string) (string, map[string][]byte) {
 	t.Helper()
-	args := append([]string{"ls-files", "-z", "--"}, roots...)
+	args := append([]string{"ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"}, roots...)
 	out, err := gittest.Cmd(repoRoot, gitlib.NoRunHooks(args...)...).Output()
 	if err != nil {
 		t.Fatalf("git ls-files %v in %s: %v", roots, repoRoot, err)
@@ -126,10 +129,10 @@ func copyTrackedInputs(t *testing.T, repoRoot string, roots ...string) (string, 
 		src := filepath.Join(repoRoot, filepath.FromSlash(rel))
 		info, err := os.Lstat(src)
 		if err != nil {
-			t.Fatalf("stat the tracked file %s: %v", rel, err)
+			t.Fatalf("stat %s, which git lists under %v: %v", rel, roots, err)
 		}
 		if !info.Mode().IsRegular() {
-			t.Fatalf("%s is tracked as a %v, which this copy does not reproduce — teach copyTrackedInputs that kind", rel, info.Mode().Type())
+			t.Fatalf("%s is a %v, which this copy does not reproduce — teach copyCheckoutInputs that kind", rel, info.Mode().Type())
 		}
 		body, err := os.ReadFile(src)
 		if err != nil {
@@ -145,7 +148,7 @@ func copyTrackedInputs(t *testing.T, repoRoot string, roots ...string) (string, 
 		copied[rel] = body
 	}
 	if len(copied) == 0 {
-		t.Fatalf("git tracks no file under %v in %s — the regeneration would judge nothing", roots, repoRoot)
+		t.Fatalf("git lists no file under %v in %s — the regeneration would judge nothing", roots, repoRoot)
 	}
 	return scratch, copied
 }

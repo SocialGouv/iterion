@@ -75,6 +75,7 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/sweep/runtimeseams` | holds the pkg/runtime guards whose subject is the code AROUND the engine: they read or type-check the module's source to hold every caller of an… | — |
 | `internal/sweep/sandboximages` | holds the guards that hold the sandbox images and the runner image to the bots that run on them: the sec image's exact deepsec pin and its… | — |
 | `internal/sweep/serversurface` | guards the seams between the server's REST surface and the sources that spell it from outside pkg/server: every /api path and (method, path) pair the… | — |
+| `internal/sweep/sweepguard` | holds the one parallel-isolation guard over every package under internal/sweep: a test that calls t.Parallel() there may not reach the environment,… | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |
