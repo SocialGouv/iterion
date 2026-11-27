@@ -329,7 +329,8 @@ func TestMongoStreamOperationComparesTheBoundTenant(t *testing.T) {
 // TestMongoBoundTenantUsesTheCanonicalParser: under an observed tenant a run
 // document whose tenant_id is duplicated, or spelled as a case alias, is an
 // invalid identity — a lenient decode reads the observed "T" and would admit
-// it. Unbound reads keep the legacy decode.
+// it. LoadRun refuses it unbound too: the strict rule runs on every run read
+// (TestMongoUnboundRunDecodeAppliesTheStrictTenantRule).
 func TestMongoBoundTenantUsesTheCanonicalParser(t *testing.T) {
 	for name, tc := range map[string]struct {
 		forge func(bson.D) bson.D
@@ -361,8 +362,8 @@ func TestMongoBoundTenantUsesTheCanonicalParser(t *testing.T) {
 			if got := storedTenantKeys(t, s, id); fmt.Sprint(got) != fmt.Sprint(tc.keys) {
 				t.Fatalf("fixture: stored tenant keys %q, want %q", got, tc.keys)
 			}
-			if r, err := s.LoadRun(blind, id); err != nil || r.TenantID != "T" {
-				t.Fatalf("fixture: unbound LoadRun of a %s tenant_id = tenant %q, %v, want the lenient decode to read the observed \"T\"", name, mongoLoadedTenant(r), err)
+			if r, err := s.LoadRun(blind, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+				t.Errorf("unbound LoadRun of a %s tenant_id = tenant %q, %v, want ErrInvalidRunDataIdentity", name, mongoLoadedTenant(r), err)
 			}
 			if r, err := s.LoadRun(bound, id); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
 				t.Errorf("bound LoadRun of a %s tenant_id = tenant %q, %v, want ErrInvalidRunDataIdentity", name, mongoLoadedTenant(r), err)

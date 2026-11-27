@@ -369,3 +369,106 @@ func TestAdminRuns_CrossOrgReadsAreAudited(t *testing.T) {
 		return e.Action == "run.cross_team_read" && e.TargetID == "run-b1x"
 	})
 }
+
+// TestAdminRuns_OrgAndTeamNarrowToTheTeam: an org plus a team inside it
+// answers that team's runs only — the team narrows the org, it is not
+// dropped in favour of the whole org (#3830). The audit row names the
+// team, so the answer must not reach past it.
+func TestAdminRuns_OrgAndTeamNarrowToTheTeam(t *testing.T) {
+	_, _, hs, adminTok, _ := newAdminRunsServer(t)
+	code, out := adminRunsGet(t, hs, adminTok, "?org_id=org-alpha&team_id=team-a1")
+	if code != 200 {
+		t.Fatalf("org+team: code %d, want 200", code)
+	}
+	got := map[string]bool{}
+	for _, row := range out.Runs {
+		if row.TeamID != "team-a1" {
+			t.Errorf("org+team answered run %s of team %s, want only team-a1's runs", row.ID, row.TeamID)
+		}
+		got[row.ID] = true
+	}
+	if len(got) != 2 || !got["run-a1x"] || !got["run-a1f"] {
+		t.Fatalf("org+team rows %v, want exactly run-a1x and run-a1f", got)
+	}
+}
+
+// crossOrgListRows joins the server's detached writes — every audit insert
+// the handler started is registered before it returns — and reads the
+// run.cross_org_list rows the audit store holds. The join closes the
+// registry, so it is the last thing a test does with the server.
+func crossOrgListRows(t *testing.T, s *Server, st audit.Store) []audit.Event {
+	t.Helper()
+	s.bgJoinBudget = 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	s.joinBackgroundWorkers(ctx)
+	events, err := st.ListPlatform(context.Background(), audit.Page{Action: "run.cross_org_list"})
+	if err != nil {
+		t.Fatalf("list platform audit: %v", err)
+	}
+	return events
+}
+
+// TestAdminRuns_EarlyAnswersAreAudited: the answers the handler gives
+// before it reaches the store — an org plus a team outside it (empty
+// page), an org with no team (empty page), an unknown org (404), a
+// malformed parameter (400) — are
+// still the super-admin's cross-org read, so each leaves exactly one
+// run.cross_org_list row naming the ids the request asked for (#3830).
+func TestAdminRuns_EarlyAnswersAreAudited(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, org, team, scope string
+		code                          int
+	}{
+		{"org with a foreign team", "?org_id=org-alpha&team_id=team-b1", "org-alpha", "team-b1", "team-b1", 200},
+		{"org without teams", "?org_id=org-empty", "org-empty", "", "org-empty", 200},
+		{"unknown org", "?org_id=org-nope", "org-nope", "", "org-nope", 404},
+		{"unknown org with a team", "?org_id=org-nope&team_id=team-a1", "org-nope", "team-a1", "team-a1", 404},
+		{"malformed cursor", "?org_id=org-alpha&cursor=not-a-cursor", "org-alpha", "", "org-alpha", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auditStore, s, hs, adminTok, _ := newAdminRunsServer(t)
+			if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{ID: "org-empty", Name: "Empty Org", Slug: "empty"}); err != nil {
+				t.Fatalf("seed org-empty: %v", err)
+			}
+			code, out := adminRunsGet(t, hs, adminTok, tc.query)
+			if code != tc.code || len(out.Runs) != 0 {
+				t.Fatalf("%s: code %d rows %d, want %d and no row", tc.query, code, len(out.Runs), tc.code)
+			}
+			rows := crossOrgListRows(t, s, auditStore)
+			if len(rows) != 1 {
+				t.Fatalf("%s left %d run.cross_org_list rows, want exactly 1", tc.query, len(rows))
+			}
+			ev := rows[0]
+			if ev.ActorID != "root" || ev.ActorKind != "super_admin" || ev.Scope != audit.ScopePlatform {
+				t.Fatalf("audit row actor %q/%q scope %q, want the super-admin at platform scope", ev.ActorID, ev.ActorKind, ev.Scope)
+			}
+			if ev.TenantID != tc.scope || ev.Meta["team_id"] != tc.scope || ev.Meta["org_id"] != tc.org {
+				t.Fatalf("audit row tenant %q meta %v, want scope %q and the requested org %q", ev.TenantID, ev.Meta, tc.scope, tc.org)
+			}
+		})
+	}
+}
+
+// TestAdminRuns_RefusedCallerLeavesNoAuditRow: at handler altitude a
+// non-super-admin is refused 403 before any lookup, whatever the filters
+// ask — and the refusal leaves no cross-org audit row, since nothing was
+// read.
+func TestAdminRuns_RefusedCallerLeavesNoAuditRow(t *testing.T) {
+	for _, query := range []string{"", "?org_id=org-alpha&team_id=team-b1", "?org_id=org-nope"} {
+		t.Run(query, func(t *testing.T) {
+			auditStore, s, _, _, _ := newAdminRunsServer(t)
+			req := httptest.NewRequest("GET", "/api/admin/runs"+query, nil).WithContext(auth.WithIdentity(context.Background(), auth.Identity{
+				UserID: "u1", TeamID: "team-a1", Role: identity.RoleAdmin,
+			}))
+			w := httptest.NewRecorder()
+			s.handleAdminListRuns(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("non-super-admin on %q answered %d, want 403", query, w.Code)
+			}
+			if rows := crossOrgListRows(t, s, auditStore); len(rows) != 0 {
+				t.Fatalf("a refused caller left %d run.cross_org_list rows, want none", len(rows))
+			}
+		})
+	}
+}

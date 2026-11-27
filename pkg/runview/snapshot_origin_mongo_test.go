@@ -210,9 +210,10 @@ func snapshotOriginNoTenantMongo(t *testing.T, uri string, f store.ValueFormat) 
 }
 
 // snapshotOriginLenientTenantMongo: the run document carries a duplicated
-// or case-alias tenant_id, so the decoded Run.TenantID and the canonical
-// parser disagree. Team-blind, BuildSnapshot never snapshots it and the
-// reads bound to CaptureRunOriginIn's capture refuse it typed.
+// or case-alias tenant_id, which the struct decoder alone would read
+// leniently and the canonical parser refuses. Team-blind, LoadRun,
+// BuildSnapshot and CaptureRunOriginIn all refuse it typed, so no lenient
+// capture exists for a bound read to inherit.
 func snapshotOriginLenientTenantMongo(t *testing.T, uri, forge string) {
 	s, _, o := mongoSnapshotRun(t, uri, store.LegacyValueFormat)
 	rewriteMongoRunDocument(t, s, func(doc bson.D) bson.D {
@@ -243,8 +244,8 @@ func snapshotOriginLenientTenantMongo(t *testing.T, uri, forge string) {
 	if want := map[string]string{"duplicate": "[tenant_id tenant_id]", "alias": "[TENANT_ID]"}[forge]; fmt.Sprint(keys) != want {
 		t.Fatalf("fixture: stored tenant keys %q, want %s", keys, want)
 	}
-	if r, err := s.LoadRun(blind, "r"); err != nil || r.TenantID != "snapshot-tenant" {
-		t.Fatalf("fixture: the decoded tenant of a %s tenant_id = %v, %v, want \"snapshot-tenant\"", forge, r, err)
+	if r, err := s.LoadRun(blind, "r"); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+		t.Fatalf("team-blind LoadRun of a %s tenant_id = %v, %v, want ErrInvalidRunDataIdentity", forge, r, err)
 	}
 
 	wrapped := &snapshotOriginBarrier{RunStore: s}
@@ -252,7 +253,9 @@ func snapshotOriginLenientTenantMongo(t *testing.T, uri, forge string) {
 	if !errors.Is(err, store.ErrInvalidRunDataIdentity) || snap != nil || wrapped.scanned != 0 {
 		t.Fatalf("BuildSnapshot of a %s tenant_id: snapshot=%v err=%v scanned=%d, want ErrInvalidRunDataIdentity and nothing scanned", forge, snap != nil, err, wrapped.scanned)
 	}
-	lenientCaptureRefusedOnBoundReads(t, s, "snapshot-tenant", forge)
+	if o, err := CaptureRunOriginIn(blind, s, "r"); !errors.Is(err, store.ErrInvalidRunDataIdentity) {
+		t.Fatalf("CaptureRunOriginIn of a %s tenant_id = tenant %q, %v, want ErrInvalidRunDataIdentity: no lenient capture to bind", forge, o.TenantID(), err)
+	}
 }
 
 type snapshotBlob struct{}

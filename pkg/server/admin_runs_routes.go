@@ -97,8 +97,30 @@ func (s *Server) superAdminRunRead(r *http.Request, id auth.Identity, teamID, ac
 func (s *Server) handleAdminListRuns(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	q := r.URL.Query()
+	orgID := q.Get("org_id")
+	teamID := q.Get("team_id")
+	status := q.Get("status")
+
+	// The predicate, once per request and before any answer: WHO may read
+	// across orgs, and the audit line that says this request did. Every
+	// answer past it — the page, an empty page, a 404 for an unknown org,
+	// a 400 — follows the one audited request; the row names the ids the
+	// request asked for (scope: the team when one is named, else the
+	// org), whether or not they exist. A non-super-admin is refused here,
+	// before any lookup, and leaves no row.
+	scope := orgID
+	if teamID != "" {
+		scope = teamID
+	}
+	if !s.superAdminRunRead(r, id, scope, "run.cross_org_list", "list", map[string]any{
+		"org_id": orgID, "team_id": teamID, "status": status,
+	}) {
+		httpError(w, http.StatusForbidden, "super-admin only")
+		return
+	}
+
 	filter := runview.AdminListFilter{}
-	if status := q.Get("status"); status != "" {
+	if status != "" {
 		filter.Status = store.RunStatus(status)
 	}
 	if since := q.Get("since"); since != "" {
@@ -130,13 +152,10 @@ func (s *Server) handleAdminListRuns(w http.ResponseWriter, r *http.Request) {
 	filter.After = cursor
 
 	// Org and team narrow the answer. They COMBINE: an org plus a team
-	// outside it answers an empty page, never the org alone — a filter
-	// set, not a fallback chain (#1419 was exactly the silent drop).
-	orgID := q.Get("org_id")
-	teamID := q.Get("team_id")
-	orgNarrowed := false
+	// inside it answers that team alone, an org plus a team outside it
+	// answers an empty page, never the org alone — a filter set, not a
+	// fallback chain (#1419 was exactly the silent drop).
 	if orgID != "" {
-		orgNarrowed = true
 		if _, err := s.authStore().GetOrg(r.Context(), orgID); err != nil {
 			if errors.Is(err, identity.ErrNotFound) {
 				s.httpErrorFor(w, r, http.StatusNotFound, "org not found: %s", orgID)
@@ -150,48 +169,21 @@ func (s *Server) handleAdminListRuns(w http.ResponseWriter, r *http.Request) {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "list org %s teams: %v", orgID, err)
 			return
 		}
-		if teamID != "" {
-			inOrg := false
-			for _, t := range teams {
-				if t.ID == teamID {
-					inOrg = true
-					break
-				}
-			}
-			if !inOrg {
-				// The combination is honoured: this page is empty,
-				// and the empty answer is still the audited read it
-				// asked for.
-				s.writeJSONFor(w, r, adminRunsResponse{Runs: []adminRunRow{}})
-				return
-			}
-		}
 		for _, t := range teams {
-			filter.TeamIDs = append(filter.TeamIDs, t.ID)
+			if teamID == "" || t.ID == teamID {
+				filter.TeamIDs = append(filter.TeamIDs, t.ID)
+			}
 		}
-	}
-	if teamID != "" && len(filter.TeamIDs) == 0 {
+		if len(filter.TeamIDs) == 0 {
+			// A team outside the org, or an org with zero teams: the
+			// filter set is empty, so the honest page is empty — never
+			// the unfiltered everything an empty TeamIDs set would
+			// otherwise mean.
+			s.writeJSONFor(w, r, adminRunsResponse{Runs: []adminRunRow{}})
+			return
+		}
+	} else if teamID != "" {
 		filter.TeamIDs = []string{teamID}
-	}
-	if orgNarrowed && len(filter.TeamIDs) == 0 {
-		// An org with zero teams: the filter set is empty, so the
-		// honest page is empty — never the unfiltered everything an
-		// empty TeamIDs set would otherwise mean.
-		s.writeJSONFor(w, r, adminRunsResponse{Runs: []adminRunRow{}})
-		return
-	}
-
-	// The predicate, once per request: WHO may read across orgs, and
-	// the audit line that says this request did.
-	scope := orgID
-	if teamID != "" {
-		scope = teamID
-	}
-	if !s.superAdminRunRead(r, id, scope, "run.cross_org_list", "list", map[string]any{
-		"org_id": orgID, "team_id": teamID, "status": string(filter.Status),
-	}) {
-		httpError(w, http.StatusForbidden, "super-admin only")
-		return
 	}
 
 	summaries, next, err := s.runs.ListAcrossTenants(r.Context(), filter)

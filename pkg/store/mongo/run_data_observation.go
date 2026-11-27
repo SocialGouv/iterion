@@ -81,16 +81,21 @@ func observesTenant(ctx context.Context) bool {
 	return observed
 }
 
-// checkRunDocumentTenant compares the tenant ctx's binding observed with the
-// canonical tenant of the whole run document raw, whose header the caller
-// compared (CheckRunDataBinding).
+// checkRunDocumentTenant applies the strict tenant rule to the whole run
+// document raw on every read, bound or not, then compares the canonical
+// tenant with the one ctx's binding observed, when it observed one (the caller
+// compared the header, CheckRunDataBinding). The rule is unconditional because
+// the struct decoder matches tenant_id case-insensitively: an alias, duplicate
+// or non-string tenant key would otherwise decode under a tenant the store's
+// filters never matched. A document with no tenant key — a tenantless run —
+// passes, its tenant "".
 func checkRunDocumentTenant(ctx context.Context, raw bson.Raw) error {
-	if !observesTenant(ctx) {
-		return nil
-	}
 	tenant, err := documentCanonicalTenant(raw)
 	if err != nil {
 		return err
+	}
+	if !observesTenant(ctx) {
+		return nil
 	}
 	return store.CheckRunObservedTenant(ctx, tenant)
 }
