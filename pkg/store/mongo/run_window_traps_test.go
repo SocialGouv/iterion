@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"slices"
 	"testing"
 	"time"
@@ -19,6 +20,19 @@ import (
 // the previous one.
 func executedDocsExamined(t *testing.T, s *Store, fn func()) int64 {
 	t.Helper()
+	return profiledDocsExamined(t, s, true, fn)
+}
+
+// warmDocsExamined is executedDocsExamined on the plan cache as fn finds it:
+// what an earlier call of the same shape left is what fn's reads run, as in
+// production, where every poller of every tenant shares mongod's plan cache.
+func warmDocsExamined(t *testing.T, s *Store, fn func()) int64 {
+	t.Helper()
+	return profiledDocsExamined(t, s, false, fn)
+}
+
+func profiledDocsExamined(t *testing.T, s *Store, clearPlanCache bool, fn func()) int64 {
+	t.Helper()
 	ctx := context.Background()
 	run := func(cmd bson.D) {
 		t.Helper()
@@ -26,7 +40,9 @@ func executedDocsExamined(t *testing.T, s *Store, fn func()) int64 {
 			t.Fatalf("%v: %v", cmd, err)
 		}
 	}
-	run(bson.D{{Key: "planCacheClear", Value: s.runs.Name()}})
+	if clearPlanCache {
+		run(bson.D{{Key: "planCacheClear", Value: s.runs.Name()}})
+	}
 	run(bson.D{{Key: "profile", Value: 0}})
 	if err := s.db.Collection("system.profile").Drop(ctx); err != nil {
 		t.Fatalf("drop system.profile: %v", err)
@@ -163,6 +179,150 @@ func TestListRunWindow_ExecutionReadsThePageNotTheCollection(t *testing.T) {
 		t.Logf("%s: %d rows, %d documents examined", tc.name, len(got), docsExamined)
 		if docsExamined > tc.maxDocs {
 			t.Errorf("%s: examined %d documents for %d rows, want at most %d — the read walked the collection, not the answer", tc.name, docsExamined, len(got), tc.maxDocs)
+		}
+	}
+}
+
+// TestListRunWindow_FilteredWindowsReadTheirMatchesColdAndWarm measures the
+// team windows that filter on status or workflow (#3831) over thirty thousand
+// runs: one team holding half of them, mid-sized and small teams, a team
+// dense among the newest, and runs with no tenant. Each read is bounded by
+// its answer, measured on the executed reads, with the plan cache cleared
+// (cold) and as another call of the same shape left it (warm).
+//
+// A window that asks for the listing order with no limit ends the planner's
+// trial at 101 results; an index that only hands back the order reaches them
+// first among the team's newest runs and then walks the whole team for a
+// status a narrower index holds in a few hundred keys. A cached plan is run
+// for any tenant: the plan another team's window chose walked a team for its
+// three hundred failed_resumable runs, and the batches of an admin team-set
+// window ran the newest-first plan another set left. The indexes that hold a
+// team's runs per status and per workflow in the listing order serve these
+// windows whichever call left the cache, and only `since` windows read in
+// batches.
+func TestListRunWindow_FilteredWindowsReadTheirMatchesColdAndWarm(t *testing.T) {
+	s := watchersTestStore(t)
+	ctx := context.Background()
+	blind := store.TeamBlind(ctx)
+	team := func(id string) context.Context { return store.WithIdentity(ctx, id, "owner") }
+	end := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	span := 200 * 24 * time.Hour
+	rng := rand.New(rand.NewSource(3831))
+	type seed struct {
+		tenant, status, workflow string
+		created                  time.Time
+		deleted                  bool
+	}
+	var seeds []seed
+	add := func(n int, tenant string, window time.Duration) {
+		for range n {
+			created := end.Add(-time.Duration(rng.Int63n(int64(window)))).Truncate(time.Millisecond)
+			statuses := []string{"finished", "finished", "finished", "finished", "finished", "finished", "failed", "failed", "cancelled", "failed_resumable"}
+			seeds = append(seeds, seed{
+				tenant:   tenant,
+				status:   statuses[rng.Intn(len(statuses))],
+				workflow: fmt.Sprintf("wf-%d", rng.Intn(12)),
+				created:  created,
+				deleted:  rng.Intn(100) == 0,
+			})
+		}
+	}
+	add(15000, "team-big", span)
+	add(3000, "team-mid", span)
+	add(800, "team-newmid", 7*24*time.Hour)
+	add(300, "team-fresh", 12*time.Hour) // dense among the newest
+	for i := range 60 {
+		add(150, fmt.Sprintf("team-s%d", i), span)
+	}
+	add(1900, "", span)
+	docs := make([]any, 0, len(seeds))
+	for i, sd := range seeds {
+		doc := bson.M{
+			"_id": fmt.Sprintf("run-%05d", i), "status": sd.status, "workflow_name": sd.workflow,
+			"created_at": sd.created, "updated_at": sd.created.Add(time.Minute),
+		}
+		if sd.tenant != "" {
+			doc["tenant_id"] = sd.tenant
+		}
+		if sd.deleted {
+			doc["deleted_at"] = sd.created
+		}
+		docs = append(docs, doc)
+	}
+	if _, err := s.runs.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// matches counts the live runs a window answers, before its limit.
+	matches := func(tenants []string, status, workflow string) int {
+		n := 0
+		for _, sd := range seeds {
+			if !sd.deleted && slices.Contains(tenants, sd.tenant) && (status == "" || sd.status == status) && (workflow == "" || sd.workflow == workflow) {
+				n++
+			}
+		}
+		return n
+	}
+
+	type window struct {
+		ctx context.Context
+		w   store.RunWindow
+	}
+	list := func(name string, wd window) []*store.Run {
+		t.Helper()
+		got, skipped, err := s.ListRunWindow(wd.ctx, wd.w)
+		if err != nil {
+			t.Fatalf("%s: ListRunWindow: %v", name, err)
+		}
+		if len(skipped) != 0 {
+			t.Fatalf("%s: %d fixture runs did not decode (first: %v)", name, len(skipped), skipped[0].Err)
+		}
+		return got
+	}
+	for _, tc := range []struct {
+		name string
+		// primer, when set, runs twice on a cleared plan cache before the
+		// measured window, which then runs on the cache as it left it.
+		primer *window
+		window window
+		rows   int
+	}{
+		{"team-big status=cancelled, no limit", nil,
+			window{team("team-big"), store.RunWindow{Status: "cancelled"}}, matches([]string{"team-big"}, "cancelled", "")},
+		{"team-mid status=failed, no limit", nil,
+			window{team("team-mid"), store.RunWindow{Status: "failed"}}, matches([]string{"team-mid"}, "failed", "")},
+		{"team-big workflow=wf-3, no limit", nil,
+			window{team("team-big"), store.RunWindow{Workflow: "wf-3"}}, matches([]string{"team-big"}, "", "wf-3")},
+		{"team-mid workflow=wf-3, limit 50", nil,
+			window{team("team-mid"), store.RunWindow{Workflow: "wf-3", Limit: 50}}, 50},
+		{"team-mid status=failed_resumable limit 500, after team-big's", &window{team("team-big"), store.RunWindow{Status: "failed_resumable", Limit: 500}},
+			window{team("team-mid"), store.RunWindow{Status: "failed_resumable", Limit: 500}}, matches([]string{"team-mid"}, "failed_resumable", "")},
+		{"team-s3 workflow=wf-3 no limit, after team-big's", &window{team("team-big"), store.RunWindow{Workflow: "wf-3"}},
+			window{team("team-s3"), store.RunWindow{Workflow: "wf-3"}}, matches([]string{"team-s3"}, "", "wf-3")},
+		{"admin team set mid+s3 limit 501, after fresh+newmid", &window{blind, store.RunWindow{TenantIDs: []string{"team-fresh", "team-newmid"}, Limit: 501}},
+			window{blind, store.RunWindow{TenantIDs: []string{"team-mid", "team-s3"}, Limit: 501}}, 501},
+	} {
+		if tc.rows <= 0 || (tc.window.w.Limit > 0 && tc.rows > tc.window.w.Limit) {
+			t.Fatalf("%s: the fixture answers %d rows — the case measures nothing", tc.name, tc.rows)
+		}
+		var docsExamined int64
+		var got []*store.Run
+		if tc.primer == nil {
+			docsExamined = executedDocsExamined(t, s, func() { got = list(tc.name, tc.window) })
+		} else {
+			_ = executedDocsExamined(t, s, func() {
+				list(tc.name+" (primer)", *tc.primer)
+				list(tc.name+" (primer)", *tc.primer)
+			})
+			docsExamined = warmDocsExamined(t, s, func() { got = list(tc.name, tc.window) })
+		}
+		if len(got) != tc.rows {
+			t.Errorf("%s: listed %d runs, want %d", tc.name, len(got), tc.rows)
+		}
+		// The matches plus the tombstones among them (one in a hundred).
+		maxDocs := int64(tc.rows + tc.rows/20 + 10)
+		t.Logf("%s: %d rows, %d documents examined", tc.name, len(got), docsExamined)
+		if docsExamined > maxDocs {
+			t.Errorf("%s: examined %d documents for %d rows, want at most %d — the read walked a team or the collection, not its answer", tc.name, docsExamined, len(got), maxDocs)
 		}
 	}
 }

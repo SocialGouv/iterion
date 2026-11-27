@@ -396,7 +396,11 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		// runs whenever the team's own are dense among the newest.
 		{Keys: bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("created_id_desc")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("tenant_created_id_desc").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
-		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_status_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+		// A team's status or workflow window: the filter's runs in the
+		// listing order, so the window reads its matches and nothing else,
+		// whichever tenant's call left the cached plan for the shape.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("tenant_status_created_id_desc").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "workflow_name", Value: 1}, {Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}, Options: options.Index().SetName("tenant_workflow_created_id_desc").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "owner_id", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("tenant_owner_created").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 		// (tenant_id, project_path, created_at desc) backs the "filter
 		// runs by repository" studio feature + the distinct-repos

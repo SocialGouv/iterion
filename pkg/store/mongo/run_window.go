@@ -18,16 +18,19 @@ var _ store.RunWindowListingStore = (*Store)(nil)
 // created_id_desc index (EnsureSchema) hands it back without a sort stage.
 var runWindowSort = bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}
 
-// runWindowBatch caps the limit of each Find a bounded window sends. The
-// planner's trial runs every candidate plan until one returns 101 documents
-// or ends: above that, a newest-first scan that finds the first 101 matches
-// among the newest runs wins the trial, then walks the rest of the collection
-// for matches a narrower index (updated_desc for a recent `since`) holds in a
-// few hundred keys. At 100 the scan wins only by filling its own limit, which
-// is the cheap case. A later batch of the same query shape usually reuses the
-// cached plan, whichever earlier call (of any tenant) left it; Mongo replans a
-// cached plan only past ten times the works it recorded, which bounds what a
-// mismatched cached plan costs rather than excluding it.
+// runWindowBatch caps the limit of each Find a bounded `since` window sends.
+// The planner's trial runs every candidate plan until one returns 101
+// documents or ends: above that, a newest-first scan that finds the first 101
+// matches among the newest runs wins the trial, then walks the rest of the
+// collection for matches a narrower index (updated_desc for a recent `since`)
+// holds in a few hundred keys. At 100 the scan wins only by filling its own
+// limit, which is the cheap case.
+//
+// Every other window sends its limit in one Find. A Find of a shape the plan
+// cache holds runs the cached plan, whichever earlier call (of any tenant)
+// left it, and Mongo replans it only past ten times the works it recorded: a
+// second batch of a team's window could run the plan another tenant's window
+// chose (run_window_traps_test.go measures that, warm).
 const runWindowBatch = 100
 
 // windowBound is a keyset position in runWindowSort. createdAt and id are
@@ -46,10 +49,10 @@ type windowBound struct {
 // LoadRunForListing would refuse comes back as a SkippedRun, never as a record
 // and never as a failure of the page.
 //
-// Each Find asks for at most runWindowBatch documents, and the window
-// continues from the last document it saw until it holds w.Limit records or
-// the collection is exhausted — the same continuation that covers the slots
-// skipped documents consumed. A window with no limit is one stream.
+// A window continues from the last document it saw until it holds w.Limit
+// records or the collection is exhausted — the continuation that covers the
+// slots skipped documents consumed; a `since` window also asks at most
+// runWindowBatch documents per Find. A window with no limit is one stream.
 func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.Run, []store.SkippedRun, error) {
 	if w.Limit < 0 {
 		return nil, nil, fmt.Errorf("store/mongo: list run window: negative limit %d", w.Limit)
@@ -60,7 +63,10 @@ func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.
 	for {
 		want := 0
 		if w.Limit > 0 {
-			want = min(w.Limit-len(out), runWindowBatch)
+			want = w.Limit - len(out)
+			if !w.Since.IsZero() {
+				want = min(want, runWindowBatch)
+			}
 		}
 		filter, opts := runWindowQuery(ctx, w, bound, want)
 		seen, last, err := s.readRunWindow(ctx, filter, opts, &out, &skipped)
@@ -195,12 +201,18 @@ func runWindowQuery(ctx context.Context, w store.RunWindow, bound *windowBound, 
 			and = append(and, bson.M{"created_at": bson.M{"$lte": bound.createdAt}})
 		} else {
 			// The range bounds the index scan; the $or only drops the runs
-			// of the bound's own instant at or after its id.
+			// of the bound's own instant at or after its id. The id arm is an
+			// aggregation comparison, which orders values of different BSON
+			// types as the sort does: a query `_id: {$lt: v}` matches only
+			// ids of v's type, so after a document with an ObjectId or a
+			// numeric _id it would drop every string-id run of that instant.
+			// $literal keeps an id that starts with "$" from being read as a
+			// field path.
 			and = append(and,
 				bson.M{"created_at": bson.M{"$lte": bound.createdAt}},
 				bson.M{"$or": bson.A{
 					bson.M{"created_at": bson.M{"$lt": bound.createdAt}},
-					bson.M{"_id": bson.M{"$lt": bound.id}},
+					bson.M{"$expr": bson.M{"$lt": bson.A{"$_id", bson.M{"$literal": bound.id}}}},
 				}},
 			)
 		}
