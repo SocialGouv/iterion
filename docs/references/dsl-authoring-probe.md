@@ -127,7 +127,7 @@ tier's size is ~25, its user prompt ~30, the schema and merge keys ~17, the
 edges ~6, and rendering the new block ~10.
 
 What the unedited unit raises is partly held and partly measured. Its errors
-are held by two tests in `bots/`: `TestCatalogBotsParseAndCompileClean` fails
+are held by two tests in `internal/sweep/catalogcorpus/`: `TestCatalogBotsParseAndCompileClean` fails
 on any error its parse or compile raises, and
 `TestCatalogBotsBundleConsistencyClean` on any diagnostic of its manifest
 cross-check, warnings included (its allowlist is empty; it hands the

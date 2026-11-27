@@ -171,7 +171,7 @@ under devbox, `devbox run -- bash -c 'cd scripts/ultra11y-engine && npm …'`:
 `devbox run` otherwise executes at the project root, where npm reads the
 pnpm workspace links and arborist crashes), move the runner image's
 `ARG ULTRA11Y_VERSION` and the bot's `engine_*` defaults (asserted equal by
-`bots/rgaa_audit_engine_pin_test.go`), run `task test:contract:rgaa`, and
+`internal/sweep/sandboximages/rgaa_audit_engine_pin_test.go`), run `task test:contract:rgaa`, and
 read every red subtest as a contract change to carry into the bot —
 including a `known_upstream_defect_…` subtest going red, which is good news
 to act on.

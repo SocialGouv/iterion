@@ -226,7 +226,7 @@ var refutedLeverClaims = []string{
 	// the list, one scroll from a sibling comment the same sweep rewrote. The
 	// SECOND-person prompts ("the file-writing tools you did not declare")
 	// stay and are not needles: each sits on a node that declares no writer,
-	// so the set it names IS the set withheld, and the corpus guard in bots/
+	// so the set it names IS the set withheld, and the corpus guard in internal/sweep/catalogcorpus
 	// (TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool) is what keeps
 	// that true. Measured on the tree that shipped them: 9, 7, 4 and 1 hit
 	// inside the scope, 0 after the sweep. A needle shortened to "list does

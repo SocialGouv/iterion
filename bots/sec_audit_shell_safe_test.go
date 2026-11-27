@@ -125,7 +125,7 @@ func lineOfOffset(s string, off int) (int, string) {
 //
 // This is deliberately STRICTER than the catalogue-wide rule: the general
 // check (the C188 warning in pkg/dsl/ir, floored at zero findings over the
-// shipped bots by catalog_braced_env_test.go) fires only where a body both
+// shipped bots by internal/sweep/catalogcorpus/catalog_braced_env_test.go) fires only where a body both
 // ASSIGNS a name and reads it back braced — a read of a name the body never
 // assigns is the documented ADR-093 dial (PORT=${ITERION_DISPATCHER_PORT:
 // -4891}) and is correct. This bot forbids EVERY braced form, assigned or

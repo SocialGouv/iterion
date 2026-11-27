@@ -852,11 +852,11 @@ tasks:
       - go run -mod=vendor ./cmd/iterion fmt bots examples
 
   bots:boundary:gen:
-    desc: Regenerate the committed untrusted-input boundary class — the prompts that owe an UNTRUSTED INPUT BOUNDARY paragraph. Its diff is the review; the guard is `go test -run TestTheUntrustedInputBoundaryClassIsTheFrozenOne ./bots/`
+    desc: Regenerate the committed untrusted-input boundary class — the prompts that owe an UNTRUSTED INPUT BOUNDARY paragraph. Its diff is the review; the guard is `go test -run TestTheUntrustedInputBoundaryClassIsTheFrozenOne ./internal/sweep/catalogcorpus/`
     env:
       ITERION_UNTRUSTED_INPUT_MEMBERS_OUT: "{{.ROOT_DIR}}/bots/testdata/untrusted_input_boundary_members.txt"
     cmds:
-      - go test -count=1 -run TestRecordTheUntrustedInputBoundaryClass ./bots/
+      - go test -count=1 -run TestRecordTheUntrustedInputBoundaryClass ./internal/sweep/catalogcorpus/
 
   bots:audit-policy:gen:
     desc: Regenerate the committed text of Vetty's CVE audit policy — the prompt and playbook passages its security_audit grades by. Its diff is the review; the guard is `go test -run TestDepUpdateGuardAuditPolicyIsTheFrozenOne ./bots/`

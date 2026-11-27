@@ -7,7 +7,7 @@
 ## Catalog bot: runs against ANY chat/discussion context. No
 ## target-repo or iterion-specific facts baked into var defaults,
 ## prompts, or schemas (see docs/agents "Repo-agnostic and stack-agnostic — the universality rules"
-## + catalog_universality_test.go).
+## + internal/sweep/catalogcorpus/catalog_universality_test.go).
 ##
 ## Purpose: given an anonymised transcript of a discussion and the
 ## latest message, surface the genuine ambiguity — ask the one or two

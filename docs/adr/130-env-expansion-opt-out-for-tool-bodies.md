@@ -168,7 +168,7 @@ IR pass stays what it serves — value resolution for var readings.
   already walks exactly the three bodies, already gates on shell-bound ones, and
   already owns `scanShellBody` (quote/comment/heredoc aware) and `bodyLineOf`.
   One PR, warning severity, so no catalogue bot stops compiling
-  (`bots/catalog_parse_compile_test.go:39-40`); reversible by deleting one arm.
+  (`internal/sweep/catalogcorpus/catalog_parse_compile_test.go:39-40`); reversible by deleting one arm.
 - **Cons.** The ticket asks for two things — "the authored text must stay what
   executes, **or** the gap must be visible at validate" — and A delivers only
   the second, for half the class. A body that reads a name it never assigns

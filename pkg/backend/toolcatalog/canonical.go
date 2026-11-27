@@ -93,7 +93,7 @@ func CanonicalRows() map[string]string {
 //     (delegate.claudeWritersTheDeclarationNames);
 //   - the two corpus rules that keep the flag out of the tree beside a
 //     declared writer, #1816:
-//     bots.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool (through
+//     catalogcorpus.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool (through
 //     declaredWriters) and
 //     botscaffold.TestNoScaffoldedNodeDeclaresReadonlyWithAWritingTool;
 //   - the writing vocabulary every readonly argv row is asserted over
@@ -101,7 +101,7 @@ func CanonicalRows() map[string]string {
 //     delegate.TestTheWritingVocabularyIsReadFromTheTable);
 //   - the durable-memory question's own reading of the set, which ADDS the
 //     shell and claw's `memory_write` (DurableWriteCanonicals below, read by
-//     bots.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne).
+//     catalogcorpus.TestABundleSellsADurableBriefOnlyWhereItCanWriteOne).
 //
 // Each held its own literal, and nothing held them equal: growing the
 // delegate's left both corpus rules silently narrower than the rule they
@@ -113,7 +113,7 @@ func CanonicalRows() map[string]string {
 // #1651), so a corpus rule that read the shell as a declared writer would
 // refuse the 26 shipped read-only nodes that declare the tool the flag leaves
 // them (measured: the set added to this list, then
-// bots.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool). codex counts the shell for a different verdict — which sandbox mode
+// catalogcorpus.TestNoShippedWorkflowDeclaresReadonlyWithAWritingTool). codex counts the shell for a different verdict — which sandbox mode
 // its declaration needs (codexSandboxForAllowedTools) — and that question is
 // its own.
 func WritingCanonicals() []string {

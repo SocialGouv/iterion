@@ -112,7 +112,7 @@ a published image class (#2632, decision (a)): the `rgaa` variant —
 Playwright MCP + `ULTRA11Y_BROWSER_PATH=/usr/bin/chromium`) with the
 pinned ultra11y engine installed globally (`npm install -g
 ultra11y@<pin>`, the pin held equal to `bots/rgaa-audit/ultra11y.pin` by
-`bots/rgaa_audit_sandbox_rgaa_image_test.go`).
+`internal/sweep/sandboximages/rgaa_audit_sandbox_rgaa_image_test.go`).
 
 A bot opts in by declaring the class on its sandbox block:
 

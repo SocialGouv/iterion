@@ -4,8 +4,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -13,6 +11,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/SocialGouv/iterion/internal/routescan"
+	"github.com/SocialGouv/iterion/internal/sweepwalk"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	cloudmetrics "github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/connection"
@@ -106,28 +106,23 @@ func boardProbePath(pattern string) string {
 }
 
 // nativeBoardAPIRoutes derives the cloud board's routes from the registrar
-// that mounts them. They are registered on the raw *http.ServeMux
-// (board_cloud_routes.go hands it s.mux.ServeMux), so the recording mux
-// never sees them — a list written out here instead would go stale the day a
-// route is added, which is the hole the class witness exists to refuse. Each
-// derived route is checked against the server's own routing table by the
-// caller, so a parse that drifts from the code fails loudly rather than
-// covering nothing.
+// that mounts them (routescan.NativeBoardAPIRoutes). They are registered on
+// the raw *http.ServeMux (board_cloud_routes.go hands it s.mux.ServeMux), so
+// the recording mux never sees them — a list written out here instead would
+// go stale the day a route is added, which is the hole the class witness
+// exists to refuse. Each derived route is checked against the server's own
+// routing table by the caller, so a parse that drifts from the code fails
+// loudly rather than covering nothing.
 func nativeBoardAPIRoutes(t *testing.T) []RouteInfo {
 	t.Helper()
-	src := filepath.Join("..", "dispatcher", "native", "http.go")
-	code, calls := registrarSource(t, src)
-	re := regexp.MustCompile(`mux\.Handle\("([A-Z]+) "\+p\+"([^"]*)"`)
-	matches := re.FindAllStringSubmatch(code, -1)
-	if len(matches) != calls {
-		t.Fatalf("%s holds %d registration call(s) and this witness parsed %d — a registration it cannot read is one it cannot guard; spell the route as one literal pattern on mux.Handle", src, calls, len(matches))
-	}
-	if len(matches) < 20 {
-		t.Fatalf("derived %d routes from %s — the registrar's shape changed and this enumeration now covers almost nothing", len(matches), src)
-	}
-	out := make([]RouteInfo, 0, len(matches))
-	for _, m := range matches {
-		out = append(out, RouteInfo{Method: m[1], Pattern: "/api/v1/native" + m[2]})
+	return routeInfos(routescan.NativeBoardAPIRoutes(t, sweepwalk.ModuleRoot(t)))
+}
+
+// routeInfos converts the shared scanner's routes to this package's type.
+func routeInfos(routes []routescan.Route) []RouteInfo {
+	out := make([]RouteInfo, 0, len(routes))
+	for _, r := range routes {
+		out = append(out, RouteInfo{Method: r.Method, Pattern: r.Pattern})
 	}
 	return out
 }
@@ -181,27 +176,19 @@ func boardRegistrarRoutes(t *testing.T) []RouteInfo {
 }
 
 // registrarSource reads one registrar's source with its line comments
-// stripped — a retired route quoted in a comment is not a registration — and
-// counts the registration CALLS it holds, whatever the receiver is called —
-// s.mux, s.mux.ServeMux, a local alias of either — so an alias cannot hide a
-// registration from the count. A derivation parses one literal spelling; a
-// call it counted but did not parse is a route it cannot guard, and the
-// caller reddens on the difference rather than certifying a file it only
-// half read.
+// stripped and counts the registration CALLS it holds
+// (routescan.RegistrarSource, the reader the source-derived route table is
+// built with). A derivation parses one literal spelling; a call it counted
+// but did not parse is a route it cannot guard, and the caller reddens on
+// the difference rather than certifying a file it only half read.
 func registrarSource(t *testing.T, path string) (string, int) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read the registrar %s: %v", path, err)
-	}
-	code := lineComments.ReplaceAllString(string(raw), "")
-	return code, len(registrationCalls.FindAllString(code, -1))
+	return routescan.RegistrarSource(t, path)
 }
 
-var (
-	lineComments      = regexp.MustCompile(`(?m)//.*$`)
-	registrationCalls = regexp.MustCompile(`\.Handle(?:Func)?\(`)
-)
+// lineComments strips Go line comments from a source this package's
+// witnesses read: a retired route quoted in a comment is not a registration.
+var lineComments = regexp.MustCompile(`(?m)//.*$`)
 
 // missingFromTable reports the routes a registrar mounts that the recording
 // mux never saw. Both families' witnesses call it: such a route is served by

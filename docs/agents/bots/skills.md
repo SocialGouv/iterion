@@ -66,7 +66,7 @@ Current bundles and their skills:
 compile error and not a bundle-lint finding — the runtime mirrors
 nothing, the agent's Skill tool finds nothing, and the bot answers from
 the model's priors instead of the authored knowledge (it reads as "the
-bot got dumber", not as a typo). `bots/catalog_skill_refs_test.go`
+bot got dumber", not as a typo). `internal/sweep/catalogcorpus/catalog_skill_refs_test.go`
 closes that gap: every name in a catalog bot's `skills:` list must exist
 as `<bundle>/skills/<name>.md` with matching frontmatter. The exception
 is a skill a bot deliberately does NOT ship so the operator attaches it
@@ -97,7 +97,7 @@ agent later following stale guidance. Concrete examples:
   generator answers for both — it escapes an opener a field never closes
   (`internal/mdcode.EscapeDanglingFence`) and collapses a value spliced
   inside a line (`internal/mdcode.Inline`) — and
-  `bots.TestBotManifestProseLeavesNoFenceOpen` reddens on a field this
+  `internal/sweep/catalogcorpus.TestBotManifestProseLeavesNoFenceOpen` reddens on a field this
   tree's own reader sees leaving a block open, so a manifest here does not
   lean on either repair. That reader's limits are stated and measured on
   `EscapeDanglingFence`, and the gate shares them: a field of one of those

@@ -101,41 +101,6 @@ func TestMergeBundlePresets(t *testing.T) {
 	}
 }
 
-// TestMergeBundlePresets_WillyRealFiles parses the shipped Willy bundle's
-// presets/ so a malformed authored file fails CI rather than only at run time.
-func TestMergeBundlePresets_WillyRealFiles(t *testing.T) {
-	dir := filepath.Join("..", "..", "bots", "whole-improve-loop")
-	if _, err := os.Stat(filepath.Join(dir, "presets")); err != nil {
-		t.Skipf("Willy bundle presets/ not reachable from cwd: %v", err)
-	}
-	b, err := bundle.OpenDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wf := &ir.Workflow{}
-	MergeBundlePresets(wf, b, "", nil)
-	for _, name := range []string{"improve-quality", "production-ready", "code-quality", "rgaa", "rgpd"} {
-		p, ok := wf.Presets[name]
-		if !ok {
-			t.Errorf("missing preset %q", name)
-			continue
-		}
-		if p.Prompt == "" {
-			t.Errorf("preset %q has empty prompt body", name)
-		}
-		if p.DisplayName == "" {
-			t.Errorf("preset %q has empty display_name", name)
-		}
-	}
-	iq := wf.Presets["improve-quality"]
-	if len(iq.Skills) == 0 || iq.Skills[0] != "lang-js-fallow" {
-		t.Errorf("improve-quality should reference lang-js-fallow, got %v", iq.Skills)
-	}
-	if _, ok := iq.Values["improvement_prompt"]; !ok {
-		t.Errorf("improve-quality should override improvement_prompt")
-	}
-}
-
 func TestMergeBundlePresets_NilSafe(t *testing.T) {
 	// None of these should panic.
 	MergeBundlePresets(nil, nil, "", nil)

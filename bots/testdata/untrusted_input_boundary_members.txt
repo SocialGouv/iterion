@@ -1,7 +1,7 @@
 # The untrusted-input boundary class, frozen: every acting prompt of the
 # catalogue and the reason it is in the class, one `<bundle>/<node><TAB>reason`
 # line per reason. Generated, never hand-edited — the generator is in
-# bots/untrusted_input_members_test.go, run by `task bots:boundary:gen`.
+# internal/sweep/catalogcorpus/untrusted_input_members_test.go, run by `task bots:boundary:gen`.
 #
 # A prompt in this list owes its system prompt the UNTRUSTED INPUT BOUNDARY
 # paragraph (docs/agents/bots/untrusted-input.md).

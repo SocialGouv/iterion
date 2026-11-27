@@ -74,7 +74,8 @@ comparison — each owned by a slice named in
 also the matrix's ONLY `uncovered` rows.
 
 **This table is not typed, it is pinned.**
-`TestTheStabilisationPlanTableIsDerivedFromTheCommittedMatrix` (`bots/`) reads
+`TestTheStabilisationPlanTableIsDerivedFromTheCommittedMatrix`
+(`internal/sweep/e2ematrix/`) reads
 the matrix with the contract parser's own rules and reddens on any
 disagreement in either direction — a count that drifted, a surface the matrix
 gained and the plan never heard about, a surface the plan kept after a rename

@@ -205,7 +205,7 @@ specific to skills:
 
 - **A dependency may not shadow a shipped skill, nor an operator-attached
   name.** The first is refused at the install, as it is for a fragment. The
-  second is a catalogue rule (`bots/catalog_skill_refs_test.go`): a bot that
+  second is a catalogue rule (`internal/sweep/catalogcorpus/catalog_skill_refs_test.go`): a bot that
   deliberately references a skill the OPERATOR supplies — a platform playbook
   a repo-agnostic bot must not pin — may not turn that choice into a
   dependency, and the gate reddens on a declaration that does.

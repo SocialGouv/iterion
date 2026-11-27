@@ -1,7 +1,8 @@
 /**
  * The bot navigation vocabulary — studio-side mirror of the CATEGORIES in
- * pkg/bundle/vocab.go (BotCategories). A Go test (bots/catalog_taxonomy_test.go)
- * asserts slug parity AND order; edit both together. The category set is
+ * pkg/bundle/vocab.go (BotCategories). A Go test
+ * (internal/sweep/catalogclaims/taxonomy_parity_test.go) asserts slug parity
+ * AND order; edit both together. The category set is
  * CLOSED: a seventh slug is a product decision, not an opportunistic edit.
  * The tag seed is deliberately NOT mirrored — its only consumers are
  * Go-side (the C271 lint hint, the fleet gate); when a second studio

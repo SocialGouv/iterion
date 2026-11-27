@@ -15,7 +15,8 @@ surface may hide a bot for what they say.
 
 **`category` is a CLOSED, versioned set** — one of six slugs
 ([pkg/bundle/vocab.go](../../../pkg/bundle/vocab.go), mirrored by
-`studio/src/lib/botTaxonomy.ts` under a Go parity test):
+`studio/src/lib/botTaxonomy.ts` under a Go parity test,
+`internal/sweep/catalogclaims/taxonomy_parity_test.go`):
 
 | slug | reads as | fleet examples |
 |---|---|---|
@@ -44,7 +45,7 @@ chips narrow the gallery, and `?tag=…` on `/bots` is a shareable view.
 Governance is the label-vocabulary lesson: **reuse before inventing**.
 An unseeded tag stays declared (never a load error) and emits C271
 (warning) — but the shipped-catalog consistency gate
-(`bots/bundle_consistency_test.go`) holds the fleet to zero warnings, so
+(`internal/sweep/catalogcorpus/bundle_consistency_test.go`) holds the fleet to zero warnings, so
 a new tag on a catalog bot means seeding `vocab.go` in the same change.
 Third-party bundles feel only the soft lint.
 

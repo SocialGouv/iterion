@@ -93,7 +93,8 @@ only by `applyLibrarySkills` — the skill LIBRARY (`~/.iterion/skills`) and
 plugin contributions. A bundle skill is mirrored to disk but produces no hint,
 and the `skill` tool's schema enumerates nothing. **So a bundle skill must be
 NAMED in the bot's own system prompt or the model never learns it exists.**
-`bots/catalog_skill_refs_test.go` pins both halves.
+`bots/copilot_skill_posture_test.go` and
+`internal/sweep/catalogcorpus/catalog_skill_refs_test.go` pin both halves.
 
 **`##` is the DSL comment marker.** The lexer eats the line; the model never
 sees it. A skill "documented" in a comment beside its declaration is invisible.

@@ -329,7 +329,7 @@ func TestFeatureDevKimiQuotaFallbacks(t *testing.T) {
 // (pkg/backend/model/executor_retry.go, which names this very node) — while
 // feature-dev's is deliberately `fresh`. So the prompt is the only channel
 // that carries the plan context on every route, and the ratchet
-// (llm_input_reaches_its_prompt_test.go) cannot hold that alone: it reads
+// (internal/sweep/catalogcorpus/llm_input_reaches_its_prompt_test.go) cannot hold that alone: it reads
 // "carried ⇒ rendered", so dropping a field from the input schema, from every
 // `with` mapping and from the prompt together leaves it green while the author
 // stops seeing its own plan. This is the positive half — the names the prompt

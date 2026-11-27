@@ -56,10 +56,26 @@ One row per package of this module, excluding vendored and generated trees. The 
 | `internal/proctest` | checks OS resources owned by a test binary. | — |
 | `internal/rendergate` | judges a rendered Kubernetes manifest stream — the output of `helm template`, `kustomize build` or an Argo CD manifest dump — for selectors that… | — |
 | `internal/retryprobetest` | models the durable retry row the usage-window pull-forward probe acts on, so the real decision code of pkg/runner and pkg/server can be driven over… | — |
+| `internal/routescan` | derives the REST surface the iterion binary serves from the SOURCE of its registrars: the routes pkg/server registers as literal patterns, the native… | — |
 | `internal/safepath` | turns a name taken from an archive — a string chosen by whoever wrote the archive — into a path that is safe to write under a root. | — |
 | `internal/skillshare` | the sharing primitive for skills a bundle does not own alone. | — |
 | `internal/stdiotest` | captures process stdout/stderr without depending on pipe capacity. | — |
 | `internal/subbottest` | shares source-level bundle fixtures across the four launch surfaces. | — |
+| `internal/sweep/authorcorpus` | holds the corpus benches of the author document (the YAML twin of a .bot): every .bot of the repository converted with `fmt --to yaml` and held to… | — |
+| `internal/sweep/authorreading` | guards that no pkg/server function reads an author document: the YAML decode of pkg/dsl/author is sized for the CLI, and the guard type-checks the… | — |
+| `internal/sweep/catalogclaims` | holds the guards that hold the bot catalogue to texts outside bots/: the doctrine pages its whole-tree staging must match, the pages that may not… | — |
+| `internal/sweep/catalogcorpus` | holds the guards over the shipped workflow corpus as a whole: every bot under bots/ and examples/, the dispatcher's default assignee, the operator… | — |
+| `internal/sweep/e2ematrix` | holds the guards over docs/e2e-coverage-matrix.md and the stabilisation plan derived from it: the e2e-coverage bot's own contract code, sliced out of… | — |
+| `internal/sweep/itertoken` | holds the zero-trace guard for the deprecated workflow extension that `.bot` replaced: TestNoIterExtensionAnywhere greps every tracked file of the… | — |
+| `internal/sweep/mintchokepoint` | guards the derivation chokepoint over team-token mints across the whole module: every mint primitive demands the gate's verdict, the verdict is… | — |
+| `internal/sweep/modelseams` | holds the source sweeps that pin pkg/backend/model's seams across the whole module: no test discards the restore a global lookup install returns… | — |
+| `internal/sweep/publishedtree` | holds the guards over what this repository publishes as a whole: no tracked file under bots/, examples/, docs/, skills/, scripts/, charts/, ci/ or… | — |
+| `internal/sweep/runtimecatalog` | holds the pkg/runtime guards whose subject is the shipped bot catalogue under bots/: each compiles or runs a real .bot (or a bundle's presets/) under… | — |
+| `internal/sweep/runtimedocs` | holds the pkg/runtime guards whose subject is an operator page: docs/sandbox.md's bounded promise about the image-ENV screen, the residue it states… | — |
+| `internal/sweep/runtimeseams` | holds the pkg/runtime guards whose subject is the code AROUND the engine: they read or type-check the module's source to hold every caller of an… | — |
+| `internal/sweep/sandboximages` | holds the guards that hold the sandbox images and the runner image to the bots that run on them: the sec image's exact deepsec pin and its… | — |
+| `internal/sweep/serversurface` | guards the seams between the server's REST surface and the sources that spell it from outside pkg/server: every /api path and (method, path) pair the… | — |
+| `internal/sweep/sweepguard` | holds the one parallel-isolation guard over every package under internal/sweep: a test that calls t.Parallel() there may not reach the environment,… | — |
 | `internal/sweepwalk` | the one walk every repository-wide AST sweep reads: the skip list and the nested-checkout rule below, and one visit per Go file they reach. | — |
 | `internal/testfs` | holds the filesystem gestures tests share: removing only scratch paths inside a test-owned root, and writing an executable no concurrent fork can… | — |
 | `internal/testparallel` | bounds how wide a test binary runs its parallel tests, from TestMain. | — |

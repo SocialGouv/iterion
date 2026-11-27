@@ -1385,7 +1385,7 @@ way to perform. Mono now says so in as many words.
 
 ### Guards added
 
-- `bots/catalog_command_refs_test.go` — catalog-wide: **no** `{{outputs.…}}` in
+- `internal/sweep/catalogcorpus/catalog_command_refs_test.go` — catalog-wide: **no** `{{outputs.…}}` in
   any tool `command:`/`script:`/`postcondition:`, walking every `.bot`. The
   class, not the instance: the same silent no-op was available to every bot in
   the catalog.

@@ -510,7 +510,7 @@ were fixed at every site:
 - `{{outputs.X}}` is **not** substituted in a tool command body (only
   `input`/`vars`/`secrets`/`run.id`). `decline_probe` had two, which would
   have made it refuse every decline for want of an entry head — a guard that
-  looks like it works. Caught by `bots/catalog_command_refs_test.go`.
+  looks like it works. Caught by `internal/sweep/catalogcorpus/catalog_command_refs_test.go`.
 - `DECLINED` must NOT be a `store.FailureCode` constant: that block is the
   set a workflow may not mint (C248), so declaring it there would have made
   the bot's own `code: DECLINED` a compile error. Caught by

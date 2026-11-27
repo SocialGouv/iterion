@@ -200,7 +200,7 @@ re-baselining requires it to be re-run in full.
 
 ## Repo-agnostic
 
-No language, framework or package manager appears in the DSL — `catalog_universality_test.go`
+No language, framework or package manager appears in the DSL — `internal/sweep/catalogcorpus/catalog_universality_test.go`
 enforces it. The application's toolchain comes from the target repo's own `devbox.json` /
 devcontainer. Goldy's own devbox pins `python3`, `jq`, and Poppler (`pdftotext` / `pdftoppm`) for
 the binary lane. The Python harness itself uses only the standard library: no venv or pip.

@@ -15,7 +15,7 @@ import (
 // as its user message, serialized — whatever its system prompt renders
 // (executeHumanLLM: buildUserMessage("", input, td)). The catalogue prose
 // guard judges that surface on this fact
-// (bots/prompt_prose_input_refs_test.go, humanReaderGetsWholeInput), so a
+// (internal/sweep/catalogcorpus/prompt_prose_input_refs_test.go, humanReaderGetsWholeInput), so a
 // user message built from a prompt instead would turn a true verdict there
 // into a false one.
 func TestHumanLLMUserMessageIsTheWholeInput(t *testing.T) {

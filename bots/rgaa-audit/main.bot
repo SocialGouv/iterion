@@ -66,7 +66,7 @@ vars:
   workspace_dir: string = "${PROJECT_DIR}"
   ## THE engine pin — version, size and sha256 of the engine's entry file
   ## (scripts/ultra11y.mjs in the npm tarball). bots/rgaa-audit/ultra11y.pin
-  ## is the authored copy; bots/rgaa_audit_engine_pin_test.go holds these
+  ## is the authored copy; internal/sweep/sandboximages/rgaa_audit_engine_pin_test.go holds these
   ## three defaults equal to it. Bump deliberately, through the pin file.
   engine_version: string = "9.6.6"
   engine_sha256: string = "53f381c2546078728946adda9124aa9e973c76f90613c21acc164abade8b637d"

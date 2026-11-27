@@ -67,7 +67,7 @@ ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --remote-deb
 # is told about: Playwright's own resolution never finds Debian's Chromium, so
 # the image names it once here (the bot reads ULTRA11Y_BROWSER_PATH when its
 # browser_path var is empty, and the engine's `status --browser`/`scan` take it
-# as --browser-path). bots/rgaa_audit_sandbox_browser_test.go holds this line,
+# as --browser-path). internal/sweep/sandboximages/rgaa_audit_sandbox_browser_test.go holds this line,
 # the apt package above and the bot's reader together.
 ENV ULTRA11Y_BROWSER_PATH=/usr/bin/chromium
 

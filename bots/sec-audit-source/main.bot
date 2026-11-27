@@ -1726,7 +1726,7 @@ schema deepsec_bank:
 ## scan_dir_resolve and carried IN on every edge that reaches a node writing
 ## into it or reading out of it. A tool command resolves {{input.X}} and
 ## {{vars.X}}; an {{outputs.X}} ref written in a body is refused catalogue-wide
-## (bots/catalog_command_refs_test.go), so the edge is the transport.
+## (internal/sweep/catalogcorpus/catalog_command_refs_test.go), so the edge is the transport.
 schema scan_scratch_input:
   scan_dir: string
 
@@ -2500,7 +2500,7 @@ schema file_filter_output:
 ##
 ## The TRANSPORT is the edge. A tool command resolves {{input.X}} and
 ## {{vars.X}}; an {{outputs.X}} ref inside a command body is refused
-## catalogue-wide (bots/catalog_command_refs_test.go), so each node takes
+## catalogue-wide (internal/sweep/catalogcorpus/catalog_command_refs_test.go), so each node takes
 ## the value as `scan_dir` on its incoming edge and reads {{input.scan_dir}}
 ## — the same bridge the deep-scan json_paths already cross. A node added
 ## here that writes into the scratch needs BOTH: a scan_dir field on its

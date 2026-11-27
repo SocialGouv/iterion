@@ -146,6 +146,6 @@ here says a conversational bot may NOT have durable memory. Granting one is a
 backend change on the bot (a claw turn with a `memory:` block, the shape
 `bots/evolve` carries) and it would make the promise true again — which is why
 the agreement is now a guard rather than a convention
-([`bots/durable_memory_promises_test.go`](../../bots/durable_memory_promises_test.go)):
+([`internal/sweep/catalogcorpus/durable_memory_promises_test.go`](../../internal/sweep/catalogcorpus/durable_memory_promises_test.go)):
 a bundle may sell a durable brief exactly where one of its nodes can write
 one.

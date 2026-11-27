@@ -13,7 +13,7 @@ whole input, JSON-serialized. A sibling node's prompt rendering the same name
 does not count.
 
 So a declared-and-mapped field no channel renders is plumbing that delivers
-nothing, and any instruction reasoning about it is dead text. `bots/llm_input_reaches_its_prompt_test.go`
+nothing, and any instruction reasoning about it is dead text. `internal/sweep/catalogcorpus/llm_input_reaches_its_prompt_test.go`
 measures it by rendering each node's channels through the real resolver, and
 holds the remaining debt as a two-sided ratchet.
 
@@ -92,7 +92,7 @@ error — it is the route's and the surface's own form of nothing:
   while a `script:` and a connector action's `params:` read the language's
   null; a compute expression reads nil, which travels on as a null or a zero
   where it types and fails the node where it does not. `absentReadDelivers`
-  (`bots/catalog_input_mapping_test.go`) holds the reading per surface, and the
+  (`internal/sweep/catalogcorpus/catalog_input_mapping_test.go`) holds the reading per surface, and the
   guard's message quotes it;
 - a bounded **back-edge** only overlays, so the forward edge's value survives:
   the stale launch value, the very defect the switch was made against
@@ -120,7 +120,7 @@ They are [input-drop-traps.md](input-drop-traps.md).
 
 The guard is its own witness, both ways:
 
-1. run `go test ./bots/ -run TestLLMInputFieldsReachTheirOwnPrompt` before
+1. run `go test ./internal/sweep/catalogcorpus/ -run TestLLMInputFieldsReachTheirOwnPrompt` before
    the remedy: the baseline holds no entries, so the sweep itself must fail
    naming that exact field — a dead field reddens on its own, there is no
    baseline entry to delete first;

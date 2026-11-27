@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -209,34 +207,6 @@ func TestTheIdenticalFailureLimitIsReadFromItsVariable(t *testing.T) {
 		t.Setenv(EnvNodeMaxIdenticalFailures, c.raw)
 		if got := nodeMaxIdenticalFailures(); got != c.want {
 			t.Errorf("%s=%q: limit = %d, want %d", EnvNodeMaxIdenticalFailures, c.raw, got, c.want)
-		}
-	}
-}
-
-// The default is ONE constant, and the two pages an operator reads state its
-// value once each: the variable's row, and the table of what a limit means.
-// Changing the default is that line and these two numbers; this is what
-// names them.
-func TestTheDocsStateTheDefaultLimitOnceEach(t *testing.T) {
-	want := strconv.Itoa(DefaultNodeMaxIdenticalFailures)
-	for _, doc := range []struct {
-		path string
-		// stated captures the value the page gives as the default.
-		stated *regexp.Regexp
-	}{
-		{"../../docs/environment-variables.md", regexp.MustCompile("(?m)^\\| `" + EnvNodeMaxIdenticalFailures + "` \\|.*\\| `([0-9]+)` \\|$")},
-		{"../../docs/resume.md", regexp.MustCompile("(?m)^\\| `([0-9]+)` \\(the default\\) \\|")},
-	} {
-		raw, err := os.ReadFile(doc.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := doc.stated.FindAllStringSubmatch(string(raw), -1)
-		switch {
-		case len(found) != 1:
-			t.Errorf("%s states the default limit %d time(s) in the form %s, want exactly once", doc.path, len(found), doc.stated)
-		case found[0][1] != want:
-			t.Errorf("%s gives %s as the default limit, and DefaultNodeMaxIdenticalFailures is %s", doc.path, found[0][1], want)
 		}
 	}
 }

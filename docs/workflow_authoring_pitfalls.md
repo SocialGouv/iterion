@@ -683,7 +683,7 @@ deep-scan pass from 16/09 to 21/09 while every harness test stayed green —
 the harness substitutes `{{…}}` refs plainly and never had the engine rule.
 Repaired per-bot by #1473 (read the variable bare: `$RUN_ID`); the C188
 warning now names the shape at authoring time, and
-`bots/catalog_braced_env_test.go` holds every shipped workflow at zero of
+`internal/sweep/catalogcorpus/catalog_braced_env_test.go` holds every shipped workflow at zero of
 them — it compiles each one and reports the warning itself.
 
 The same expansion mangles text an author meant verbatim, because a form's

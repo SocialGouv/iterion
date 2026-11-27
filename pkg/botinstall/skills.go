@@ -223,7 +223,7 @@ func RefuseSkillShadow(rel, currentDigest string, present bool, dep bundle.Skill
 // under a name its own frontmatter contradicts. A skill is addressed by the
 // `name:` its frontmatter declares as much as by its file name, so a copy
 // where the two disagree is reachable reliably under neither — the same
-// failure `bots/catalog_skill_refs_test.go` already refuses for shipped
+// failure `internal/sweep/catalogcorpus/catalog_skill_refs_test.go` already refuses for shipped
 // skills, which a dependency must not reintroduce by renaming on the way in.
 // Substituting anything INSIDE the document is what ADR-144 leaves
 // undecided, so the refusal names the two sides instead of rewriting bytes.

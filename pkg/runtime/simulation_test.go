@@ -1,11 +1,7 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,59 +29,6 @@ func TestAProductionEngineSimulatesNothing(t *testing.T) {
 	}
 	if New(&ir.Workflow{}, nil, nil, WithSimulation(Simulation{})).Simulating() {
 		t.Fatal("the zero simulation reads as simulating")
-	}
-}
-
-// No production launch passes WithSimulation: the option is pkg/dryrun's
-// alone. The sweep reads the source of every package that builds an
-// engine — a launch path that gained the option would simulate a real run.
-func TestNoProductionPackagePassesWithSimulation(t *testing.T) {
-	root := filepath.Join("..", "..")
-	// Dependency and tool trees: no first-party source under any of them.
-	skipDirs := map[string]bool{"vendor": true, "node_modules": true, "web": true}
-	var launchers []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(root, path)
-		if d.IsDir() {
-			// Dot-directories belong to git, to a tool or to a run — never to
-			// this repo's source, so none is named here one at a time.
-			// `.iterion/worktrees/<run-id>/` matters most: it holds whole
-			// COPIES of the tree, which made this verdict depend on how many
-			// runs the operator happened to keep. `rel == "."` is the root
-			// itself, whose Name() is "..".
-			if rel != "." && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			if skipDirs[d.Name()] || rel == filepath.Join("pkg", "runtime") || rel == filepath.Join("pkg", "dryrun") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if bytes.Contains(src, []byte("runtime.New(")) {
-			launchers = append(launchers, rel)
-		}
-		if bytes.Contains(src, []byte("WithSimulation(")) {
-			t.Errorf("%s passes WithSimulation: a production launch would simulate", rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The sweep must have read the launchers, or it proves nothing: the
-	// CLI, the runner, the dispatcher and the run view all build an engine.
-	if len(launchers) < 4 {
-		t.Fatalf("the sweep read %d engine launchers (%v): it did not cover the tree", len(launchers), launchers)
 	}
 }
 

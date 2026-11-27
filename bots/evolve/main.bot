@@ -24,7 +24,7 @@
 ##     "evolve" so botID is stable across CLI (wf.Name) and dispatcher
 ##     (bundle name) launches — otherwise the per-bot memory tree would
 ##     split between launch modes. Guarded by
-##     bots/catalog_universality_test.go:TestPerBotMemoryConsumersHaveStableBotID.
+##     bots/catalog_bundle_identity_test.go:TestPerBotMemoryConsumersHaveStableBotID.
 ##   - No worktree:/sandbox: — Deep Blue is read-only (writes only to memory +
 ##     board), runs in the operator's tree like Nexie, and keeps the
 ##     native ask_user MCP tool (sandboxing degrades it to a JSON fallback).

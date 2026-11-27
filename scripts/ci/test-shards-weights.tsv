@@ -7,18 +7,32 @@
 # stale or missing row only degrades the balance — it never errors.
 # race-shard leaves out e2e (under -race in test-e2e) and pkg/sandbox/kubernetes
 # (under -race in test-native-exec), so neither carries a row here.
-github.com/SocialGouv/iterion/bots	1564
-github.com/SocialGouv/iterion/pkg/server	1070
+# #3758 moved the whole-tree sweeps of bots, pkg/server, pkg/runtime, pkg/cli and
+# pkg/backend/model into internal/sweep/*. Their rows, and the seconds taken off
+# their source packages' rows, are ESTIMATES until the next CI refresh:
+# - internal/sweep/authorcorpus: the moved benches' 64 s unit duration (#3758's
+#   measurement) scaled by pkg/cli's race/unit ratio (583/116), taken off pkg/cli's row.
+# - internal/sweep/authorreading and mintchokepoint: the unit seconds their tests took
+#   inside pkg/server, scaled by pkg/server's race/unit ratio (1070/518).
+# - internal/sweep/runtime{catalog,seams}: local `ok`-line durations in this build mode.
+# - internal/sweep/{publishedtree,catalogcorpus,e2ematrix,catalogclaims}: local -race
+#   readings (2026-11-26).
+# - the source rows lose those rows: bots 1564 -> 1402, pkg/server 1070 -> 978,
+#   pkg/runtime 745 -> 607. modelseams, itertoken, serversurface, sandboximages and
+#   runtimedocs ran under 2 s each without -race and carry no row.
+github.com/SocialGouv/iterion/bots	1402
+github.com/SocialGouv/iterion/pkg/server	978
 github.com/SocialGouv/iterion/internal/fswatch	945
-github.com/SocialGouv/iterion/pkg/runtime	745
+github.com/SocialGouv/iterion/pkg/runtime	607
 github.com/SocialGouv/iterion/pkg/auth	607
-github.com/SocialGouv/iterion/pkg/cli	583
 github.com/SocialGouv/iterion/pkg/backend/model	559
 github.com/SocialGouv/iterion/pkg/backend/delegate	489
 github.com/SocialGouv/iterion/pkg/runview	407
 github.com/SocialGouv/iterion/cmd/iterion	403
 github.com/SocialGouv/iterion/pkg/scripthost	352
+github.com/SocialGouv/iterion/internal/sweep/authorcorpus	322
 github.com/SocialGouv/iterion/internal/floortest	271
+github.com/SocialGouv/iterion/pkg/cli	261
 github.com/SocialGouv/iterion/internal/docsguard	205
 github.com/SocialGouv/iterion/pkg/store	158
 github.com/SocialGouv/iterion/pkg/backend/secretguard	157
@@ -31,12 +45,17 @@ github.com/SocialGouv/iterion/pkg/dsl/canon	95
 github.com/SocialGouv/iterion/pkg/dryrun	87
 github.com/SocialGouv/iterion/pkg/repomap	87
 github.com/SocialGouv/iterion/pkg/knowledge	81
+github.com/SocialGouv/iterion/internal/sweep/authorreading	79
+github.com/SocialGouv/iterion/internal/sweep/runtimeseams	78
 github.com/SocialGouv/iterion/pkg/dsl/ir	76
+github.com/SocialGouv/iterion/internal/sweep/publishedtree	76
 github.com/SocialGouv/iterion/pkg/assistantmission	71
 github.com/SocialGouv/iterion/pkg/dsl/unit	71
+github.com/SocialGouv/iterion/internal/sweep/runtimecatalog	60
 github.com/SocialGouv/iterion/pkg/dsl/author	59
 github.com/SocialGouv/iterion/scripts/ci/testcaps	58
 github.com/SocialGouv/iterion/pkg/store/mongo	53
+github.com/SocialGouv/iterion/internal/sweep/catalogcorpus	50
 github.com/SocialGouv/iterion/charts/iterion	49
 github.com/SocialGouv/iterion/pkg/backend/mcp	48
 github.com/SocialGouv/iterion/pkg/botreplay	48
@@ -55,6 +74,7 @@ github.com/SocialGouv/iterion/pkg/internal/proc	25
 github.com/SocialGouv/iterion/pkg/dsl/unparse	24
 github.com/SocialGouv/iterion/pkg/runtime/recovery	24
 github.com/SocialGouv/iterion/internal/ciguard	23
+github.com/SocialGouv/iterion/internal/sweep/e2ematrix	23
 github.com/SocialGouv/iterion/pkg/secrets	21
 github.com/SocialGouv/iterion/internal/pricingtest	20
 github.com/SocialGouv/iterion/pkg/runview/runstream	20
@@ -67,6 +87,8 @@ github.com/SocialGouv/iterion/connectors	15
 github.com/SocialGouv/iterion/internal/clawfold	14
 github.com/SocialGouv/iterion/pkg/backend/auxllm	13
 github.com/SocialGouv/iterion/pkg/dispatcher	13
+github.com/SocialGouv/iterion/internal/sweep/mintchokepoint	13
+github.com/SocialGouv/iterion/internal/sweep/catalogclaims	13
 github.com/SocialGouv/iterion/pkg/botinstall	12
 github.com/SocialGouv/iterion/pkg/dsl/workflowfile	12
 github.com/SocialGouv/iterion/pkg/liveledger	12

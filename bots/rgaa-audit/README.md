@@ -257,7 +257,7 @@ iterion's own `.github/workflows/a11y-advisory.yml`.
   [engine contracts](../../docs/agents/testing/engine-contracts.md)) and
   the bot's own tool nodes, run as the real scripts against a planted
   fixture site, agents replaced by fixture verdicts, with mutations.
-- `bots/rgaa_audit_engine_pin_test.go` — the pin, the bot's defaults, the
+- `internal/sweep/sandboximages/rgaa_audit_engine_pin_test.go` — the pin, the bot's defaults, the
   runner image's ARG and the lockfile held equal.
 - `task test:live:bot:rgaa-audit` — a real run on the fixture site (real
   LLM cost).
