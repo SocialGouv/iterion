@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,13 +28,19 @@ import (
 //
 //   - relative: a literal path climbing out of the directory, `"../../docs"`
 //     or `filepath.Join("..", "..", "docs")`, resolved against the package
-//     directory. Only a resolution naming an existing path counts: a
+//     directory — as is the literal tail of a Join on `filepath.Dir(file)`
+//     where file comes from runtime.Caller in a test file (the test file's
+//     own directory). Only a resolution naming an existing path counts: a
 //     traversal fixture (`"../../etc/passwd"`) names nothing in the tree.
 //   - root: a call to a root finder — a parameterless (or testing.TB-only)
 //     function whose body looks for go.mod, asks git for --show-toplevel,
+//     asks go for the module (`go env GOMOD`, `go list -m -f {{.Dir}}`),
 //     reads runtime.Caller in a test file, or climbs relatively out of its
-//     own directory. A root-anchored test can read anything; the package
-//     needs a declaration, whose globs the scan cannot check in full.
+//     own directory — and any root signal in a test file itself, in a
+//     finder called or not, whatever its parameters (a Test function that
+//     anchors itself is never called by name). A root-anchored test can
+//     read anything; the package needs a declaration, whose globs the scan
+//     cannot check in full.
 //   - anchored: a literal (or a Join tail of literals) that names an
 //     existing path when joined to one of the package's anchors — the repo
 //     root when it reaches one, and every directory a relative read names.
@@ -131,7 +138,16 @@ func scanTree(root, module string) ([]evidence, error) {
 			// Reads count in test files only: a relative path in production
 			// code resolves against whichever test's directory runs it, which
 			// the scan cannot know. Root finders count wherever they are.
-			if !f.test || !mayRead(f.src, finderNames) {
+			if !f.test {
+				continue
+			}
+			if mayDefineFinder(f.src) {
+				if err := f.parse(); err != nil {
+					return nil, err
+				}
+				ev = append(ev, rootSignalReads(f)...)
+			}
+			if !mayRead(f.src, finderNames) {
 				continue
 			}
 			if err := f.parse(); err != nil {
@@ -276,7 +292,8 @@ func (f *scanFile) line(n ast.Node) int { return f.fset.Position(n.Pos()).Line }
 
 func mayDefineFinder(src []byte) bool {
 	return bytes.Contains(src, []byte(`go.mod"`)) || bytes.Contains(src, []byte("show-toplevel")) ||
-		bytes.Contains(src, []byte("runtime.Caller")) || mayClimb(src)
+		bytes.Contains(src, []byte("GOMOD")) || bytes.Contains(src, []byte("{{.Dir}}")) ||
+		bytes.Contains(src, []byte(".Caller(")) || mayClimb(src)
 }
 
 func mayClimb(src []byte) bool {
@@ -399,6 +416,7 @@ func existingOrMatched(root, p string) (exists, isDir, glob bool) {
 func relativeReads(root string, f *scanFile) []evidence {
 	var out []evidence
 	consumed := map[ast.Expr]bool{}
+	callerDirs := callerDirIdents(f)
 	add := func(n ast.Node, rel string) {
 		p, ok := resolveFrom(f.dir, rel)
 		if !ok || within(globBase(p), f.dir) {
@@ -418,6 +436,18 @@ func relativeReads(root string, f *scanFile) []evidence {
 		switch n := n.(type) {
 		case *ast.CallExpr:
 			if !isJoin(n) {
+				return true
+			}
+			if depth := callerDirDepth(f, callerDirs, n.Args[0]); depth > 0 && len(n.Args) > 1 {
+				// filepath.Join(filepath.Dir(file), "../../x"), file from
+				// runtime.Caller: the test file's directory is the package's.
+				tail, k := literalPrefix(n.Args[1:])
+				for _, a := range n.Args[1 : 1+k] {
+					consumed[a] = true
+				}
+				if k > 0 {
+					add(n, path.Join(strings.Repeat("../", depth-1), tail))
+				}
 				return true
 			}
 			prefix, k := literalPrefix(n.Args)
@@ -460,23 +490,7 @@ func rootFinders(root string, f *scanFile) []string {
 		if !ok || fd.Body == nil || fd.Recv != nil || !onlyTestingParams(fd.Type.Params) {
 			continue
 		}
-		found := false
-		ast.Inspect(fd.Body, func(n ast.Node) bool {
-			if found {
-				return false
-			}
-			switch n := n.(type) {
-			case *ast.BasicLit:
-				if s, ok := stringLit(n); ok && (s == "go.mod" || strings.HasSuffix(s, "/go.mod") || s == "--show-toplevel") {
-					found = true
-				}
-			case *ast.SelectorExpr:
-				if id, ok := n.X.(*ast.Ident); ok && id.Name == "runtime" && n.Sel.Name == "Caller" && f.test {
-					found = true
-				}
-			}
-			return true
-		})
+		found := len(rootSignals(f, fd.Body, false)) > 0
 		if !found {
 			sub := &scanFile{rel: f.rel, dir: f.dir, test: f.test, fset: f.fset, ast: &ast.File{Name: f.ast.Name, Decls: []ast.Decl{fd}}}
 			for _, e := range relativeReads(root, sub) {
@@ -491,6 +505,194 @@ func rootFinders(root string, f *scanFile) []string {
 		}
 	}
 	return names
+}
+
+// gomodWord matches GOMOD as a word (`go env GOMOD`), not GOMODCACHE.
+var gomodWord = regexp.MustCompile(`(^|[^A-Za-z0-9_])GOMOD([^A-Za-z0-9_]|$)`)
+
+// rootSignals returns the sites under n that find the repository root
+// without naming a path: a go.mod literal, git's --show-toplevel, go's own
+// answer (`go env GOMOD`; `go list -m` with a {{.Dir}} template), and, in a
+// test file, runtime.Caller (the test file's compile-time path).
+//
+// probesOnly keeps a go.mod literal only where it is probed — inside a
+// stat, read, open or exists call (`os.Stat(filepath.Join(dir, "go.mod"))`)
+// — and leaves out the go.mod a test writes, maps or `git add`s into a
+// fixture repository. It serves the uncalled-definition read, where every
+// Test function counts; a finder must be called to count, so rootFinders
+// keeps every go.mod literal.
+func rootSignals(f *scanFile, n ast.Node, probesOnly bool) []ast.Node {
+	var sites []ast.Node
+	var listM, dirTmpl ast.Node
+	rt := importName(f, "runtime")
+	var stack []ast.Node
+	ast.Inspect(n, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		switch n := n.(type) {
+		case *ast.BasicLit:
+			s, ok := stringLit(n)
+			if !ok {
+				return true
+			}
+			gomod := s == "go.mod" || strings.HasSuffix(s, "/go.mod")
+			if gomod && (!probesOnly || probesPath(stack)) || strings.Contains(s, "--show-toplevel") || gomodWord.MatchString(s) {
+				sites = append(sites, n)
+			}
+			if s == "-m" || strings.Contains(s, "list -m") {
+				listM = n
+			}
+			if strings.Contains(s, "{{.Dir}}") {
+				dirTmpl = n
+			}
+		case *ast.SelectorExpr:
+			if id, ok := n.X.(*ast.Ident); ok && rt != "" && id.Name == rt && n.Sel.Name == "Caller" && f.test {
+				sites = append(sites, n)
+			}
+		}
+		return true
+	})
+	if listM != nil && dirTmpl != nil {
+		sites = append(sites, dirTmpl)
+	}
+	return sites
+}
+
+// probesPath reports whether the innermost node of stack, a literal, is an
+// argument (at any depth) of a call that probes a path: Stat, Lstat,
+// ReadFile, Open, OpenFile, or a name holding "exist" (fileExists).
+func probesPath(stack []ast.Node) bool {
+	for _, n := range stack[:len(stack)-1] {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		name := ""
+		switch fn := call.Fun.(type) {
+		case *ast.Ident:
+			name = fn.Name
+		case *ast.SelectorExpr:
+			name = fn.Sel.Name
+		}
+		switch name {
+		case "Stat", "Lstat", "ReadFile", "Open", "OpenFile":
+			return true
+		}
+		if strings.Contains(strings.ToLower(name), "exist") {
+			return true
+		}
+	}
+	return false
+}
+
+// rootSignalReads is the root read of a test file that finds the root
+// itself: one per top-level declaration holding a root signal, called or
+// not.
+func rootSignalReads(f *scanFile) []evidence {
+	var out []evidence
+	for _, d := range f.ast.Decls {
+		if sites := rootSignals(f, d, true); len(sites) > 0 {
+			out = append(out, evidence{Pkg: f.dir, File: f.rel, Line: f.line(sites[0]), Kind: "root", Path: ".", Dir: true})
+		}
+	}
+	return out
+}
+
+// importName is the name f refers to the package at importPath by, or ""
+// when f does not import it.
+func importName(f *scanFile, importPath string) string {
+	for _, im := range f.ast.Imports {
+		if p, _ := strconv.Unquote(im.Path.Value); p == importPath {
+			if im.Name != nil {
+				return im.Name.Name
+			}
+			return path.Base(p)
+		}
+	}
+	return ""
+}
+
+// callerDirIdents maps the identifiers of a test file bound to a directory
+// derived from runtime.Caller to how many directories up the file they are:
+// `_, file, _, _ := runtime.Caller(0)` binds file at 0, `dir :=
+// filepath.Dir(file)` binds dir at 1.
+func callerDirIdents(f *scanFile) map[string]int {
+	out := map[string]int{}
+	rt := importName(f, "runtime")
+	if !f.test || rt == "" {
+		return out
+	}
+	bind := func(lhs []ast.Expr, rhs []ast.Expr) {
+		if len(rhs) != 1 {
+			return
+		}
+		call, ok := rhs[0].(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Caller" {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == rt && len(lhs) == 4 {
+				if name, ok := lhs[1].(*ast.Ident); ok && name.Name != "_" {
+					out[name.Name] = 0
+				}
+				return
+			}
+		}
+		if len(lhs) == 1 {
+			if d := callerDirDepth(f, out, rhs[0]); d > 0 {
+				if name, ok := lhs[0].(*ast.Ident); ok {
+					out[name.Name] = d
+				}
+			}
+		}
+	}
+	ast.Inspect(f.ast, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.AssignStmt:
+			bind(n.Lhs, n.Rhs)
+		case *ast.ValueSpec:
+			lhs := make([]ast.Expr, len(n.Names))
+			for i, id := range n.Names {
+				lhs[i] = id
+			}
+			bind(lhs, n.Values)
+		}
+		return true
+	})
+	return out
+}
+
+// callerDirDepth reports how many directories up from a runtime.Caller file
+// e is (1 for its directory, the package's), or 0 when e is no such
+// expression: filepath.Dir or path.Dir over a caller identifier, nested.
+func callerDirDepth(f *scanFile, idents map[string]int, e ast.Expr) int {
+	switch e := e.(type) {
+	case *ast.Ident:
+		if d, ok := idents[e.Name]; ok && d > 0 {
+			return d
+		}
+	case *ast.CallExpr:
+		sel, ok := e.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Dir" || len(e.Args) != 1 {
+			return 0
+		}
+		if id, ok := sel.X.(*ast.Ident); !ok || (id.Name != "filepath" && id.Name != "path") {
+			return 0
+		}
+		if id, ok := e.Args[0].(*ast.Ident); ok {
+			if d, ok := idents[id.Name]; ok {
+				return d + 1
+			}
+			return 0
+		}
+		if d := callerDirDepth(f, idents, e.Args[0]); d > 0 {
+			return d + 1
+		}
+	}
+	return 0
 }
 
 func onlyTestingParams(fl *ast.FieldList) bool {

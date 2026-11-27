@@ -8,6 +8,7 @@
 //	affected -base origin/main -head HEAD     # the same, explicit
 //	affected -scan                            # the static read scan, undeclared reads first
 //	affected -replay-since 2026-11-19 -replay-until 2026-11-26 -weights scripts/ci/test-shards-unit-weights.tsv
+//	                                          # local midnights: 11-19 00:00 to 11-26 00:00
 //
 // The JSON result goes to stdout, a human summary to stderr. Under-selection
 // is a false green, the worst outcome here, so every doubt selects more:
@@ -34,7 +35,10 @@
 // The graph is read from the working tree, so -head must be the checked-out
 // commit and the tree clean (-allow-dirty accepts a dirty tree, loudly).
 //
-// Exit status: 0 with a selection printed, 2 on a usage, git or go error.
+// Exit status: 0 with a selection printed; 1 when -scan finds an
+// undeclared read; 2 on a usage, git or go error. `task -x ci:affected`
+// builds and runs the binary so the status reaches its caller (`go run`
+// folds every nonzero status into 1).
 package main
 
 import (
@@ -60,8 +64,8 @@ func main() {
 	inputsPath := flag.String("inputs", inputsFile, "declarations file, repo-relative")
 	allowDirty := flag.Bool("allow-dirty", false, "accept a working tree with uncommitted changes (the graph then reflects them)")
 	scan := flag.Bool("scan", false, "print the static scan of reads outside package directories, undeclared first, and exit 1 if any is undeclared")
-	replaySince := flag.String("replay-since", "", "replay the first-parent commits of -replay-ref since this date through the selector")
-	replayUntil := flag.String("replay-until", "", "upper date bound of -replay-since")
+	replaySince := flag.String("replay-since", "", "replay the first-parent commits of -replay-ref since this date (2006-01-02: local midnight; or RFC 3339) through the selector")
+	replayUntil := flag.String("replay-until", "", "upper bound of -replay-since (2006-01-02: up to that day's local midnight; or RFC 3339)")
 	replayRef := flag.String("replay-ref", "origin/main", "branch whose history -replay-since walks")
 	weights := flag.String("weights", "", "with -replay-since: TSV import-path TAB seconds weighting the unit-test time share")
 	flag.Parse()
@@ -122,7 +126,7 @@ func run(ctx context.Context, o options, stdout, stderr io.Writer) error {
 		return err
 	}
 	if o.replaySince != "" {
-		return runReplay(ctx, root, g, in, o, stdout)
+		return runReplay(ctx, root, g, in, o, stdout, stderr)
 	}
 	changes, err := diff(ctx, root, o.base+"..."+o.head)
 	if err != nil {

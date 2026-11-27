@@ -70,6 +70,7 @@ func fixtureGraph() *graph {
 		g.byDir[dir] = p
 	}
 	add("pkg/lib", true, nil, []string{"pkg/lib"}, "pkg/lib/assets/a.json")
+	g.byDir["pkg/lib"].embedPatterns = []string{"assets", "templates/*.tmpl", "all:static"}
 	add("pkg/app", true, []string{"pkg/lib"}, []string{"pkg/app", "pkg/lib"})
 	add("pkg/app/sub", true, nil, []string{"pkg/app/sub"})
 	add("internal/testhelp", false, nil, nil)
@@ -155,6 +156,90 @@ func TestAHelperChangeReachesTestBinariesThroughTestImports(t *testing.T) {
 func TestAnEmbeddedFileChangesItsPackageForImporters(t *testing.T) {
 	res := run1(t, change{Path: "pkg/lib/assets/a.json"})
 	wantSel(t, res, []string{"pkg/app", "pkg/builder", "pkg/checker", "pkg/lib"}, []string{"agg", "unit", "web"})
+}
+
+// A file deleted from a directory or glob embed is in no head EmbedFiles;
+// the pattern still says the package compiled it at base. So does a file
+// added under a glob: the embedding package changes for its importers.
+func TestAFileAnEmbedPatternNamesChangesItsPackageForImporters(t *testing.T) {
+	importers := []string{"pkg/app", "pkg/builder", "pkg/checker", "pkg/lib"}
+	for _, tc := range []struct {
+		name string
+		c    change
+		legs []string
+	}{
+		{"deleted under a directory pattern", change{Path: "pkg/lib/assets/sub/gone.json", Deleted: true}, []string{"agg", "links", "unit", "web"}},
+		{"deleted under a glob pattern", change{Path: "pkg/lib/templates/old.tmpl", Deleted: true}, []string{"agg", "links", "unit", "web"}},
+		{"added, joining a glob pattern", change{Path: "pkg/lib/templates/new.tmpl"}, []string{"agg", "unit", "web"}},
+		{"a dot file deleted under an all: pattern", change{Path: "pkg/lib/static/.well-known/x.txt", Deleted: true}, []string{"agg", "links", "unit", "web"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := run1(t, tc.c)
+			wantSel(t, res, importers, tc.legs)
+			if why := strings.Join(res.Packages[0].Why, ";"); !strings.Contains(why, "links pkg/lib (changed: "+tc.c.Path+")") {
+				t.Errorf("pkg/app why = %q, want it to link lib through %s", why, tc.c.Path)
+			}
+		})
+	}
+}
+
+// What an embed pattern does not name stays its owner's own data.
+func TestAFileNoEmbedPatternNamesStaysItsOwnersData(t *testing.T) {
+	for _, tc := range []struct {
+		c    change
+		legs []string
+	}{
+		{change{Path: "pkg/lib/assets/.hidden", Deleted: true}, []string{"links", "unit"}},       // a directory pattern skips dot files
+		{change{Path: "pkg/lib/assets/sub/_draft.json"}, []string{"unit"}},                       // and underscore files
+		{change{Path: "pkg/lib/templates/notes.txt"}, []string{"unit"}},                          // outside the glob
+		{change{Path: "pkg/lib/templates/sub/x.tmpl", Deleted: true}, []string{"links", "unit"}}, // * stays in one segment
+	} {
+		res := run1(t, tc.c)
+		wantSel(t, res, []string{"pkg/lib"}, tc.legs)
+	}
+}
+
+func TestEmbedMatchesFollowsGoEmbedRules(t *testing.T) {
+	for _, tc := range []struct {
+		pat, dir, p string
+		want        bool
+	}{
+		{"assets", "pkg/x", "pkg/x/assets/a/b.json", true},
+		{"assets", "pkg/x", "pkg/x/assets/.a/b.json", false},
+		{"all:assets", "pkg/x", "pkg/x/assets/.a/b.json", true},
+		{"all:assets", "pkg/x", "pkg/x/assets/_b.json", true},
+		{"assets/*", "pkg/x", "pkg/x/assets/.keep", true},
+		{"assets/*", "pkg/x", "pkg/x/assets/d/.keep", false},
+		{"*.tmpl", "pkg/x", "pkg/x/a.tmpl", true},
+		{"*.tmpl", "pkg/x", "pkg/x/d/a.tmpl", false},
+		{"a.txt", "pkg/x", "pkg/x/a.txt", true},
+		{"a.txt", "pkg/x", "pkg/y/a.txt", false},
+		{"assets", "pkg/x", "pkg/xy/assets/a", false},
+		{"assets", ".", "assets/a", true},
+	} {
+		if got := embedMatches(tc.pat, tc.dir, tc.p); got != tc.want {
+			t.Errorf("embedMatches(%q, %q, %q) = %v, want %v", tc.pat, tc.dir, tc.p, got, tc.want)
+		}
+	}
+}
+
+// The patterns come from go list and add up over the build variants: a
+// file only one variant compiles can hold the embed.
+func TestTheGraphKeepsEveryVariantsEmbedPatterns(t *testing.T) {
+	root := t.TempDir()
+	g := &graph{module: mod, pkgs: map[string]*pkgInfo{}, byDir: map[string]*pkgInfo{}}
+	for _, js := range []string{
+		`{"ImportPath":"example.com/m/pkg/lib","Dir":"` + root + `/pkg/lib","EmbedFiles":["assets/a.json"],"EmbedPatterns":["assets"]}`,
+		`{"ImportPath":"example.com/m/pkg/lib","Dir":"` + root + `/pkg/lib","EmbedPatterns":["assets","all:static"]}`,
+	} {
+		if err := g.merge(root, strings.NewReader(js)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pk := g.byDir["pkg/lib"]
+	if pk == nil || !slices.Equal(pk.embedPatterns, []string{"assets", "all:static"}) || !pk.embeds["pkg/lib/assets/a.json"] {
+		t.Fatalf("pkg/lib = %+v, want both variants' patterns once and the head file", pk)
+	}
 }
 
 func TestADataFileSelectsEveryPackageAboveIt(t *testing.T) {
@@ -252,5 +337,18 @@ func TestPercentile(t *testing.T) {
 	}
 	if got := percentile(xs, 0.9); got != 0.9 {
 		t.Errorf("p90 = %v", got)
+	}
+}
+
+// A .gitattributes rewrites the checked-out bytes of every file it matches
+// (eol, filters): whichever readers a rooted glob names, the real
+// declarations make it select everything, at the root and nested.
+func TestAGitattributesFileSelectsEverything(t *testing.T) {
+	in := realInputs(t, repoRoot(t))
+	for _, p := range []string{".gitattributes", "docs/.gitattributes", "scripts/brand/.gitattributes"} {
+		res := selectTests(fixtureGraph(), in, []change{{Path: p}})
+		if !res.All || !strings.Contains(strings.Join(res.Reasons, "\n"), "global trigger") {
+			t.Errorf("%s: all = %v, reasons = %v; want everything, by a global trigger", p, res.All, res.Reasons)
+		}
 	}
 }

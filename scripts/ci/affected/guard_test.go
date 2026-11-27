@@ -80,7 +80,7 @@ func TestTheGuardRefusesEachRemovedDeclaration(t *testing.T) {
 	root := repoRoot(t)
 	in := realInputs(t, root)
 	ev, tracked := realScan(t, root)
-	for _, dir := range []string{"internal/mdcode", "internal/ciguard", "pkg/repomap", "pkg/git", "bots", "pkg/server"} {
+	for _, dir := range []string{"internal/mdcode", "internal/ciguard", "pkg/repomap", "pkg/git", "bots", "pkg/server", "internal/tenantguard", "pkg/sandbox/execenv/protocol"} {
 		if _, ok := in.Packages[dir]; !ok {
 			t.Errorf("%s has no declaration to remove", dir)
 			continue
@@ -152,8 +152,14 @@ func TestEveryDeclarationNamesAPackage(t *testing.T) {
 
 type workflow struct {
 	Jobs map[string]struct {
+		Defaults struct {
+			Run struct {
+				WorkingDirectory string `yaml:"working-directory"`
+			} `yaml:"run"`
+		} `yaml:"defaults"`
 		Steps []struct {
-			Run string `yaml:"run"`
+			Run              string `yaml:"run"`
+			WorkingDirectory string `yaml:"working-directory"`
 		} `yaml:"steps"`
 	} `yaml:"jobs"`
 }

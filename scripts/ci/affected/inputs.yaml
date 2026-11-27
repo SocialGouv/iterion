@@ -17,7 +17,10 @@
 #             change its verdict, the Go `packages` it tests (`x/...` for a
 #             subtree, `...` for all), the binaries it runs (`reach`), whether
 #             a deletion selects it (`on_delete`), what it `aggregates`.
-#             guard_test.go holds this section total over the workflow's jobs.
+#             guard_test.go holds this section total over the workflow's jobs;
+#             legsteps_test.go holds each leg's paths over what its job's
+#             non-`go test` steps read (working directory, package manager
+#             manifests, the scripts it runs and what they name).
 #
 # Globs: `**` is any number of whole segments, `*` stays within one.
 # Under-selection is a false green: when in doubt, declare more.
@@ -41,6 +44,10 @@ global:
     why: the pinned toolchain every local gate runs on
   - pattern: devbox.lock
     why: the resolved toolchain pins
+  - pattern: .gitattributes
+    why: "the checkout's attributes (eol, filters) rewrite the bytes of every file they match: a `*.sh eol=crlf` breaks every shebang and every script a leg or a test runs"
+  - pattern: "**/.gitattributes"
+    why: a nested .gitattributes rewrites the checked-out bytes of its whole subtree the same way
 
 packages:
   bots:
@@ -147,6 +154,9 @@ packages:
     why: "TestNoParallelSweepTestSharesProcessState lists every directory of internal/sweep (os.ReadDir(\"..\"), so a new sweep package joins the verdict) and parses each one's _test.go files through testparallel.ReadCampaign; only _test.go files are read, but the listing is discovered, so the scan holds the whole tree"
   internal/sweepwalk:
     why: "every test runs on t.TempDir fixtures; TestModuleRootJudgesTheExecutionTree chdirs into one, so no repository file is read"
+  internal/tenantguard:
+    reads: ["**/*.go"]
+    why: "TestEveryTenantClauseSiteIsAFamilyHelperOrDeclared finds the module root with `go env GOMOD`, walks every non-test .go file of the tree and parses each one for tenant_id clauses outside the fail-closed helper family; the conditionalByDesign keys (pkg/store/mongo/*.go, pkg/runwatch, pkg/secrets, pkg/runview/runstream) are among those files"
   pkg/backend/auxllm:
     reads: ["**/*.go"]
     why: "the channel sweep parses every non-test .go file through sweepwalk.GoFiles"
@@ -312,6 +322,10 @@ packages:
   pkg/runview:
     reads: ["**/*.go", "studio/src/components/Runs/runSourceMeta.ts", ".mcp.json", "README.md", "SKILL.md", "bots/app-dev/main.bot", "bots/smoke/board_smoke.bot", "bots/whats-next/main.bot", "connectors/**", "connectors/forgejo/**", "pkg/**", "skills/**"]
     why: "the executor-spec sweeps use sweepwalk.GoFiles; source_kind_class reads the studio runSourceMeta.ts; plus paths named literally in bot_identity_test.go, compile_promotion_test.go, executor_workspace_follow_test.go, localconnectors_test.go, resume_claim_test.go, resume_shared_dependency_test.go, subbot_routing_fold_test.go, workflow_path_test.go, workflow_provenance_test.go"
+  pkg/sandbox/execenv/protocol:
+    reads: ["sandbox/finalize/execenv-smoke.sh", "cmd/iterion-execenv-guest/**"]
+    reach: [cmd/iterion-execenv-guest]
+    why: "image_smoke_test anchors on runtime.Caller: TestImageSmokeFrame reads sandbox/finalize/execenv-smoke.sh and compares its base64 frame to the production encoder; TestGuestDependencyClosure runs `go list -deps ./cmd/iterion-execenv-guest` at the root and refuses any dependency besides the guest and this package"
   pkg/sandbox/kubernetes:
     reads: ["native/**", "README.md", "cmd/iterion/**", "cmd/iterion-execenv-guest/**"]
     reach: [cmd/iterion-execenv-guest, cmd/iterion]
@@ -366,14 +380,16 @@ legs:
     why: "push only: scripts/ci/heavy-gate.sh reads main's run history and decides whether the push runs the heavy layer; it tests no package, and its one input sits under scripts/ci/ (global)"
   test-unit:
     packages: ["..."]
-    paths: ["**/*.go"]
-    why: unit tests over the selected packages (minus e2e and pkg/sandbox/kubernetes), plus the one-time gofmt, go vet, live-tag compile and generated-artefact freshness steps any Go change reaches
+    paths: ["**/*.go", scripts/ultra11y-engine.sh, "scripts/ultra11y-engine/**", scripts/ultra11y-pin.sh, bots/rgaa-audit/ultra11y.pin, scripts/chart-check-deps.sh]
+    why: unit tests over the selected packages (minus e2e and pkg/sandbox/kubernetes), plus the one-time gofmt, go vet, live-tag compile and generated-artefact freshness steps any Go change reaches; the ultra11y engine install (scripts/ultra11y-engine.sh, its lockfile directory, ultra11y-pin.sh and the pin it reads) and the chart dependency check run before the tests
   race-shard:
     packages: ["..."]
-    why: the selected packages under -race (minus e2e and pkg/sandbox/kubernetes)
+    paths: [scripts/ultra11y-engine.sh, "scripts/ultra11y-engine/**", scripts/ultra11y-pin.sh, bots/rgaa-audit/ultra11y.pin, scripts/chart-check-deps.sh]
+    why: the selected packages under -race (minus e2e and pkg/sandbox/kubernetes), after the same ultra11y engine install and chart dependency check as test-unit
   test-e2e:
     packages: [e2e]
-    why: go test ./e2e
+    paths: ["studio/**", package.json, pnpm-lock.yaml, pnpm-workspace.yaml]
+    why: "go test ./e2e, after `pnpm install --frozen-lockfile` and `vite build` in studio/ whose output the server under test embeds (pkg/server/static): a studio change that breaks the build reddens this leg"
   studio:
     paths: ["studio/**", openapi.json, package.json, pnpm-lock.yaml, pnpm-workspace.yaml, charts/iterion/Chart.yaml]
     reach: [cmd/iterion]
@@ -453,10 +469,10 @@ legs:
     reach: [cmd/iterion-desktop]
     why: go vet -tags desktop ./cmd/iterion-desktop/ under GOOS windows and darwin
   docs-links:
-    paths: ["**/*.md", "docs/**"]
+    paths: ["**/*.md", "docs/**", "internal/docsguard/testdata/github-anchors/**"]
     reach: [scripts/docslinks]
     on_delete: true
-    why: every relative link of the tracked markdown against the real tree — a deleted or renamed target of any type breaks one
+    why: every relative link of the tracked markdown against the real tree — a deleted or renamed target of any type breaks one; check-anchor-slugs.mjs replays the GitHub anchor fixtures of internal/docsguard/testdata/github-anchors
   docs-build:
     paths: ["docs/**", CHANGELOG.md, package.json, pnpm-lock.yaml, pnpm-workspace.yaml]
     why: the link checker's self-test and the VitePress build of docs/ (which includes CHANGELOG.md)

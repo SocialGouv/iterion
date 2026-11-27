@@ -136,3 +136,81 @@ func TestUndeclaredJudgesFilesDirectoriesAndRoots(t *testing.T) {
 		t.Fatalf("undeclared = %q, want none", got)
 	}
 }
+
+// TestTheScanSeesEveryRootFinder holds one fixture per way a test finds the
+// repository root without a literal climb; each package must come out
+// root-anchored, with the file it then reads.
+func TestTheScanSeesEveryRootFinder(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":        "module example.com/m\n",
+		"docs/x.md":     "x",
+		"docs/y.md":     "y",
+		"docs/z.md":     "z",
+		"docs/adr/1.md": "1",
+		// go env GOMOD, in a helper of the test file.
+		"pkg/gomod/gomod_test.go": `package gomod
+import ("os"; "os/exec"; "path/filepath"; "strings"; "testing")
+func repoRoot(t *testing.T) string { out, _ := exec.Command("go", "env", "GOMOD").Output(); return filepath.Dir(strings.TrimSpace(string(out))) }
+func TestG(t *testing.T) { os.ReadFile(filepath.Join(repoRoot(t), "docs", "x.md")) }
+`,
+		// go list -m -f {{.Dir}}, in a production helper another package calls.
+		"internal/modroot/modroot.go": `package modroot
+import ("os/exec"; "strings")
+func Dir() string { out, _ := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output(); return strings.TrimSpace(string(out)) }
+`,
+		"pkg/listm/listm_test.go": `package listm
+import ("os"; "path/filepath"; "testing"; "example.com/m/internal/modroot")
+func TestL(t *testing.T) { os.ReadFile(filepath.Join(modroot.Dir(), "docs", "y.md")) }
+`,
+		// A Test function that anchors itself: a finder nothing calls.
+		"pkg/self/self_test.go": `package self
+import ("os"; "os/exec"; "path/filepath"; "strings"; "testing")
+func TestS(t *testing.T) {
+	out, _ := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	os.ReadFile(filepath.Join(strings.TrimSpace(string(out)), "docs", "z.md"))
+}
+`,
+		// runtime.Caller under an alias, then a Join on the file's directory.
+		"pkg/caller/caller_test.go": `package caller
+import ("os"; "path/filepath"; goruntime "runtime"; "testing")
+func TestC(t *testing.T) {
+	_, src, _, _ := goruntime.Caller(0)
+	os.ReadFile(filepath.Join(filepath.Dir(src), "../../docs/adr/1.md"))
+	dir := filepath.Dir(src)
+	os.ReadFile(filepath.Join(dir, "..", "..", "docs", "x.md"))
+}
+`,
+		// A go.mod a test writes into a fixture finds nothing.
+		"pkg/fixture/fixture_test.go": `package fixture
+import ("os"; "path/filepath"; "testing")
+func TestF(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), nil, 0o644)
+	_ = map[string]string{"go.mod": "module x"}
+}
+`,
+	})
+	ev, err := scanTree(root, "example.com/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, e := range ev {
+		got[e.Pkg] = append(got[e.Pkg], e.Kind+" "+e.Path)
+	}
+	for pkg, want := range map[string][]string{
+		"pkg/gomod":  {"anchored docs/x.md", "root ."},
+		"pkg/listm":  {"anchored docs/y.md", "root ."},
+		"pkg/self":   {"anchored docs/z.md", "root ."},
+		"pkg/caller": {"relative docs/adr/1.md", "relative docs/x.md", "root ."},
+	} {
+		g := got[pkg]
+		slices.Sort(g)
+		if !slices.Equal(g, want) {
+			t.Errorf("%s: scan = %v, want %v", pkg, g, want)
+		}
+	}
+	if len(got["pkg/fixture"]) > 0 {
+		t.Errorf("pkg/fixture: scan = %v, want nothing (a go.mod written into a temp dir finds no root)", got["pkg/fixture"])
+	}
+}

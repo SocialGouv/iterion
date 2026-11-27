@@ -14,7 +14,7 @@ var sourceExts = map[string]bool{".go": true, ".c": true, ".h": true, ".s": true
 // its importers: a non-test source file directly in its directory, or a file
 // its //go:embed patterns name.
 func isProductionFile(pk *pkgInfo, p string) bool {
-	if pk.embeds[p] {
+	if embeds(pk, p) {
 		return true
 	}
 	if path.Dir(p) != pk.dir || strings.HasSuffix(p, "_test.go") {
@@ -23,12 +23,65 @@ func isProductionFile(pk *pkgInfo, p string) bool {
 	return sourceExts[path.Ext(p)]
 }
 
+// embeds reports whether pk's non-test package embeds p, or would: a file
+// head's EmbedFiles lists, or one a //go:embed pattern of pk names. The
+// pattern judges what head's file list cannot: a file deleted from a
+// directory or glob embed (base embedded it, head no longer does) and a file
+// added under one.
+func embeds(pk *pkgInfo, p string) bool {
+	if pk.embeds[p] {
+		return true
+	}
+	for _, pat := range pk.embedPatterns {
+		if embedMatches(pat, pk.dir, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// embedMatches reports whether the //go:embed pattern pat of the package in
+// dir names the repo-relative file p, under go:embed's rules: the pattern is
+// a path.Match glob over slash paths relative to dir; a match that is a
+// directory embeds its whole subtree, except the files and directories
+// whose name starts with '.' or '_' — which an `all:` pattern includes. A
+// glob matching such a name directly (`image/*` and `image/.keep`) embeds
+// it either way.
+func embedMatches(pat, dir, p string) bool {
+	all := strings.HasPrefix(pat, "all:")
+	pat = strings.TrimPrefix(pat, "all:")
+	rel := p
+	if dir != "." {
+		var ok bool
+		if rel, ok = strings.CutPrefix(p, dir+"/"); !ok {
+			return false
+		}
+	}
+	segs := strings.Split(rel, "/")
+	k := strings.Count(pat, "/") + 1
+	if k > len(segs) {
+		return false
+	}
+	if ok, err := path.Match(pat, strings.Join(segs[:k], "/")); err != nil || !ok {
+		return false
+	}
+	if all {
+		return true
+	}
+	for _, s := range segs[k:] {
+		if strings.HasPrefix(s, ".") || strings.HasPrefix(s, "_") {
+			return false
+		}
+	}
+	return true
+}
+
 // embeddedBy returns the packages, other than the file's own directory's,
 // that embed p from a subdirectory.
 func embeddedBy(g *graph, p string) []*pkgInfo {
 	var out []*pkgInfo
 	for d := path.Dir(path.Dir(p)); ; d = path.Dir(d) {
-		if pk := g.byDir[d]; pk != nil && pk.embeds[p] {
+		if pk := g.byDir[d]; pk != nil && embeds(pk, p) {
 			out = append(out, pk)
 		}
 		if d == "." || d == "/" {

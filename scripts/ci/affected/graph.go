@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -43,8 +44,12 @@ type pkgInfo struct {
 	testDeps map[string]bool
 	// prodDeps: main-module packages the non-test package links.
 	prodDeps map[string]bool
-	// embeds: repo-relative files the non-test package embeds.
+	// embeds: repo-relative files the non-test package embeds at head.
 	embeds map[string]bool
+	// embedPatterns: the //go:embed patterns of the non-test package, over
+	// every variant. A file deleted from a directory or glob embed is in no
+	// head EmbedFiles; the pattern still names it (see embedMatches).
+	embedPatterns []string
 }
 
 type graph struct {
@@ -58,15 +63,16 @@ type graph struct {
 
 // listEntry is the subset of `go list -json` this tool reads.
 type listEntry struct {
-	ImportPath string
-	Dir        string
-	ForTest    string
-	Standard   bool
-	Module     *struct{ Path string }
-	Deps       []string
-	EmbedFiles []string
-	Error      *struct{ Err string }
-	DepsErrors []*struct{ Err string }
+	ImportPath    string
+	Dir           string
+	ForTest       string
+	Standard      bool
+	Module        *struct{ Path string }
+	Deps          []string
+	EmbedFiles    []string
+	EmbedPatterns []string
+	Error         *struct{ Err string }
+	DepsErrors    []*struct{ Err string }
 }
 
 // loadGraph runs `go list -mod=vendor -deps -test -json ./...` in root under
@@ -192,6 +198,11 @@ func (g *graph) merge(root string, r io.Reader) error {
 		}
 		for _, f := range e.EmbedFiles {
 			p.embeds[path.Join(p.dir, filepath.ToSlash(f))] = true
+		}
+		for _, pat := range e.EmbedPatterns {
+			if !slices.Contains(p.embedPatterns, pat) {
+				p.embedPatterns = append(p.embedPatterns, pat)
+			}
 		}
 	}
 }
