@@ -1839,15 +1839,16 @@ tool fold_probe:
     const timesAsked = (id) => askedCount ? Number(askedCount[id] || 0) : 1;
     // A re-ask is spent only where it can change the answer: on a criterion
     // with harvested evidence to cite, one the engine flags without subject
-    // (NA is the answer the report then needs), or one whose batch was lost.
-    // A lost batch (no fragment: a timeout, a dead branch) never answered at
+    // (NA is the answer the report then needs), or one no agent answered at
     // all. An asked criterion with none of these stays open — a point to
     // re-check in the annex — instead of buying another round.
     const hasEvidence = (id) => { try { const ev = L.readJSON(path.join(wl.items_dir, id + ".json")).evidence; return Array.isArray(ev) && ev.length > 0; } catch (e) { return true; } };
-    const answered = new Set(L.listJSON(path.join(RUN, "fragments")).map((p) => L.readJSON(p).batch_id));
-    const lost = new Set();
-    for (const p of L.listJSON(path.join(RUN, "batches"), "r" + round + "-")) { const b = L.readJSON(p); if (!answered.has(b.id)) for (const id of b.ids || []) lost.add(String(id)); }
-    const worthReask = (id) => flaggedOpen.includes(id) || lost.has(id) || hasEvidence(id);
+    // Never answered = no fragment of ANY round carries a verdict for it: its
+    // batch died (in this round or an earlier one a wave held it back from),
+    // or the agent skipped it in a partial batch. max_reask still bounds it.
+    const answeredIds = new Set();
+    for (const p of L.listJSON(path.join(RUN, "fragments"))) for (const v of L.readJSON(p).verdicts || []) answeredIds.add(String(v.criteriaId));
+    const worthReask = (id) => flaggedOpen.includes(id) || !answeredIds.has(id) || hasEvidence(id);
     const notAsked = openIds.filter((id) => timesAsked(id) === 0);
     const reaskSpent = openIds.filter((id) => timesAsked(id) > maxReask);
     const noEvidence = openIds.filter((id) => timesAsked(id) > 0 && timesAsked(id) <= maxReask && !worthReask(id));
