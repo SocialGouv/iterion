@@ -3,6 +3,22 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.42.0](https://github.com/SocialGouv/iterion/compare/v7.41.1...v7.42.0) (2026-11-27)
+
+### Features
+
+* **credentials:** a run holds its key and gateway places across a redelivery, parks a lost place in one write, and re-admits a started run on its frozen program (ADR-167 T4a) ([#3886](https://github.com/SocialGouv/iterion/issues/3886)) ([40913c6](https://github.com/SocialGouv/iterion/commit/40913c6eb68e8602ed8ca01ec0526f5c42d65952)), closes [#3835](https://github.com/SocialGouv/iterion/issues/3835) [#3835](https://github.com/SocialGouv/iterion/issues/3835), references [#3820](https://github.com/SocialGouv/iterion/issues/3820) [#3254](https://github.com/SocialGouv/iterion/issues/3254) [#3857](https://github.com/SocialGouv/iterion/issues/3857) [#3835](https://github.com/SocialGouv/iterion/issues/3835)
+
+    <details><summary>why</summary>
+
+    A run between two deliveries (failed_resumable + redelivery_pending + a future continuation_until) now holds its key and gateway places, so a key at max_concurrent_runs: 1 can no longer run two.
+
+    </details>
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/crypto to v0.59.0 [security] ([#3790](https://github.com/SocialGouv/iterion/issues/3790)) ([045ea65](https://github.com/SocialGouv/iterion/commit/045ea6535f67813d017c385fe3c9a457db307e33))
+
 ## [7.41.1](https://github.com/SocialGouv/iterion/compare/v7.41.0...v7.41.1) (2026-11-27)
 
 ### Features
