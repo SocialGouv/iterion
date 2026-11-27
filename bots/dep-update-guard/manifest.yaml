@@ -1,7 +1,18 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.12.3
+version: 2.12.4
+## 2.12.4 — the audit honours the repository's own scanner exclusions, and
+## says what it set aside. Live on iterion#3791 (run 01a21953): a base-image
+## bump that removed 490 HIGH/CRITICAL was held hold_security on two
+## "introduced" advisories located only in a nixpkgs source-tree Cargo.lock
+## under /nix/store/*-nixpkgs, a tree the repository already skips in its own
+## Trivy scan (#3817). A vulnerability advisory whose every location is
+## covered by an exclusion the BASE declares (Trivy skip-dirs / skip-files,
+## trivy.yaml, .trivyignore), or sits only in a source tree nothing installs,
+## holds nothing; it lands in the new audit_output field excluded_findings,
+## with where and why, and post_feedback renders it on every audited verdict.
+## Never a malware signal; never a declaration the PR head adds.
 ## 2.12.3 — a commit report whose id has no legal width no longer holds a
 ## good alignment red. Live on buildkit-operator#65 (run 01a1e07f): the
 ## commit agent dropped two hex digits of the pushed sha (40 hex became 38),

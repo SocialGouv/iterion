@@ -36,7 +36,9 @@ continuity     (tool, deterministic)  is this head's change one a green verdict
                                       continuity_standby → arm_automerge; else
                                       (a head moved since prepare included) → audit
 security_audit (agent, read-only)     malware, typosquats, compromised-maintainer
-                                      signals, CVEs introduced vs resolved
+                                      signals, CVEs introduced vs resolved; findings
+                                      the repo's scanner exclusions cover, or only in
+                                      an uninstalled source tree, reported, not held
 audit_gate     (compute, GATE)        only `safe` proceeds; else → hold_security
 align          (agent, mutating)      align consuming code to the breaking change;
                                       flags a structuring decision instead of guessing
@@ -123,6 +125,24 @@ ANSWERED refusal — the preflight's verdict, or the forge API's scope list — 
 its cure is an operator's, the probe's reason saying which: a permission the App
 does not hold — approve the delivery permissions, refresh its token, relaunch; a
 classic token short of a scope — reissue it as the reason names, relaunch.
+
+**Scanner exclusions — set aside, never silent.** The audit honours the
+exclusions a repository declares for its own scanners — Trivy `skip-dirs` /
+`skip-files` in its workflows or `trivy.yaml`, `.trivyignore` — read from the
+BASE revision, never from the PR head, whose author could otherwise exclude
+the bump itself; and a vulnerability advisory found only in a source tree
+nothing installs or builds from (a nixpkgs source checkout's vendored
+`Cargo.lock`, #3817) holds nothing either. Neither ever sets aside a malware,
+typosquat or compromise signal, and one location outside every exclusion keeps
+the advisory in its set. The scanner runs without the exclusions and the audit
+classifies after, so each set-aside advisory lands in the typed
+`excluded_findings` field — id, package, every path, and why — which every
+audited edge maps into `post_feedback` and the comment renders on every
+verdict, green or hold. The classification stays the auditor's call, not
+`audit_gate`'s: the gate sees neither the scanner report nor the image, so a
+structured location claim would be the same model's word read back; what the
+structure buys is that a set-aside finding cannot vanish from the verdict.
+Which tree is uninstalled, per stack, is the `dependency-pr-guard` skill's.
 
 A question **nobody answered** is a different refusal and reaches none of those
 eight: any shape of no-response — a refused or dropped connection, a timeout, a

@@ -244,7 +244,7 @@ prompt security_audit_system:
          - a compromised-maintainer / unexpected-author signal where the
            ecosystem exposes it.
        Treat the CURRENT pin too: if the OLD version is flagged
-       malicious, surface it in `summary`, the one field a safe
+       malicious, surface it in `summary`, the prose a safe
        verdict's comment carries (an auto-bump out of a compromised pin
        can mask an incident); it does not by itself block the new
        version.
@@ -288,7 +288,32 @@ prompt security_audit_system:
        release that fixes it and whether the bump's own source
        (registry, nixpkgs channel, image tag) already ships that
        release, so a human can take it.
-    4. VERDICT (`verdict`):
+    4. EXCLUSIONS — a finding that holds nothing and is still reported.
+       A vulnerability advisory (never a malware, typosquat, yanked or
+       compromise signal of step 2) is EXCLUDED when EVERY location it
+       was found at is either:
+         - covered by an exclusion the repository DECLARES for its own
+           scanners, applied to the scan kind it is declared for. Read
+           the declarations from the BASE revision (`git show
+           "$(git merge-base <base> HEAD)":<path>`), never from the PR
+           head: the bump's author writes the head, and an exclusion
+           the bump adds would whitelist the bump itself. The playbook
+           lists where declarations live; or
+         - inside a source tree carried as data that nothing installs
+           or builds from — the lockfile of a bundled source checkout,
+           such as a package collection's recipes. The playbook says per
+           stack how to prove it; a tree you cannot prove uninstalled is
+           installed.
+       One location outside every exclusion keeps the advisory in its
+       set. Scan WITHOUT the exclusions applied (no skip flag, no
+       ignore file handed to the scanner), then classify: a finding a
+       skip flag dropped is a finding nobody reported. An excluded
+       advisory counts in no set of step 3 and never decides the
+       verdict; it goes in `excluded_findings`, one entry each:
+       "<id> <package>@<version> — <every path it was found at> — <the
+       exclusion and the file declaring it, or why that tree is not
+       installed>".
+    5. VERDICT (`verdict`):
          - "malicious"  — a credible malware / compromise signal on the
                           new version. Hard stop, no alignment.
          - "suspicious" — a HIGH/CRITICAL CVE the bump INTRODUCES, OR a
@@ -322,7 +347,7 @@ prompt security_audit_system:
   default to "suspicious" rather than a hollow "safe".
 
   Emit `audit_output`: verdict, cves (RESOLVED / INTRODUCED / REMAINING,
-  prefixed),
+  prefixed), excluded_findings (step 4, each with where and why),
   malware_signals, blockers (concrete reasons when not safe), summary,
   auditors_consulted.
 
@@ -676,6 +701,11 @@ schema audit_input:
 schema audit_output:
   verdict: string [enum: "safe", "suspicious", "malicious"]
   cves: string[]
+  ## Vulnerability advisories set aside by a scanner exclusion the base
+  ## declares, or found only in a source tree nothing installs: each with
+  ## where it was found and why it does not hold. Rendered on every verdict
+  ## the audit reaches, so a set-aside finding is never a silent one.
+  excluded_findings: string[]
   malware_signals: string[]
   blockers: string[]
   auditors_consulted: string[]
@@ -817,6 +847,7 @@ schema feedback_input:
   verdict: string
   audit_summary: string
   cves: string
+  excluded_findings: string
   malware_signals: string
   align_summary: string
   validate_summary: string
@@ -2629,6 +2660,7 @@ tool post_feedback:
     verdict = {{input.verdict}}
     audit_summary = {{input.audit_summary}}
     cves = {{input.cves}}
+    excluded_findings = {{input.excluded_findings}}
     malware_signals = {{input.malware_signals}}
     align_summary = {{input.align_summary}}
     validate_summary = {{input.validate_summary}}
@@ -3229,6 +3261,19 @@ tool post_feedback:
     sec = s(audit_summary)
     extra = []
     if s(cves): extra.append("CVEs: " + s(cves))
+    # The audit's excluded findings arrive as a list (a whole-value mapping
+    # keeps the type) or as its text; every entry renders, one per line, and
+    # a text that is not a JSON list renders as written.
+    excluded = excluded_findings
+    if isinstance(excluded, str) and s(excluded).startswith("["):
+        try:
+            excluded = json.loads(s(excluded))
+        except ValueError:
+            pass
+    if isinstance(excluded, list):
+        excluded = "\n".join("- " + s(e) for e in excluded if s(e))
+    if s(excluded):
+        extra.append("Not held — excluded from the verdict, with where each was found and why:\n" + s(excluded))
     if s(malware_signals): extra.append("Malware signals: " + s(malware_signals))
     if extra: sec = (sec + "\n\n" + "\n".join(extra)).strip()
     section("Security & supply-chain", sec)
@@ -4539,6 +4584,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "hold_security",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     cves: "{{outputs.security_audit.cves}}",
     malware_signals: "{{outputs.security_audit.malware_signals}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
@@ -4576,6 +4622,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "needs_decision",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     escalation: "{{outputs.escalate.guidance}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
@@ -4618,6 +4665,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "hold_delivery_permission",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     ## Rendered under "Code alignment": what became of the alignment.
     align_summary: "Delivery refused before the push: {{outputs.delivery_probe.reason}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
@@ -4649,6 +4697,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "hold_unstable",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "{{outputs.verify_run.log_tail}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
@@ -4679,6 +4728,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "hold_lost_alignment",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     ## What align_probe found, in its own words — work still in the
     ## workspace, a claim the PR does not carry, or a reading it could not
     ## make — in its own paragraph AHEAD of align's prose: a blank line does
@@ -4701,6 +4751,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "committed",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
     commit_summary: "{{outputs.commit.summary}}",
@@ -4719,6 +4770,7 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "clean",
     audit_summary: "{{outputs.security_audit.summary}}",
+    excluded_findings: "{{outputs.security_audit.excluded_findings}}",
     align_summary: "{{outputs.align.breaking_summary}}",
     validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
     commit_summary: "{{outputs.commit.summary}}",

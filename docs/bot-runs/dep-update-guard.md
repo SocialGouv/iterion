@@ -7,6 +7,36 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-27 — 2.12.4: the audit honours the repository's scanner exclusions, and reports what it set aside (#3791, #3817)
+
+- Status: **fixed, live pending.** On iterion#3791 (Renovate "update docker
+  base images", run `01a21953`) the audit verified 10 image digests, measured
+  490 HIGH/CRITICAL removed and none introduced in installed code, wrote
+  "accept the bump" — and held `hold_security` on hashbrown 0.15.0 and zip
+  2.2.0, both found only in
+  `/nix/store/<hash>-nixpkgs/nixpkgs/pkgs/by-name/bb/bbox/Cargo.lock`, the
+  nixpkgs source tree the devbox images carry. The repository skips that tree
+  in its own Trivy scan (`.github/workflows/trivy.yml`, `skip-dirs:
+  /nix/store/*-nixpkgs`); the audit's own trivy did not.
+- The fix. A vulnerability advisory whose every location is covered by an
+  exclusion the repository declares — read from the merge-base, never from
+  the PR head — or sits only in a source tree nothing installs, counts in no
+  CVE set and holds nothing. It goes in the new `audit_output` field
+  `excluded_findings` (id, package, every path, why); the seven audited edges
+  into `post_feedback` map it and the comment renders it on every verdict, so
+  a set-aside finding is never a silent one. Malware signals are never
+  excluded. The classification stays the auditor's: `audit_gate` sees neither
+  the scanner report nor the image, so deciding it there would read the same
+  model's location claim back.
+- Proof. Deterministic: the wiring test (schema field, prompt names it, all
+  seven audited edges map it) and the rendering test (hold, green, list whole
+  or as text, empty renders nothing) on the shipped `post_feedback`; the
+  audit-policy freeze regenerated. Mutations seen red: the render line
+  dropped, one edge's mapping dropped, the schema field dropped, and the
+  base-revision rule rewritten to read the head (the freeze). The model's
+  classification itself is provable only live — next run on a bump of the
+  devbox images.
+
 ## 2026-11-16 — 2.12.3: a mis-transcribed commit id no longer holds a good alignment red (buildkit-operator#65, live)
 
 - Status: **fixed, live pending.** On buildkit-operator#65 the `/vetty` run
