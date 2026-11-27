@@ -3,6 +3,94 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.40.3](https://github.com/SocialGouv/iterion/compare/v7.40.2...v7.40.3) (2026-11-27)
+
+### Features
+
+* **credentials:** stamp gw:<host> at launch and resume, count alive runs per gateway (ADR-167 T2) ([#3814](https://github.com/SocialGouv/iterion/issues/3814)) ([0843cc8](https://github.com/SocialGouv/iterion/commit/0843cc8f6dd5a1f1e13f643dc0194182c41ee9ee)), closes [#3782](https://github.com/SocialGouv/iterion/issues/3782), references [#3254](https://github.com/SocialGouv/iterion/issues/3254) [#3254](https://github.com/SocialGouv/iterion/issues/3254)
+
+    <details><summary>why</summary>
+
+    Observe-only slice of the per-gateway bound (#3254). No admission, eviction or adoption changes: the ledger is still asked for capped key fingerprints only.
+
+    </details>
+
+### Bug Fixes
+
+* **auth:** pinned tokens reach their own team only, PAT revoke races, SMTP QUIT after DATA ([#3763](https://github.com/SocialGouv/iterion/issues/3763), [#3764](https://github.com/SocialGouv/iterion/issues/3764), [#3773](https://github.com/SocialGouv/iterion/issues/3773)) ([#3821](https://github.com/SocialGouv/iterion/issues/3821)) ([c1ff585](https://github.com/SocialGouv/iterion/commit/c1ff5852068ce04a542ff0a1a4de7e97e9a805d7))
+
+    <details><summary>why</summary>
+
+    Follow-ups to #3744 (ADR-174). Closes #3763, #3764, #3773.
+
+    </details>
+* **bots:** Vetty judges each required check by its newest run ([#3806](https://github.com/SocialGouv/iterion/issues/3806)) ([#3834](https://github.com/SocialGouv/iterion/issues/3834)) ([5c9d1de](https://github.com/SocialGouv/iterion/commit/5c9d1ded297c8eb9623ad7cc067a82af57c66a17)), references [#3738](https://github.com/SocialGouv/iterion/issues/3738) [#3803](https://github.com/SocialGouv/iterion/issues/3803) [#3738](https://github.com/SocialGouv/iterion/issues/3738) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3803](https://github.com/SocialGouv/iterion/issues/3803) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3791](https://github.com/SocialGouv/iterion/issues/3791) [#3803](https://github.com/SocialGouv/iterion/issues/3803)
+
+    <details><summary>why</summary>
+
+    check_rollup, in its three byte-identical copies (continuity, post_feedback, arm_automerge), read every CheckRun node of the head's GraphQL statusCheckRollup. When one sha carries two suites of a workflow, the rollup also lists the superseded one. Its CANCELLED or FAILED runs then made a required check read as not passing, and Vetty refused the merge. This happens on a same-sha rerun today. Once #3738 lands it happens on every renovate PR: the labeled run cancels the opened run 1-2 s later.…
+
+    </details>
+* **cloudsched:** a concurrency-cap refusal is one watch episode, and an armed fence no longer hides a failed run ([#3718](https://github.com/SocialGouv/iterion/issues/3718)) ([#3809](https://github.com/SocialGouv/iterion/issues/3809)) ([ebe8dc3](https://github.com/SocialGouv/iterion/commit/ebe8dc3f0a0679fe6ef2b74ceadf7319578fd5f5))
+
+    <details><summary>why</summary>
+
+    A launch-gate denial embeds figures measured at the tick, such as the active-run count or a repository's spend. Recorded whole on a schedule's last_error, it re-dated last_error_at at each change and re-opened a schedule_stalled episode. launchDeniedError now implements schedgate.LaunchVerdictError, and the ticker records its class, `launch gate: <reason>`. The detail stays in the tick audit record. Typed holds are still matched first. Under an armed fence, the outcome sweep sets aside only the…
+
+    </details>
+* **dsl:** make C159 agent-node and tool-node hints agree ([#3718](https://github.com/SocialGouv/iterion/issues/3718)) ([#3810](https://github.com/SocialGouv/iterion/issues/3810)) ([576ffc2](https://github.com/SocialGouv/iterion/commit/576ffc249ea0a01fe4da67648fcfc845046db7bb))
+
+    <details><summary>why</summary>
+
+    Before this change, the catalog fix for C159 told the author to route "the node" to a backend that serves the capability, while the tool-node fix said no backend serves the tool. One iterion validate output showed both. The catalog fix now scopes rerouting to agent and judge nodes, with a recovery agent going through the workflow default_backend. It also states that a tool node's registry command: runs on claw's registry whatever the backend. The tool-node fix says changing its backend cannot…
+
+    </details>
+* **mainwatch:** count a queued revert as armed, record a merged one as done, and tell the tickets when the queue drops an armed PR ([#3718](https://github.com/SocialGouv/iterion/issues/3718)) ([#3808](https://github.com/SocialGouv/iterion/issues/3808)) ([46c24a9](https://github.com/SocialGouv/iterion/commit/46c24a918d41807126350966b557433f65d55482))
+
+    <details><summary>why</summary>
+
+    GitHub clears auto_merge once the merge queue takes a pull request, so a revert the queue held was recorded as not armed and its suspect never heard of it. A shared armingOf now reads auto_merge, then the timeline's last step, and counts a queued PR as armed. A revert that merged before its record is recorded as done, whether its branch was kept or deleted on merge, instead of refused or opened a second time. A revert closed unmerged refuses. The sweep now reads the open quarantine PRs of this…
+
+    </details>
+* **model:** a provider call that fails on a cancelled run reports the cancellation ([#3588](https://github.com/SocialGouv/iterion/issues/3588)) ([#3813](https://github.com/SocialGouv/iterion/issues/3813)) ([373836f](https://github.com/SocialGouv/iterion/commit/373836f8d22164a18e5b37b83aa82ac06ab1e6d5))
+
+    <details><summary>why</summary>
+
+    callAndAggregate now sends every failing exit of a provider call through streamVerdict: the stream start, the cold timer and window, and every aggregation exit. Once the call's context is done, the failure is the cancellation (streamCancelledError: chain and text hold ctx.Err only, the provider outcome is kept as Observed). Before, whichever select arm the scheduler picked decided it, and an owned extraction that cancelled its parent could end failed_resumable on an ambiguous effect. Opened…
+
+    </details>
+* **review-pr:** converge reads the reviewers, not the repository ([#3823](https://github.com/SocialGouv/iterion/issues/3823)) ([#3828](https://github.com/SocialGouv/iterion/issues/3828)) ([beb959a](https://github.com/SocialGouv/iterion/commit/beb959af025c30ce5bda5153f14f9b4a8eb74941))
+
+    <details><summary>why</summary>
+
+    On the PLIAGE route (claw + deepseek-v4.1-flash), the merge step walked the workspace in six production runs between 2026-11-20 and 11-26. It ran up to 57 steps and 2.6 M tokens, with up to 37 globs of the root and 50 source reads. In all six runs its finding set equals the reviewer's: same file, severity and title, nothing dropped, nothing added. These runs carry about 9 % of the PLIAGE review spend.
+
+    </details>
+* **runtime:** a setup save re-applies its own fields after a lost CAS ([#3732](https://github.com/SocialGouv/iterion/issues/3732)) ([#3827](https://github.com/SocialGouv/iterion/issues/3827)) ([689bd19](https://github.com/SocialGouv/iterion/commit/689bd197075b15980e1c41268ba6b46ee59ac69b))
+
+    <details><summary>why</summary>
+
+    On the Mongo store every run-log flush (runner runlog_writer, every 500 ms) goes through withValueRecordWrite, which fences the parent run with a version bump. A flush landing between runPromoteAttachments' reload and runPersistWorkspace's full-document SaveRun made the save lose its CAS, and setup marked the run failed ("save work dir: run changed since it was loaded") before its first node. The filesystem store's AppendRunLog bumps nothing, so only cloud runs hit it.
+
+    </details>
+* **store,runview:** answer the admin and team run listings with one indexed read ([#3822](https://github.com/SocialGouv/iterion/issues/3822)) ([#3833](https://github.com/SocialGouv/iterion/issues/3833)) ([d3211d4](https://github.com/SocialGouv/iterion/commit/d3211d419cdb600235d14432f39086f74a56c26b))
+
+    <details><summary>why</summary>
+
+    GET /api/admin/runs took 45-48 s in production whatever its filters: ListAcrossTenants listed every run id (a COLLSCAN whose blocking sort spilled to disk), loaded each id in its own round trip, then filtered, sorted and paged in Go. ListRunRecordsCtx (/api/runs) had the same shape.
+
+    </details>
+
+### Performance Improvements
+
+* **server:** run the 79 slowest independent tests in parallel, guarded against shared process state ([#3798](https://github.com/SocialGouv/iterion/issues/3798)) ([#3812](https://github.com/SocialGouv/iterion/issues/3812)) ([ae02756](https://github.com/SocialGouv/iterion/commit/ae02756868a6b7dba7e9e25fc59d7ed3716d02b1))
+
+    <details><summary>why</summary>
+
+    pkg/server ran almost entirely serially under -race. 79 of the 100 slowest tests share no env, cwd or package variable, so they now open with t.Parallel(). Run one after another they cost 624 s; their parallel phase took 220 s on a busier host. The full package went from 1288 s to 1105 s even though the serial part was 1.33x slower because of load. Twenty slow tests that reach t.Setenv or swap a hook stay serial.
+
+    </details>
+
 ## [7.40.2](https://github.com/SocialGouv/iterion/compare/v7.40.1...v7.40.2) (2026-11-26)
 
 ### Bug Fixes
