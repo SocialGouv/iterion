@@ -70,25 +70,38 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   the node's entry belongs to THIS audit (a fresh audit drops it), so a run
   rewound to before the fold re-emits the recorded replay instead of
   replaying over a folded audit — which would empty the copy.
-- `worklist` → `plan_batches` → `dispatch` (fan-out per batch) →
+- `worklist` triages first: a criterion the engine says only a rendered
+  page decides, on an audit that read no page, with nothing harvested from
+  the source, is never dispatched — it stays « à évaluer », at zero tokens,
+  and the coverage annex lists it among the points to re-check.
+- `worklist` → `plan_batches` → `dispatch` (fan-out per batch, the whole
+  first pass at once by default) →
   `adjudicate` (read-only agent) → `write_fragment` (item-keyed) →
   `merge_verdicts` (one writer, later rounds win per criterion, citations
   checked against the shown evidence, recommendations kept only on the
   criterion's own anchors — the others dropped and counted; a batch that
   answered only part of its criteria is named apart from a dead one) →
-  `fold_probe` (the fold on a copy, refusals named and re-asked once) →
+  `fold_probe` (the fold on a copy, refusals named and re-asked once —
+  only where the criterion carries evidence to cite, or the engine flags it
+  without subject) →
   `fold_final` (the real audit folded exactly once, ledger merged; a retyped
   citation folded with its anchor's text where the engine accepts both).
 - `draft_report` renders the draft and the trial worklist; `budget_gate`
   skips the second reader, visibly, past `refuter_budget_share` of the cost
-  cap; `refute_apply` applies a complete trial with `--prune` (the engine's
-  own findings are never pruned) and reports what it pruned; an incomplete
-  trial is not applied, and the part of an applied one the engine refuses
-  (a retained claim whose anchor does not ground) is named as a degradation.
+  cap; `refute_apply` applies the trial with `--prune` (the engine's own
+  findings are never pruned) and reports what it pruned. A batch still lost
+  after its re-ask costs its own claims, not the trial: the engine reopens
+  the conformities left without a verdict, and those claims, like any part
+  the engine refuses (a retained claim whose anchor does not ground), are
+  named as the degradation.
 - `final_report` uses ultra11y 9.6.6 to render the business summary and
   its separate technical annex. It cross-checks the annex's « Décidés »
   line and the summary's RGAA rate against the audit, then runs the engine's
   integrity and completeness checks. Both draft readers receive both files.
+  Iterion's coverage annex ends with « Points à revérifier »: every
+  criterion still « à évaluer », its title, and why the run left it open
+  (render required and no page rendered, the agent could not decide from
+  the source, a verdict the engine refused, reopened by the second reader).
   `report_dir`, when set, receives these documents, requested HTML files,
   the linked screenshots, Markdown and JSON page grids when rendered,
   Iterion's coverage annex
@@ -127,10 +140,10 @@ replay, which is `LEDGER_INVALID` with the engine's own message.
 | `scope_globs` / `exclude_globs` / `max_files` | whole workspace | what the engine audits |
 | `rendered` | `auto` | `off` / `auto` / `required` — the browser layer; the engine writes its captures under `.ultra11y/pages/` of the workspace (gitignore it) |
 | `browser_path` | — | browser executable the rendered layer launches (`--browser-path` of the engine's probe and scan), e.g. the sandbox image's `/usr/bin/chromium`; empty = `$ULTRA11Y_BROWSER_PATH`, else the engine's own Playwright |
-| `serve_command` / `serve_ready_url` | — | how to serve the site for the scan |
+| `serve_command` / `serve_ready_url` / `serve_timeout_seconds` | — / — / 120 | how to serve the site for the scan; a site that does not answer, a failed scan or a failed probe degrades the rendered layer under `auto` (the static audit goes on), and is `RENDER_UNAVAILABLE` under `required` |
 | `ledger_path` | `.ultra11y/verdicts/<standard>.json` | the committed ledger to replay |
 | `batch_size` / `max_reask` | 8 / 1 | adjudication batches and re-asks (per criterion, after its first ask) |
-| `wave_batches` / `max_rounds` | 4 / 40 | batches dispatched per round (0 = all at once) and the bound on rounds — the waves plus their re-asks; the budget guard can decline a wave, never a fan-out mid-flight |
+| `wave_batches` / `max_rounds` | 0 / 40 | batches dispatched per round (0 = the whole first pass at once, then the re-ask) and the bound on rounds — the waves plus their re-asks; the budget guard can decline a wave, never a fan-out mid-flight |
 | `refute_enabled` / `refuter_budget_share` | true / 0.6 | the second reader and its budget guard (share of the cost cap and of the token cap) |
 | `human_review` | false | pause on a human gate before the final report |
 | `require_complete` | false | degraded layers become typed failures |
@@ -146,7 +159,7 @@ Models and efforts are env dials: `ITERION_RGAA_MODEL_ADJUDICATE`,
 
 ```sh
 iterion run bots/rgaa-audit --var scope_globs='src/**' --var rendered=off \
-  --var report_dir="$PWD/audits" --max-cost-usd 30
+  --var report_dir="$PWD/audits" --max-cost-usd 45
 ```
 
 A local run audits the worktree iterion creates from `HEAD`: commit
@@ -170,14 +183,14 @@ into the run directory, fingerprint-checked), so the job needs Node with
 - **Secret**: `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`) — the
   `claude_code` backend's credential. Another provider is a backend/model
   dial (`ITERION_RGAA_BACKEND_*`, `ITERION_RGAA_MODEL_*`, above).
-- **Budget**: the default caps are $30 and 80M tokens. The token cap is
+- **Budget**: the default caps are $45, 80M tokens and 6h (`ITERION_RGAA_MAX_DURATION`). The token cap is
   sized for a `claw` route, which books every tool-loop step's whole prompt
   (about 1–3M tokens a batch of 8 criteria, against ~30k on `claude_code`);
-  the cost cap is the real guard. The batches are dispatched in waves of
-  `wave_batches` (4), criteria never asked before re-asks, and the loop
-  budget guard declines the next wave when the budget cannot pay for it:
-  what was decided is folded and the rest is reported « à évaluer », never
-  a run cut mid-fan-out. `--max-cost-usd`
+  the cost cap is the real guard. The first pass is one fan-out of every
+  batch, then one re-ask of the criteria with evidence; `wave_batches` > 0
+  splits the first pass into waves the loop budget guard can decline when
+  the budget cannot pay for them: what was decided is folded and the rest
+  is reported « à évaluer », never a run cut mid-fan-out. `--max-cost-usd`
   and `--max-tokens` move the caps (about 2 $ per batch of 8 criteria on
   the default models; a first run with no ledger is ~60 $). A committed
   ledger (`.ultra11y/verdicts/rgaa.json`) is replayed, so a recurring run
@@ -192,7 +205,7 @@ GitHub Actions:
 jobs:
   rgaa-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     env:
       ITERION_VERSION: v7.33.0   # pin a release; the bot is installed from the same tag
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -224,7 +237,7 @@ but no `npm`, so the engine resolves nowhere there and the run stops at
 ```yaml
 rgaa-audit:
   image: node:24
-  timeout: 3h
+  timeout: 6h
   variables:
     ITERION_VERSION: v7.33.0   # pin a release; the bot is installed from the same tag
   script:

@@ -1985,7 +1985,7 @@ L.out({ ok: true, cases: out });
 			it["verdict"] = "supported"
 		}
 		rgaaWriteJSON(t, fmt.Sprint(wd["todo_path"]), wtodo)
-		if w := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": whole, "input.complete": true}))); w["degraded"] != false {
+		if w := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": whole}))); w["degraded"] != false {
 			t.Fatalf("the trial came back degraded on a ledger copy complete by criterion: %v", w["reason"])
 		}
 		dir := rgaaRunCopy(t, run)
@@ -2074,11 +2074,11 @@ L.out({ ok: true, cases: out });
 			short = append(short, it)
 		}
 		rgaaWriteJSON(t, fmt.Sprint(pd["todo_path"]), short)
-		gap := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": partial, "input.complete": true})))
+		gap := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": partial})))
 		if gap["degraded"] != true || !strings.Contains(fmt.Sprint(gap["reason"]), "1 claim(s) of the report absent from the trial") {
 			t.Fatalf("a trial missing the conformity of %s was not named degraded: %v", dropped, gap["reason"])
 		}
-		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir})))
 		if out["degraded"] != false || strings.Contains(fmt.Sprint(out["reason"]), "absent from the trial") {
 			t.Fatalf("a trial every claim of which was supported came back degraded: %v", out["reason"])
 		}
@@ -2346,11 +2346,24 @@ L.out({ ok: true, cases: out });
 		if out["complete"] != false || rgaaInt(out["unfilled"]) != len(batches[len(batches)-1].Items) || len(rgaaStrings(out["failed_batches"])) != 1 {
 			t.Fatalf("merge round 0: %v", out)
 		}
-		// The incomplete trial is not applied: the audit stays as folded.
+		// An incomplete trial — a batch still lost after its re-ask — is
+		// applied all the same, on a copy here: what was refuted is pruned,
+		// every conformity of the lost batch is reopened by the engine (never
+		// kept untried), and the claims without a verdict are the named
+		// degradation. A lost batch costs its own claims, not the trial.
 		before := sha()
-		ra := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": rgaaRunCopy(t, run), "input.complete": false})))
-		if ra["applied"] != false || ra["degraded"] != true || sha() != before {
-			t.Fatalf("incomplete trial: %v (audit moved: %v)", ra, sha() != before)
+		ra := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": rgaaRunCopy(t, run)})))
+		if ra["applied"] != true || ra["degraded"] != true || !strings.Contains(fmt.Sprint(ra["reason"]), "without a verdict") || rgaaInt(ra["refuted"]) != 1 || sha() != before {
+			t.Fatalf("incomplete trial: %v (original audit moved: %v)", ra, sha() != before)
+		}
+		reopened := map[string]bool{}
+		for _, id := range rgaaStrings(ra["reopened"]) {
+			reopened[id] = true
+		}
+		for _, it := range batches[len(batches)-1].Items {
+			if it["kind"] == "c" && !reopened[fmt.Sprint(it["criteriaId"])] {
+				t.Fatalf("conformity %v of the lost batch was kept untried (reopened: %v)", it["criteriaId"], ra["reopened"])
+			}
 		}
 		round1 := planRefute(t)
 		n := 0
@@ -2408,7 +2421,7 @@ L.out({ ok: true, cases: out });
 		todo[ungrounded]["snippet"] = "<p>un extrait qui n'existe nulle part dans le fichier</p>"
 		rgaaWriteJSON(t, fmt.Sprint(d["todo_path"]), todo)
 		before := rgaaFileSHA(t, filepath.Join(dir, "audit-latest.json"))
-		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir})))
 		if out["applied"] != true || out["degraded"] != true || !strings.Contains(fmt.Sprint(out["reason"]), "does not ground") {
 			t.Fatalf("refute_apply: applied=%v degraded=%v reason=%q (want the prune reported as applied and the grounding refusal named)", out["applied"], out["degraded"], out["reason"])
 		}
@@ -2434,7 +2447,10 @@ L.out({ ok: true, cases: out });
 
 	t.Run("the_annex_names_a_trial_that_was_not_applied_by_its_reason", func(t *testing.T) {
 		dir := rgaaRunCopy(t, run)
-		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": false})))
+		// A trial the engine did not prune (refute_apply reads no `pruned`
+		// object): the layer that node writes, applied false with its reason.
+		out := map[string]any{"applied": false, "reason": "the engine did not prune (fixture)"}
+		rgaaWriteJSON(t, filepath.Join(dir, "layers", "refutation.json"), map[string]any{"layer": "refutation", "status": "degraded", "reason": out["reason"], "applied": false})
 		final := rgaaOK(t, "final_report", rgaaRunNode(t, scripts, "final_report", site, env, in(map[string]any{"input.run_dir": dir, "input.html_report": false, "input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": ""})))
 		annex, err := os.ReadFile(fmt.Sprint(final["annex_path"]))
 		if err != nil {
@@ -2540,7 +2556,7 @@ L.out({ ok: true, cases: out });
 			t.Fatal("the trial carries no supported non-conformity")
 		}
 		rgaaWriteJSON(t, fmt.Sprint(d["todo_path"]), todo)
-		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir})))
 		if rgaaInt(out["skipped_engine"]) != n || rgaaInt(out["removed_findings"]) != 0 {
 			t.Fatalf("%d refuted engine non-conformities: skipped_engine=%v removed_findings=%v (the engine never prunes its own findings on a reader's say-so)", n, out["skipped_engine"], out["removed_findings"])
 		}
@@ -2603,7 +2619,7 @@ L.out({ ok: true, cases: out });
 			t.Fatalf("the trial does not put the agent non-conformity on %s on trial", ncID)
 		}
 		rgaaWriteJSON(t, fmt.Sprint(dr["todo_path"]), todo)
-		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+		out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir})))
 		if rgaaInt(out["removed_findings"]) != hit || !rgaaContains(rgaaStrings(out["reopened"]), ncID) || rgaaContains(rgaaStrings(out["cleared"]), ncID) {
 			t.Fatalf("refuted agent NC on %s: removed_findings=%v reopened=%v cleared=%v (want %d removed, the criterion reopened, no conformity cleared)", ncID, out["removed_findings"], out["reopened"], out["cleared"], hit)
 		}
@@ -2697,7 +2713,7 @@ L.out({ ok: true, cases: out });
 				t.Fatalf("the trial does not put %s's conformity on trial", cID)
 			}
 			rgaaWriteJSON(t, fmt.Sprint(dr["todo_path"]), todo)
-			out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir, "input.complete": true})))
+			out := rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.run_dir": dir})))
 			if out["applied"] != true || out["degraded"] != false {
 				t.Fatalf("the trial over the restored citation: applied=%v degraded=%v reason=%q", out["applied"], out["degraded"], out["reason"])
 			}
@@ -3104,7 +3120,7 @@ L.out({ ok: true, cases: out });
 	var applied map[string]any
 	t.Run("refute_apply_clears_the_refuted_conformity_records_the_new_hash_and_leaves_the_engine_findings_alone", func(t *testing.T) {
 		before := sha()
-		applied = rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(map[string]any{"input.complete": true})))
+		applied = rgaaOK(t, "refute_apply", rgaaRunNode(t, scripts, "refute_apply", site, env, in(nil)))
 		if applied["applied"] != true || sha() == before || applied["audit_sha256"] != sha() || recorded(run) != sha() {
 			t.Fatalf("apply: %v", applied)
 		}
@@ -3376,7 +3392,7 @@ L.out({ ok: true, cases: out });
 			"fold_probe":    {"input.round": 2},
 			"fold_final":    {"input.require_complete": false},
 			"draft_report":  {},
-			"refute_apply":  {"input.complete": true},
+			"refute_apply":  {},
 			"final_report":  {"input.html_report": false, "input.report_dir": "", "input.require_complete": false, "input.undecidable_present": false, "input.undecidable_path": "", "input.scope_notes": ""},
 			"deliver":       {"input.report_path": final["report_path"], "input.findings_cap": 80, "input.board_state": "inbox", "input.board_epic_label": ""},
 		}
