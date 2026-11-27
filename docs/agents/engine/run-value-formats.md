@@ -110,10 +110,19 @@ question per page (`store.RunWindowListingStore`, #3822): status, workflow,
 `updated_at >= since`, a tenant set and the `(created_at, _id)` keyset,
 newest first through `created_id_desc` (`tenant_created_id_desc` for a team,
 `tenant_status_created_id_desc` / `tenant_workflow_created_id_desc` for a
-team's status or workflow, #3831). A `since` page reads in finds of at most
-100 documents so the planner's trial cannot crown a scan that then walks the
-collection. Every other page is one find: a plan another tenant's call left
-in the plan cache ran the later batches of a batched page. Those predicates read the persisted document, which is safe because both formats store every listing key as plain BSON outside the exact codec's paths — same
+team's status or workflow, #3831). A page no index serves in that order —
+a `since` page, or a status or workflow page no tenant leads (the
+cross-tenant view, or a tenant set naming the tenant-less runs) — reads in
+finds of at most 100 documents so the planner's trial cannot crown a scan
+that then walks the collection. Every other page is one find: a plan another
+tenant's call left in the plan cache ran the later batches of a batched page.
+`EnsureSchema` drops `tenant_status_created` once
+`tenant_status_created_id_desc`, which supersedes it, exists
+(`supersededRunsIndexes`): kept, it costs a write on every status change and
+one more candidate in each trial. No query hints it by name, so a replica
+still on the old schema during a roll replans onto the successor. Each
+tenant-led index also lengthens the trial of a query that reads a whole
+tenant without reaching 101 results, such as the admin cutover scans. Those predicates read the persisted document, which is safe because both formats store every listing key as plain BSON outside the exact codec's paths — same
 type, same bytes (`TestRunListingKeysEncodeIdenticallyInBothValueFormats`).
 Each matched document then crosses the decode `LoadRun` uses; one that does
 not decode is reported per id and never fails the page. Repo, bundle and node

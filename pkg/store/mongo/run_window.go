@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -18,13 +19,14 @@ var _ store.RunWindowListingStore = (*Store)(nil)
 // created_id_desc index (EnsureSchema) hands it back without a sort stage.
 var runWindowSort = bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}}
 
-// runWindowBatch caps the limit of each Find a bounded `since` window sends.
-// The planner's trial runs every candidate plan until one returns 101
-// documents or ends: above that, a newest-first scan that finds the first 101
-// matches among the newest runs wins the trial, then walks the rest of the
-// collection for matches a narrower index (updated_desc for a recent `since`)
-// holds in a few hundred keys. At 100 the scan wins only by filling its own
-// limit, which is the cheap case.
+// runWindowBatch caps the limit of each Find a window sends when no index
+// holds its matches in the listing order (batchedWindow). The planner's
+// trial runs every candidate plan until one returns 101 documents or ends:
+// above that, a newest-first scan that finds the first 101 matches among the
+// newest runs wins the trial, then walks the rest of the collection for
+// matches a narrower index (updated_desc for a recent `since`, status_created
+// for a cross-tenant status) holds in a few hundred keys. At 100 the scan
+// wins only by filling its own limit, which is the cheap case.
 //
 // Every other window sends its limit in one Find. A Find of a shape the plan
 // cache holds runs the cached plan, whichever earlier call (of any tenant)
@@ -51,7 +53,7 @@ type windowBound struct {
 //
 // A window continues from the last document it saw until it holds w.Limit
 // records or the collection is exhausted — the continuation that covers the
-// slots skipped documents consumed; a `since` window also asks at most
+// slots skipped documents consumed; a batchedWindow also asks at most
 // runWindowBatch documents per Find. A window with no limit is one stream.
 func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.Run, []store.SkippedRun, error) {
 	if w.Limit < 0 {
@@ -64,7 +66,7 @@ func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.
 		want := 0
 		if w.Limit > 0 {
 			want = w.Limit - len(out)
-			if !w.Since.IsZero() {
+			if batchedWindow(ctx, w) {
 				want = min(want, runWindowBatch)
 			}
 		}
@@ -81,6 +83,33 @@ func (s *Store) ListRunWindow(ctx context.Context, w store.RunWindow) ([]*store.
 		}
 		bound = last
 	}
+}
+
+// batchedWindow reports whether w reads in Finds of at most runWindowBatch:
+// whenever no index serves both its filter and the listing order. A `since`
+// window always (updated_at leads no listing-order index); a status or
+// workflow window that no tenant leads — the cross-tenant view, or a tenant
+// set naming the tenant-less runs, which no partial tenant index holds —
+// because only the tenant-led indexes hold a status or a workflow in that
+// order.
+func batchedWindow(ctx context.Context, w store.RunWindow) bool {
+	if !w.Since.IsZero() {
+		return true
+	}
+	if w.Status == "" && w.Workflow == "" {
+		return false
+	}
+	return !tenantLedWindow(ctx, w)
+}
+
+// tenantLedWindow reports whether every run w can answer carries one of a
+// known set of tenants: the context's own, or a tenant set without the
+// tenant-less member.
+func tenantLedWindow(ctx context.Context, w store.RunWindow) bool {
+	if id, ok := store.TenantFromContext(ctx); ok && id != "" {
+		return true
+	}
+	return len(w.TenantIDs) > 0 && !slices.Contains(w.TenantIDs, "")
 }
 
 // readRunWindow drains one Find into out / skipped and reports how many

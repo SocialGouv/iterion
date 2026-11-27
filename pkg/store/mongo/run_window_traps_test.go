@@ -326,3 +326,79 @@ func TestListRunWindow_FilteredWindowsReadTheirMatchesColdAndWarm(t *testing.T) 
 		}
 	}
 }
+
+// TestListRunWindow_CrossTenantStatusWindowReadsInBatches measures the
+// admin's status window, which no index serves in the listing order across
+// tenants: an incident leaves 150 failures among the newest 300 runs of
+// twenty thousand, and failures are rare (one in two hundred) before it.
+// created_id_desc finds the trial's matches among the newest runs and wins;
+// asked for more than the trial's 101 rows in one Find, it then walks the
+// collection for the scattered rest, where status_created holds them in a
+// few hundred keys. Read in batches of runWindowBatch, each Find stops at
+// its own limit. Measured cold, then warm on the plan the cold read left.
+func TestListRunWindow_CrossTenantStatusWindowReadsInBatches(t *testing.T) {
+	s := watchersTestStore(t)
+	ctx := context.Background()
+	blind := store.TeamBlind(ctx)
+	end := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewSource(7))
+	const runs = 20000
+	failed := 0
+	docs := make([]any, 0, runs)
+	for k := range runs {
+		created := end.Add(-time.Duration(k) * 90 * time.Second)
+		status := "finished"
+		if (k < 300 && k%2 == 0) || rng.Intn(200) == 0 {
+			status = "failed"
+			failed++
+		}
+		tenant := fmt.Sprintf("team-%d", rng.Intn(40))
+		if k%3 == 0 {
+			tenant = "team-big"
+		}
+		docs = append(docs, bson.M{"_id": fmt.Sprintf("run-%06d", runs-k), "tenant_id": tenant, "status": status, "workflow_name": "wf", "created_at": created, "updated_at": created.Add(time.Minute)})
+	}
+	if _, err := s.runs.InsertMany(ctx, docs); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The same question through a tenant set that names the tenant-less
+	// runs: no partial tenant index holds them, so no index serves it either.
+	everyTenant := []string{"team-big", ""}
+	for i := range 40 {
+		everyTenant = append(everyTenant, fmt.Sprintf("team-%d", i))
+	}
+	for _, c := range []struct {
+		limit   int
+		tenants []string
+	}{{201, nil}, {501, nil}, {201, everyTenant}, {501, everyTenant}} {
+		limit := c.limit
+		w := store.RunWindow{Status: "failed", Limit: limit, TenantIDs: c.tenants}
+		rows := min(limit, failed)
+		if rows <= 101 {
+			t.Fatalf("limit %d answers %d rows — the window must exceed the planner's trial", limit, rows)
+		}
+		maxDocs := int64(2*rows + 100)
+		for _, warm := range []bool{false, true} {
+			var got []*store.Run
+			read := func() {
+				var err error
+				if got, _, err = s.ListRunWindow(blind, w); err != nil {
+					t.Fatalf("limit %d: ListRunWindow: %v", limit, err)
+				}
+			}
+			var docsExamined int64
+			if warm {
+				docsExamined = warmDocsExamined(t, s, read)
+			} else {
+				docsExamined = executedDocsExamined(t, s, read)
+			}
+			if len(got) != rows {
+				t.Errorf("limit %d warm=%v: listed %d runs, want %d", limit, warm, len(got), rows)
+			}
+			t.Logf("blind status=failed limit %d tenant set %v warm=%v: %d rows, %d documents examined", limit, c.tenants != nil, warm, len(got), docsExamined)
+			if docsExamined > maxDocs {
+				t.Errorf("blind status=failed limit %d tenant set %v warm=%v: examined %d documents for %d rows, want at most %d — the read walked the collection, not its answer", limit, c.tenants != nil, warm, docsExamined, len(got), maxDocs)
+			}
+		}
+	}
+}
