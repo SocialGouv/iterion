@@ -33,8 +33,10 @@ prepare        (tool, deterministic)  diff base_ref..HEAD, classify the changed
 continuity     (tool, deterministic)  is this head's change one a green verdict
                                       already covers? carry → post_feedback
                                       (`carried`); already gated →
-                                      continuity_standby → arm_automerge; else
-                                      (a head moved since prepare included) → audit
+                                      continuity_standby → arm_automerge; held
+                                      for its supply chain → post_feedback
+                                      (the hold, carried); else (a head moved
+                                      since prepare included) → audit
 security_audit (agent, read-only)     malware, typosquats, compromised-maintainer
                                       signals, CVEs introduced vs resolved
 audit_gate     (compute, GATE)        only `safe` proceeds; else → hold_security
@@ -216,13 +218,23 @@ block, the one `post_feedback` decides with):
   carries never extends the age). A base that requires nothing but the gate
   would merge a carried head on the gate alone, with no build: the full audit
   builds it instead;
+- no green can be carried, and the change's own **supply-chain hold** can:
+  every verdict on the change is `hold_security`, every status stamped with
+  it is red, and an eligible hold whose ORIGINAL audit is younger than
+  `carry_max_age_h` is on record → `carry_hold`: the hold is re-published on
+  this head, origin travelling (`origin_at` unchanged, so a chain of carried
+  holds never extends the age), with no LLM call; the gate is red with the
+  same reason, and `arm_automerge` takes down an arming of this run's
+  identity as it does for any hold. A head that already carries the hold
+  gets it again — a reopen or a redelivery is a launch on an unmoved head;
 - anything else — a forge head that is no longer the one `prepare` read
   included: nothing says that head has a delivery of its own — → the full
   audit.
 
 Eligible means an unedited review this App published names the sha and the
 id, and the forge's one status for the context on that sha — written by this
-App — is green, ends with the same stamp and links that review. This App is
+App — is green (red, for a hold), ends with the same stamp and links that
+review. This App is
 the identity the run token speaks as, told by **user id alone** (REST and
 GraphQL spell a bot's login differently, `slug[bot]` / `slug`, and a user
 account can register any spelling): a review's author id against the GraphQL
@@ -236,8 +248,30 @@ the publishing App (a PAT beside an App connection) no review or stamped
 status is this App's, and nothing is carried: the full audit.
 GitHub-only; a history not
 read whole, or any read that fails, is the full audit, said so in the reason.
-Neither the carry nor the standby path holds a node that can call a model, by
-the engine's own `ir.NodeUsesLLM`.
+No carry path — a green, a hold — nor the standby holds a node that can call
+a model, by the engine's own `ir.NodeUsesLLM`.
+
+**Why a hold is carried with less than a green.** Carrying a red is
+fail-closed: the gate it paints refuses the merge by itself, and the worst a
+wrong carry can do is keep a mergeable change waiting for a `/vetty` — so it
+needs no required check other than the gate, where a carried green needs one
+to build the head it vouches for. Everything else a carry needs, it needs:
+this App's unedited verdict and stamp, no foreign stamp, the history read
+whole, the age bound, GitHub, the publish-time re-read. Unanimity runs the
+other way — a green beside the hold is a disagreement only a full audit
+settles. Only `hold_security` travels: it is a verdict about the change and
+the advisories of its pins, which a rebase does not move. `hold_unstable` is
+about a build on one base, `hold_lost_alignment` and
+`hold_delivery_permission` about a run's alignment or credential, and
+`needs_decision` about an answer a human may have given since — a new head or
+a relaunch is what settles each, so they are never carried. The carried hold
+keeps the value `hold_security`, and the marker's `origin`, not its verdict,
+says it was carried: a carried hold certifies exactly what the original does,
+so every reader of the verdict set — `post_feedback`'s gate table (an
+unknown value blocks), `arm_automerge`'s green set (anything else takes an
+arming down), the gate history's unanimity veto — already treats it right,
+where a new value would have had to be taught to each. `carried` is a value of its
+own because it certifies less than the audit it descends from (no build).
 
 `carried` certifies the supply-chain audit and alignment of an **identical
 change**, not a build of this tree: its note says *this base is built by the
@@ -256,14 +290,17 @@ global config cut off, the base branch as the forge holds it now, the token in
 git's environment — and, when it equals the audited change's and the new head's
 own gate history vetoes nothing (the same predicate, one shared block), the
 verdict is published there as `carried`, its origin the commit actually
-audited. A hold is never moved, and any other new head is published to as
-before — and refused by the server for the moved head; the run's summary says
-why it did not repin. A carry `continuity` decided is held to the same rule at
-publish time: the gate history is read again right before the publish — the
+audited. The repin never moves a hold — a hold reaches a new head only
+through that head's own run, by `carry_hold` — and any other new head is
+published to as before — and refused by the server for the moved head; the
+run's summary says why it did not repin. A carry `continuity` decided — a
+carried hold included — is held to the same rule at publish time: the gate history is read again right before the publish — the
 one `continuity` read can be minutes old, hours on a resumed run — and a hold
 published since on any head of the change, an edit, a foreign stamp, an origin
 past `carry_max_age_h`, or a base that no longer requires a check other than
-the gate **withdraws** the carry: nothing is published, the run's gate claim
+the gate **withdraws** the carry (a carried hold: a green published since on
+the change, an edit, a foreign stamp, an origin past `carry_max_age_h` —
+never the base, which a red does not lean on): nothing is published, the run's gate claim
 stays unanswered, and the reason says why. The server orders decisions by the
 time it receives them, so a hold published after that read still supersedes
 the carry, and only a hold landing in the second between the read and the
@@ -331,8 +368,8 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `respect_human_arming` | bool | `true` | Preserve another actor's arming, on a refusal and on a replacement |
 | `automerge_on_unstable` | string (enum: `merge`, `wait`) | `"merge"` | When GitHub refuses to arm an UNSTABLE pull request whose required checks all pass: merge the audited head now, or wait for CLEAN |
 | `automerge_settle_s` | int | `600` | The bound on the `wait` policy, in seconds |
-| `continuity` | bool | `true` | Reuse a green verdict on a head whose change it already covers (carry, renewal, repin); the `/vetty` command pins it false, and an operator pin in `launch_vars` wins over that on both lanes |
-| `carry_max_age_h` | int | `72` | Age past which a green verdict is no longer reused, measured from the original audit; `0` turns every reuse off |
+| `continuity` | bool | `true` | Reuse a verdict on a head whose change it already covers — a green (carry, renewal, repin) or a supply-chain hold (carry); the `/vetty` command pins it false, and an operator pin in `launch_vars` wins over that on both lanes |
+| `carry_max_age_h` | int | `72` | Age past which a verdict is no longer reused, measured from the original audit; `0` turns every reuse off |
 | `forge_publish_url` | string | `""` | Deterministic forge-publish grant, injected by the iterion server at launch; empty → direct comment, no gate |
 | `forge_publish_token` | string | `""` | Token for the publish endpoint above (server-injected) |
 | `forge_delivery_preflight_url` | string | `""` | Read-only delivery-permission proof endpoint (server-injected on the same launch); empty → a workflow-touching alignment is refused rather than pushed |

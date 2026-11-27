@@ -7,6 +7,38 @@ commit onto the PR branch, post the verdict comment. Never merges past a
 required check — and only ever the commit it audited. See
 [bots/dep-update-guard/](../../bots/dep-update-guard/).
 
+## 2026-11-27 — 2.13.0: a supply-chain hold travels with its change (buildkit-operator#49, #3769)
+
+- Status: **shipped, live pending.** buildkit-operator#49 (Renovate "go
+  toolchain directive", 1.26 → 1.27.3) received 13 consecutive
+  `hold_security` verdicts before it turned `clean`. Each was right — 1.27.3
+  introduces GO-2026-6848/6849, fixed in 1.27.4 — and each was a full audit
+  (~$10 measured in August), because a hold was never carried.
+- The change. When no green can be carried, `continuity` asks the mirror
+  question over the same reading of the gate history: every verdict on the
+  change `hold_security`, every stamp red, an eligible hold of this App's
+  whose original audit is younger than `carry_max_age_h` → `carry_hold`. The
+  hold is re-published on the new head, `origin` / `origin_at` travelling,
+  with no LLM call; the gate is red with the same reason, and `arm_automerge`
+  takes an arming of this run's identity down as for any hold. The edit veto,
+  the foreign-stamp veto, the history-not-read-whole rule, GitHub-only, the
+  publish-time re-read (withdrawn on a green published since, an edit, a
+  foreign stamp, an expired origin) and `/vetty`'s full audit all hold. A red
+  is fail-closed, so unlike a carried green it needs no required check
+  besides the gate. Only `hold_security` travels: the other holds are about a
+  base, an alignment or a credential.
+- Naming. The carried hold keeps the value `hold_security`; the marker's
+  `origin` says it was carried, and the comment and the gate note say so in
+  words. A new verdict value would have had to be taught to every reader of
+  the verdict set; this one is already a hold at each.
+- Proof. Deterministic: fourteen carried-hold rows in the continuity table
+  (both review orders each), the /vetty-over-a-hold witness, the publish
+  witness (red, origin travelling, four withdrawal causes), the routing pin
+  of the new edge, and an end-to-end row in the guarantee test (two hops of a
+  held change, no model node on the path, the gate red, the arming taken
+  down, /vetty a full audit). Saving per carried hold: one full audit; not
+  yet measured live.
+
 ## 2026-11-16 — 2.12.3: a mis-transcribed commit id no longer holds a good alignment red (buildkit-operator#65, live)
 
 - Status: **fixed, live pending.** On buildkit-operator#65 the `/vetty` run

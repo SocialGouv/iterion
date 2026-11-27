@@ -643,7 +643,7 @@ schema continuity_input:
   degraded: bool
 
 ## What the gate history says about this head's change. At most one of
-## carry / already_gated is true; neither means the full audit.
+## carry / already_gated / carry_hold is true; none means the full audit.
 schema continuity_output:
   ## carry: an eligible green verdict, younger than carry_max_age_h, was
   ## about the identical change on another head, and no verdict about that
@@ -652,6 +652,11 @@ schema continuity_output:
   ## already_gated: this head itself carries an eligible green verdict whose
   ## original audit is younger than carry_max_age_h.
   already_gated: bool
+  ## carry_hold: no green can be carried, and an eligible hold_security of
+  ## this App's, younger than carry_max_age_h, is on record for the identical
+  ## change, every verdict on it hold_security and every stamp red. The hold
+  ## is re-published on this head, origin travelling, with no LLM call.
+  carry_hold: bool
   ## gated_verdict: on already_gated, the verdict this head carries (clean,
   ## committed or carried); empty otherwise.
   gated_verdict: string
@@ -1097,11 +1102,20 @@ print(json.dumps({'is_empty': len(files)==0 and not degraded, 'dep_files': dep,
 ## REQUIRES other than the gate on this head (the check rollup): the forge
 ## then holds the merge to it. Without one, the full audit builds the head.
 ##
-## Its two answers are mutually exclusive. `carry` publishes the verdict
-## `carried` on this head; `already_gated` renews the arming only. Neither
-## path holds a node that can call a model
-## (dep_update_guard_continuity_test.go walks them with the engine's own
-## predicate).
+## When no green can be carried, the change's own supply-chain hold can:
+## `carry_hold` re-publishes hold_security on this head, its origin and
+## origin_at the original audit's. A red is fail-closed — the gate it paints
+## refuses the merge by itself — so it needs no required check, where a
+## carried green needs one to be built; it needs everything else a carry
+## needs (this App's unedited verdict and stamp, no foreign stamp, the
+## history read whole, the age bound), and unanimity the other way: every
+## verdict on the change hold_security, every stamp red.
+##
+## Its three answers are mutually exclusive. `carry` publishes the verdict
+## `carried` on this head; `carry_hold` publishes the carried hold;
+## `already_gated` renews the arming only. No path holds a node that can
+## call a model (dep_update_guard_continuity_test.go walks them with the
+## engine's own predicate).
 tool continuity:
   script: |
     import calendar, json, os, re, time, urllib.request, urllib.error
@@ -1216,10 +1230,10 @@ tool continuity:
     def s(x):
         return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
 
-    def out(reason, carry=False, already=False, origin="", origin_at="", change_id="", gated=""):
-        print(json.dumps({"carry": bool(carry), "already_gated": bool(already), "gated_verdict": gated,
-                          "origin_sha": origin, "origin_at": origin_at, "change_id": change_id,
-                          "reason": reason}))
+    def out(reason, carry=False, already=False, origin="", origin_at="", change_id="", gated="", hold=False):
+        print(json.dumps({"carry": bool(carry), "already_gated": bool(already), "carry_hold": bool(hold),
+                          "gated_verdict": gated, "origin_sha": origin, "origin_at": origin_at,
+                          "change_id": change_id, "reason": reason}))
         raise SystemExit(0)
 
     head = s(head_sha).lower()
@@ -1307,8 +1321,18 @@ tool continuity:
     # never paints over one). eligible lists this App's unedited green
     # verdicts on the change whose status — written by this App — the forge
     # holds green, stamped with the change and linking that review.
-    def gate_history(call, gql, owner, repo, num, pid, gctx, head):
+    #
+    # want="hold" asks the mirror question: may this change's supply-chain
+    # hold be carried onto `head`? Same reading, same edit and foreign-stamp
+    # vetoes; unanimity then runs the other way — every verdict on the change
+    # must be hold_security and every status stamped with it red — and
+    # eligible lists this App's unedited holds whose status, written by this
+    # App, the forge holds red, stamped with the change and linking that
+    # review. A red on the head vetoes nothing here: a hold paints red.
+    def gate_history(call, gql, owner, repo, num, pid, gctx, head, want="green"):
         green = ("clean", "committed", "carried")
+        carryable = ("hold_security",) if want == "hold" else green
+        settled = "failure" if want == "hold" else "success"
         marker = re.compile(r"<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) "
                             r"origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->")
         pages = 10
@@ -1363,8 +1387,14 @@ tool continuity:
                       key=lambda k: (k["sha"], k["verdict"], k["origin_at"], k["origin"], k["url"]))
         # Unanimity: one verdict on this change that is not green vetoes every
         # carry, whatever greens sit beside it. It covers the hold whose gate
-        # the server refused because the head moved under it.
-        held = [k for k in same if k["verdict"] not in green]
+        # the server refused because the head moved under it. A hold is
+        # carried under the mirror rule: every verdict on the change is the
+        # supply-chain hold, so a green beside it, or a hold about the build,
+        # is a disagreement only a full audit settles.
+        held = [k for k in same if k["verdict"] not in carryable]
+        if held and want == "hold":
+            return ("a verdict on this same change (" + pid + ") is " + held[0]["verdict"] + " on " +
+                    held[0]["sha"][:12] + ", and a hold is carried only when every verdict on it is hold_security"), []
         if held:
             return ("a verdict on this same change (" + pid + ") holds: " + held[0]["verdict"] + " on " +
                     held[0]["sha"][:12] + ", and a carry needs every verdict on it green"), []
@@ -1406,9 +1436,9 @@ tool continuity:
                 continue
             state = text(st.get("state")) or "unset"
             stamped = text(st.get("description")).endswith(stamp)
-            if stamped and state != "success":
+            if stamped and state != settled:
                 return "the " + gctx + " status on " + sha[:12] + " for this same change (" + pid + ") is " + state, []
-            if sha == head and state not in ("success", "pending"):
+            if want != "hold" and sha == head and state not in ("success", "pending"):
                 return "the " + gctx + " status on this head (" + sha[:12] + ") is " + state + ", and a carry never paints over it", []
             if stamped:
                 who = written_by(sha, st)
@@ -1420,8 +1450,8 @@ tool continuity:
                             "source, and a foreign one vetoes"), []
         def eligible(k):
             st = statuses.get(k["sha"])
-            return (k["own"] and k["verdict"] in green and st is not None and bool(k["url"])
-                    and text(st.get("state")) == "success" and text(st.get("description")).endswith(stamp)
+            return (k["own"] and k["verdict"] in carryable and st is not None and bool(k["url"])
+                    and text(st.get("state")) == settled and text(st.get("description")).endswith(stamp)
                     and text(st.get("target_url")) == k["url"])
         return "", [k for k in same if eligible(k)]
     # <<< vetty-gate-history/v1
@@ -1573,27 +1603,70 @@ tool continuity:
         if forge_base != s(base_ref):
             out("the pull request targets " + (forge_base or "(no base)") + ", not " + s(base_ref) + ": " + FULL,
                 change_id=pid)
-        veto, good = gate_history(call, gql, owner, repo, num, pid, gctx, head)
+        # Every reuse of a verdict — renewing the arming on this head's own
+        # green, carrying one onto it, carrying a hold — is bounded by the age
+        # of the ORIGINAL audit: an advisory published, withdrawn or fixed
+        # after it is owed a fresh look.
+        limit = float(max_age_h or 0)
+        now = time.time()
+        def young(ks):
+            fresh = []
+            for k in ks:
+                try:
+                    age_h = (now - epoch(k["origin_at"])) / 3600.0
+                except (ValueError, OverflowError):
+                    continue
+                if -1.0 <= age_h <= limit:
+                    fresh.append(k)
+            return fresh
+        # The green and the hold questions are judged over ONE reading: the
+        # first records every answer the forge gave, the second is served
+        # those answers and asks the forge only what the first never did, so
+        # both describe the same snapshot of the history.
+        memo = {}
+        def record(fn):
+            def read(*args):
+                got = fn(*args)
+                memo[(fn.__name__, json.dumps(args, sort_keys=True))] = got
+                return got
+            return read
+        def replay(fn):
+            def read(*args):
+                key = (fn.__name__, json.dumps(args, sort_keys=True))
+                return memo[key] if key in memo else fn(*args)
+            return read
+        veto, good = gate_history(record(call), record(gql), owner, repo, num, pid, gctx, head)
         if veto:
-            out(veto + ": " + FULL, change_id=pid)
+            # No green can be carried. The change's own supply-chain hold
+            # can: a red is fail-closed, so it is carried with no LLM call and
+            # no required check — the gate it paints refuses the merge by
+            # itself. Only hold_security travels: it is a verdict about the
+            # change, while the other holds are about a build on one base, an
+            # alignment, or a credential, which a new head or a relaunch
+            # settles.
+            hveto, holds = gate_history(replay(call), replay(gql), owner, repo, num, pid, gctx, head, "hold")
+            if hveto:
+                out(veto + " (and no hold is carried: " + hveto + "): " + FULL, change_id=pid)
+            if not holds:
+                out(veto + " (and no hold_security " + gctx + " of this App's is on record for it): " + FULL,
+                    change_id=pid)
+            if limit <= 0:
+                out(veto + " (and carry_max_age_h is " + (s(max_age_h) or "unset") + ", so no hold is carried): " + FULL,
+                    change_id=pid)
+            fresh = young(holds)
+            if not fresh:
+                out("every hold on this change (" + pid + ") is older than carry_max_age_h=" + s(max_age_h) +
+                    "h, measured from the original audit: " + FULL, change_id=pid)
+            k = max(fresh, key=lambda k: (k["origin_at"], k["origin"], k["sha"], k["url"]))
+            out("identical change (" + pid + "): the supply-chain hold of the audit of " + k["origin"][:12] + " (" +
+                k["origin_at"] + ") is carried from the hold on " + k["sha"][:12] + " (" + k["url"] +
+                "), with no new audit", hold=True, origin=k["origin"], origin_at=k["origin_at"], change_id=pid)
         if not good:
             out("no green " + gctx + " for this change (" + pid + ") is on record: " + FULL, change_id=pid)
-        # Every reuse of a verdict — renewing the arming on this head's own
-        # green, and carrying one onto it — is bounded by the age of the
-        # ORIGINAL audit: an advisory published after it is owed a fresh look.
-        limit = float(max_age_h or 0)
         if limit <= 0:
             out("carry_max_age_h is " + (s(max_age_h) or "unset") + ", so no verdict is carried or renewed: " + FULL,
                 change_id=pid)
-        now = time.time()
-        fresh = []
-        for k in good:
-            try:
-                age_h = (now - epoch(k["origin_at"])) / 3600.0
-            except (ValueError, OverflowError):
-                continue
-            if -1.0 <= age_h <= limit:
-                fresh.append(k)
+        fresh = young(good)
         mine = [k for k in fresh if k["sha"] == head]
         if mine:
             k = max(mine, key=lambda k: (k["origin_at"], k["origin"], k["verdict"], k["url"]))
@@ -2852,8 +2925,18 @@ tool post_feedback:
     # never paints over one). eligible lists this App's unedited green
     # verdicts on the change whose status — written by this App — the forge
     # holds green, stamped with the change and linking that review.
-    def gate_history(call, gql, owner, repo, num, pid, gctx, head):
+    #
+    # want="hold" asks the mirror question: may this change's supply-chain
+    # hold be carried onto `head`? Same reading, same edit and foreign-stamp
+    # vetoes; unanimity then runs the other way — every verdict on the change
+    # must be hold_security and every status stamped with it red — and
+    # eligible lists this App's unedited holds whose status, written by this
+    # App, the forge holds red, stamped with the change and linking that
+    # review. A red on the head vetoes nothing here: a hold paints red.
+    def gate_history(call, gql, owner, repo, num, pid, gctx, head, want="green"):
         green = ("clean", "committed", "carried")
+        carryable = ("hold_security",) if want == "hold" else green
+        settled = "failure" if want == "hold" else "success"
         marker = re.compile(r"<!-- vetty-gate/v1 sha=([0-9a-f]{40}) id=(pid1:[0-9a-f]{24}) verdict=([a-z_]+) "
                             r"origin=([0-9a-f]{40}) origin_at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->")
         pages = 10
@@ -2908,8 +2991,14 @@ tool post_feedback:
                       key=lambda k: (k["sha"], k["verdict"], k["origin_at"], k["origin"], k["url"]))
         # Unanimity: one verdict on this change that is not green vetoes every
         # carry, whatever greens sit beside it. It covers the hold whose gate
-        # the server refused because the head moved under it.
-        held = [k for k in same if k["verdict"] not in green]
+        # the server refused because the head moved under it. A hold is
+        # carried under the mirror rule: every verdict on the change is the
+        # supply-chain hold, so a green beside it, or a hold about the build,
+        # is a disagreement only a full audit settles.
+        held = [k for k in same if k["verdict"] not in carryable]
+        if held and want == "hold":
+            return ("a verdict on this same change (" + pid + ") is " + held[0]["verdict"] + " on " +
+                    held[0]["sha"][:12] + ", and a hold is carried only when every verdict on it is hold_security"), []
         if held:
             return ("a verdict on this same change (" + pid + ") holds: " + held[0]["verdict"] + " on " +
                     held[0]["sha"][:12] + ", and a carry needs every verdict on it green"), []
@@ -2951,9 +3040,9 @@ tool post_feedback:
                 continue
             state = text(st.get("state")) or "unset"
             stamped = text(st.get("description")).endswith(stamp)
-            if stamped and state != "success":
+            if stamped and state != settled:
                 return "the " + gctx + " status on " + sha[:12] + " for this same change (" + pid + ") is " + state, []
-            if sha == head and state not in ("success", "pending"):
+            if want != "hold" and sha == head and state not in ("success", "pending"):
                 return "the " + gctx + " status on this head (" + sha[:12] + ") is " + state + ", and a carry never paints over it", []
             if stamped:
                 who = written_by(sha, st)
@@ -2965,8 +3054,8 @@ tool post_feedback:
                             "source, and a foreign one vetoes"), []
         def eligible(k):
             st = statuses.get(k["sha"])
-            return (k["own"] and k["verdict"] in green and st is not None and bool(k["url"])
-                    and text(st.get("state")) == "success" and text(st.get("description")).endswith(stamp)
+            return (k["own"] and k["verdict"] in carryable and st is not None and bool(k["url"])
+                    and text(st.get("state")) == settled and text(st.get("description")).endswith(stamp)
                     and text(st.get("target_url")) == k["url"])
         return "", [k for k in same if eligible(k)]
     # <<< vetty-gate-history/v1
@@ -3205,6 +3294,11 @@ tool post_feedback:
     read_id = s(head_id) if re.fullmatch(r"pid1:[0-9a-f]{24}", s(head_id)) else ""
     origin = s(origin_sha).lower() if FULL_SHA.fullmatch(s(origin_sha).lower()) else ""
     origin_when = s(origin_at) if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", s(origin_at)) else ""
+    # A hold that names an original audit is one continuity carried: the
+    # verdict keeps its value, the origin says it was not audited here. Told
+    # from the raw inputs, so a malformed origin is withdrawn below rather
+    # than stamped as a fresh audit, which would restart its clock.
+    carried_hold = s(verdict) == "hold_security" and bool(s(origin_sha) or s(origin_at))
     publish_gate = bool(gate_enabled) and bool(s(pub_url)) and bool(s(pub_token))
     change_id, id_note = "", ""
     if publish_gate and FULL_SHA.fullmatch(pin_sha):
@@ -3265,9 +3359,19 @@ tool post_feedback:
         veto, _ = gate_history(call, gql, owner, repo, num, pid, gctx, onto)
         return veto or build_owed(check_rollup(gql, owner, repo, num, onto), gctx, onto)
 
-    # The carry continuity decided must still hold at publish time.
+    def hold_vetoed(owner, repo, num, pid, onto):
+        # Why the change's hold may not be published as carried onto `onto`,
+        # "" when it may. No build is owed: a red refuses the merge by itself.
+        veto, holds = gate_history(call, gql, owner, repo, num, pid, gctx, onto, "hold")
+        return veto or ("" if holds else "no hold_security of this App's is on record for this change any more")
+
+    # The carry continuity decided must still hold at publish time — a carried
+    # hold too: a green published on the change since, an edit, a foreign
+    # stamp or an origin past carry_max_age_h is a disagreement only a full
+    # audit settles. A withdrawn hold publishes nothing, and the run's gate
+    # claim, unanswered, is closed red by the server's reconciler.
     withdrawn = ""
-    if publish_gate and s(verdict) == "carried":
+    if publish_gate and (s(verdict) == "carried" or carried_hold):
         if not (change_id and origin and origin_when):
             withdrawn = "the carried verdict names no change identity or no original audit"
         elif reuse_off:
@@ -3308,18 +3412,22 @@ tool post_feedback:
             repin_note = "not repinned: the forge could not be read (" + type(e).__name__ + ")"
     # A carry continuity decided and no repin moved: read again before it is
     # published on the head it was decided for.
-    if publish_gate and s(verdict) == "carried" and not repinned_from and not withdrawn:
+    if publish_gate and (s(verdict) == "carried" or carried_hold) and not repinned_from and not withdrawn:
         owner, repo, num = pull_ref.group(2), pull_ref.group(3), pull_ref.group(4)
         try:
-            withdrawn = carry_vetoed(owner, repo, num, change_id, pin_sha)
+            if carried_hold:
+                withdrawn = hold_vetoed(owner, repo, num, change_id, pin_sha)
+            else:
+                withdrawn = carry_vetoed(owner, repo, num, change_id, pin_sha)
         except urllib.error.HTTPError as e:
             withdrawn = "the gate history could not be read again (forge HTTP " + str(e.code) + ")"
         except Exception as e:
             withdrawn = "the gate history could not be read again (" + type(e).__name__ + ")"
     if withdrawn:
-        out(False, skipped_reason="the carried verdict was withdrawn before publishing: " + withdrawn,
-            summary="verdict=carried withdrawn, nothing published: " + withdrawn,
-            gate_skipped_reason="the carried verdict was withdrawn before publishing: " + withdrawn)
+        what = "carried hold" if carried_hold else "carried verdict"
+        out(False, skipped_reason="the " + what + " was withdrawn before publishing: " + withdrawn,
+            summary="verdict=" + s(verdict) + " (" + what + ") withdrawn, nothing published: " + withdrawn,
+            gate_skipped_reason="the " + what + " was withdrawn before publishing: " + withdrawn)
     carried_from = (origin or repinned_from or pin_sha)[:12]
 
     badges = {
@@ -3332,6 +3440,9 @@ tool post_feedback:
         "clean":          "✅ Safe bump — nothing left to align",
         "carried":        "✅ Carried — the identical change was audited; this base is built by the repo's CI",
     }
+    if carried_hold:
+        badges["hold_security"] = "\U0001F6D1 HOLD — supply-chain risk, carried: the identical change was held by the audit of " + \
+                                  carried_from + "; not aligned/merged"
     parts = ["**" + badges.get(s(verdict), "ℹ️ Vetty review") + "**", ""]
     def section(title, body):
         if s(body):
@@ -3388,6 +3499,13 @@ tool post_feedback:
                       "Carried the supply-chain audit of `" + carried_from + "` to this head: the change is " +
                       "identical (" + (change_id or "no identity") + "), so nothing was re-audited, aligned or " +
                       "committed here. The build on this base is the repo's own CI's to prove."}.get(s(verdict), "")
+    # A carried hold says what the original says, about the identical change:
+    # nothing was re-audited here, and a human gesture buys a fresh audit.
+    if carried_hold:
+        did = ("Held — the supply-chain hold of the audit of `" + carried_from + "` (" + (origin_when or "an unknown time") +
+               ") is carried to this head: the change is identical (" + (change_id or "no identity") + "), so nothing " +
+               "was re-audited, aligned or committed here. Comment `/vetty` for a fresh audit; past carry_max_age_h " +
+               "of the original audit the next head is audited again.")
     did = (s(commit_summary) + " " if s(commit_summary) else "") + did + \
         " **Vetty never merges past a required check** — whether this lands is the repo's own required checks' " \
         "decision, and only the exact commit reported above can be merged."
@@ -3453,6 +3571,8 @@ tool post_feedback:
         "needs_decision": "an architectural decision is pending a human",
         "carried": "supply-chain audit carried from " + carried_from + ": identical change; this base is built by the repo's CI",
     }.get(s(verdict), "")
+    if carried_hold:
+        gate_note = "supply-chain hold carried from " + carried_from + ": identical change, not re-audited"
     if s(verdict) not in GATE_BLOCKING:
         gate_note = "unrecognised verdict " + (s(verdict) or "(empty)") + " - the gate fails closed"
 
@@ -3495,7 +3615,7 @@ tool post_feedback:
             # name its original audit is published unstamped: stamping it as
             # its own origin would restart the clock its age is measured on.
             pinned = s(payload["gate"].get("audited_sha")).lower() == pin_sha
-            if change_id and pinned and (s(verdict) != "carried" or (origin and origin_when)):
+            if change_id and pinned and ((s(verdict) != "carried" and not carried_hold) or (origin and origin_when)):
                 gate_note = gate_note + " · " + change_id
                 payload["summary"] = body + "\n\n<!-- vetty-gate/v1 sha=" + pin_sha + " id=" + change_id + \
                     " verdict=" + (s(verdict) if s(verdict) in GATE_BLOCKING else "unknown") + \
@@ -4665,6 +4785,21 @@ workflow dep_update_guard:
     pr_url: "{{vars.pr_url}}",
     verdict: "carried",
     align_summary: "Nothing was re-audited, aligned or built on this head: {{outputs.continuity.reason}}",
+    audited_sha: "{{outputs.prepare.head_sha}}",
+    head_sha: "{{outputs.prepare.head_sha}}",
+    head_id: "{{outputs.continuity.change_id}}",
+    origin_sha: "{{outputs.continuity.origin_sha}}",
+    origin_at: "{{outputs.continuity.origin_at}}",
+  }
+
+  ## The identical change is held for its supply chain, and no green can be
+  ## carried: the hold is re-published on this head, origin travelling, with
+  ## no LLM call. The verdict keeps its value — a carried hold says what the
+  ## original says — and post_feedback reads the origin to say it was carried.
+  continuity -> post_feedback when carry_hold with {
+    pr_url: "{{vars.pr_url}}",
+    verdict: "hold_security",
+    audit_summary: "Not re-audited on this head: {{outputs.continuity.reason}}",
     audited_sha: "{{outputs.prepare.head_sha}}",
     head_sha: "{{outputs.prepare.head_sha}}",
     head_id: "{{outputs.continuity.change_id}}",

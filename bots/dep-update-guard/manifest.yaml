@@ -1,7 +1,21 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.12.3
+version: 2.13.0
+## 2.13.0 — a supply-chain hold travels with its change (#3769). Live on
+## buildkit-operator#49: 13 consecutive full audits (~$10 each) all ended
+## hold_security on the SAME change, every Renovate rebase buying one,
+## because a hold was never carried. continuity now answers carry_hold when
+## no green can be carried and the change's own hold can: every verdict on
+## the change hold_security, every stamp red, an eligible hold of this App's
+## younger than carry_max_age_h from its ORIGINAL audit. The hold is
+## re-published on the new head, origin travelling, with no LLM call; the
+## gate is red, arm_automerge takes an arming down as for any hold, and
+## post_feedback re-reads the history at publish time and withdraws it on a
+## green published since, an edit, a foreign stamp or an expired origin. A
+## red is fail-closed, so it needs no required check besides the gate. The
+## verdict keeps its value: the marker's origin says it was carried. /vetty
+## still buys a full audit.
 ## 2.12.3 — a commit report whose id has no legal width no longer holds a
 ## good alignment red. Live on buildkit-operator#65 (run 01a1e07f): the
 ## commit agent dropped two hex digits of the pushed sha (40 hex became 38),
