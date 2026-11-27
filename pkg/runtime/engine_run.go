@@ -530,201 +530,17 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// re-state lived for one attempt and the next silent resume
 		// replayed the previous decision (found by tour 2, executed).
 		e.permissionOverride != "" || e.codemodeOverride != "" || e.codemodeBoundsOverride != nil {
-		if e.workflowHash != "" {
-			run.WorkflowHash = e.workflowHash
+		if err := e.stampRunMetadata(run); err != nil {
+			return nil, nil, err
 		}
-		if e.filePath != "" {
-			run.FilePath = e.filePath
-		}
-		if src, files := e.recordedSources(); src != "" {
-			run.WorkflowSource = src
-			run.WorkflowSources = files
-		}
-		if e.parentRunID != "" {
-			run.ParentRunID = e.parentRunID
-		}
-		// Never CLEARED here: the stores hold the marker write-once, and an
-		// engine that says nothing must not be read as saying "trusted".
-		if e.trust != "" {
-			run.Trust = e.trust
-		}
-		if e.repoSHAExpected != "" {
-			run.RepoSHAExpected = e.repoSHAExpected
-		}
-		// Same write-once doctrine as Trust: a launch fact the floor (#1959)
-		// and the studio read off the document; an engine that says nothing
-		// must not clear what the publisher stamped.
-		if e.botSourceTier != "" {
-			run.BotSourceTier = e.botSourceTier
-		}
-		if e.runnerPool != "" {
-			run.RunnerPool = e.runnerPool
-		}
-		if e.contentBoundary != nil {
-			run.ContentBoundary = e.contentBoundary
-		}
-		if e.parentNodeID != "" {
-			run.ParentNodeID = e.parentNodeID
-		}
-		if e.runName != "" {
-			run.Name = e.runName
-		}
-		if e.mergeStrategy != "" {
-			run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
-		}
-		run.AutoMerge = e.autoMerge
-		// Launch-time overrides the resume path replays. Empty inputs
-		// preserve any prior value (a pickup path where the engine option
-		// was not re-supplied), same guard as ModelOverrides.
-		if e.sandboxOverride != "" {
-			run.SandboxOverride = e.sandboxOverride
-		}
-		if e.sandboxDefaultImage != "" {
-			run.SandboxDefaultImage = e.sandboxDefaultImage
-		}
-		if e.sandboxHostStateOverride != "" {
-			run.SandboxHostState = e.sandboxHostStateOverride
-		}
-		if e.mergeInto != "" {
-			run.MergeInto = e.mergeInto
-		}
-		if e.branchName != "" {
-			run.BranchName = e.branchName
-		}
-		if e.preset != "" {
-			run.Preset = e.preset
-		}
-		// Persisted so every resume re-applies it. This matters more than
-		// Preset does: a conversational bot resumes on EVERY turn, so a
-		// launch-only list would quietly disappear after the first reply.
-		if len(e.extraSkills) > 0 {
-			run.ExtraSkills = e.extraSkills
-		}
-		// Keep the operator's strongest-precedence gate choice durable. On a
-		// cloud attempt the publisher has already stamped it; on a local launch
-		// the engine option does. A resume with no new option must preserve it.
-		if e.permissionOverride != "" {
-			run.PermissionOverride = e.permissionOverride
-		}
-		// Same doctrine for the codemode launch choice (ADR-165): durable on
-		// the doc, replayed by every resume that does not re-state it. The
-		// guard mirrors the one above — a resume never re-supplies the
-		// override, and must not clobber the launch's persisted value. The
-		// bounds ride beside the mode: a non-nil pointer stamps, an absent
-		// one preserves whatever a previous attempt stamped.
-		if e.codemodeOverride != "" {
-			run.CodemodeOverride = e.codemodeOverride
-		}
-		if e.codemodeBoundsOverride != nil {
-			run.CodemodeBoundsOverride = e.codemodeBoundsOverride
-		}
-		if run.PermissionOverride != "" {
-			run.PermissionMode = run.PermissionOverride
-		} else {
-			run.PermissionMode = e.workflow.Permission
-		}
-		// Guard on len>0 so a resume (which never re-supplies overrides)
-		// preserves the value persisted at the original launch instead of
-		// clobbering it with nil.
-		if len(e.modelOverrides) > 0 {
-			run.ModelOverrides = e.modelOverrides
-		}
-		// Same resume-preserving guard: the launch's raw rows are stamped
-		// once and never re-derived.
-		if len(e.launchModelOverrides) > 0 {
-			run.LaunchModelOverrides = e.launchModelOverrides
-		}
-		if e.llmRoutePolicy != nil {
-			lp := *e.llmRoutePolicy // copy: never share the caller's pointer
-			run.LLMRoutePolicy = &lp
-		}
-		// Same resume-preserving guard: the contract is immutable after
-		// launch, a resume never re-supplies it.
-		if e.routingPolicy != nil {
-			run.RoutingPolicy = e.routingPolicy
-		}
-		if e.budgetOverrides != nil {
-			copy := *e.budgetOverrides
-			run.BudgetOverrides = &copy
-		}
-		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
-		// in cloud, the platform ceiling clamp — both mutate wf.Budget
-		// before the engine runs) so the studio Overview draws budget meters
-		// with a denominator. A resume re-stamps the same value through
-		// stampEffectiveBudget, including an uncapped attempt.
-		run.Budget = e.effectiveBudgetSnapshot()
-		// The raw ask next to the effective caps: what a resume replays
-		// (Run.Budget is what it displays). Only ever set here, at launch;
-		// a raise on resume is persisted by the resume surface itself.
-		if e.budgetAsk != nil {
-			run.BudgetOverrides = RunBudgetOverridesOf(e.budgetAsk)
-		}
-		if e.bundle != nil {
-			run.BundleHash = e.bundle.Hash
-			run.BundlePath = e.bundle.SourcePath
-			if e.bundle.Manifest != nil {
-				run.BundleName = e.bundle.Manifest.Name
-				run.BundleVersion = e.bundle.Manifest.Version
-				run.BundleDisplayName = e.bundle.Manifest.DisplayName
-				if rel, relErr := filepath.Rel(e.bundle.Dir, e.filePath); relErr == nil {
-					rel = filepath.ToSlash(rel)
-					for _, exp := range e.bundle.Manifest.Exports.Workflows {
-						if exp.Path == rel {
-							run.BundleWorkflow = exp.ID
-							break
-						}
-					}
-				}
+		// The stamp is re-applied, never the stale copy re-saved: a concurrent
+		// writer of other fields keeps its write (saveRunOwned).
+		if err := e.saveRunOwned(ctx, run, func(r *store.Run) error {
+			if len(inputs) > 0 {
+				r.Inputs = inputs
 			}
-		}
-		if e.source != nil {
-			// Copy so the engine's option pointer can't later be mutated
-			// through the run record.
-			src := *e.source
-			run.Source = &src
-		}
-		if e.botOrigin != nil {
-			origin := *e.botOrigin
-			run.BotOrigin = &origin
-		}
-		if e.delegation != nil {
-			delegation := *e.delegation
-			run.Delegation = &delegation
-		}
-		if e.callbackURL != "" {
-			run.CallbackURL = e.callbackURL
-			run.CallbackToken = e.callbackToken
-			run.CallbackAnswerNode = e.callbackAnswerNode
-		}
-		if e.executionContext != nil {
-			ctxContract := e.executionContext.Clone()
-			if err := ctxContract.Normalize(); err != nil {
-				return nil, nil, fmt.Errorf("runtime: invalid execution context: %w", err)
-			}
-			// A queued/resumed run already has an authority-owned context
-			// stamped by its launcher. Preserve it; the admission gate compares
-			// the runner's wire declaration against that persisted value instead
-			// of allowing a stale message to overwrite the contract.
-			if run.ExecutionContext == nil {
-				run.ExecutionContext = ctxContract
-			}
-		}
-		// The public contract the program EXECUTES rides the run doc, in its
-		// wire form, and mirrors it on every pass: stamped at launch, and a
-		// resume whose program dropped the contract clears it — a parent that
-		// re-attaches to this run as a finished `subbot` child projects the
-		// output from the contract of the pass that actually ran, never from
-		// a source recompiled after the fact (#1280, ADR-099).
-		if e.workflow.Contract != nil {
-			raw, err := json.Marshal(e.workflow.Contract)
-			if err != nil {
-				return nil, nil, fmt.Errorf("runtime: encode run public contract: %w", err)
-			}
-			run.PublicContract = raw
-		} else {
-			run.PublicContract = nil
-		}
-		if err := e.store.SaveRun(ctx, run); err != nil {
+			return e.stampRunMetadata(r)
+		}); err != nil {
 			return nil, nil, fmt.Errorf("runtime: save run metadata: %w", err)
 		}
 	}
@@ -732,6 +548,209 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		return nil, nil, fmt.Errorf("seed child correction ledger: %w", err)
 	}
 	return ctx, run, nil
+}
+
+// stampRunMetadata writes the engine-level metadata this execution owns
+// (workflow hash and source, file path, parent run, run name, merge
+// strategy, overrides, budget, bundle, contract, …) onto run. It depends on
+// engine state and on the document it is applied to, nothing else, so
+// saveRunOwned re-applies it to a fresh copy after a lost CAS.
+func (e *Engine) stampRunMetadata(run *store.Run) error {
+	if e.workflowHash != "" {
+		run.WorkflowHash = e.workflowHash
+	}
+	if e.filePath != "" {
+		run.FilePath = e.filePath
+	}
+	if src, files := e.recordedSources(); src != "" {
+		run.WorkflowSource = src
+		run.WorkflowSources = files
+	}
+	if e.parentRunID != "" {
+		run.ParentRunID = e.parentRunID
+	}
+	// Never CLEARED here: the stores hold the marker write-once, and an
+	// engine that says nothing must not be read as saying "trusted".
+	if e.trust != "" {
+		run.Trust = e.trust
+	}
+	if e.repoSHAExpected != "" {
+		run.RepoSHAExpected = e.repoSHAExpected
+	}
+	// Same write-once doctrine as Trust: a launch fact the floor (#1959)
+	// and the studio read off the document; an engine that says nothing
+	// must not clear what the publisher stamped.
+	if e.botSourceTier != "" {
+		run.BotSourceTier = e.botSourceTier
+	}
+	if e.runnerPool != "" {
+		run.RunnerPool = e.runnerPool
+	}
+	if e.contentBoundary != nil {
+		run.ContentBoundary = e.contentBoundary
+	}
+	if e.parentNodeID != "" {
+		run.ParentNodeID = e.parentNodeID
+	}
+	if e.runName != "" {
+		run.Name = e.runName
+	}
+	if e.mergeStrategy != "" {
+		run.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
+	}
+	run.AutoMerge = e.autoMerge
+	// Launch-time overrides the resume path replays. Empty inputs
+	// preserve any prior value (a pickup path where the engine option
+	// was not re-supplied), same guard as ModelOverrides.
+	if e.sandboxOverride != "" {
+		run.SandboxOverride = e.sandboxOverride
+	}
+	if e.sandboxDefaultImage != "" {
+		run.SandboxDefaultImage = e.sandboxDefaultImage
+	}
+	if e.sandboxHostStateOverride != "" {
+		run.SandboxHostState = e.sandboxHostStateOverride
+	}
+	if e.mergeInto != "" {
+		run.MergeInto = e.mergeInto
+	}
+	if e.branchName != "" {
+		run.BranchName = e.branchName
+	}
+	if e.preset != "" {
+		run.Preset = e.preset
+	}
+	// Persisted so every resume re-applies it. This matters more than
+	// Preset does: a conversational bot resumes on EVERY turn, so a
+	// launch-only list would quietly disappear after the first reply.
+	if len(e.extraSkills) > 0 {
+		run.ExtraSkills = e.extraSkills
+	}
+	// Keep the operator's strongest-precedence gate choice durable. On a
+	// cloud attempt the publisher has already stamped it; on a local launch
+	// the engine option does. A resume with no new option must preserve it.
+	if e.permissionOverride != "" {
+		run.PermissionOverride = e.permissionOverride
+	}
+	// Same doctrine for the codemode launch choice (ADR-165): durable on
+	// the doc, replayed by every resume that does not re-state it. The
+	// guard mirrors the one above — a resume never re-supplies the
+	// override, and must not clobber the launch's persisted value. The
+	// bounds ride beside the mode: a non-nil pointer stamps, an absent
+	// one preserves whatever a previous attempt stamped.
+	if e.codemodeOverride != "" {
+		run.CodemodeOverride = e.codemodeOverride
+	}
+	if e.codemodeBoundsOverride != nil {
+		run.CodemodeBoundsOverride = e.codemodeBoundsOverride
+	}
+	if run.PermissionOverride != "" {
+		run.PermissionMode = run.PermissionOverride
+	} else {
+		run.PermissionMode = e.workflow.Permission
+	}
+	// Guard on len>0 so a resume (which never re-supplies overrides)
+	// preserves the value persisted at the original launch instead of
+	// clobbering it with nil.
+	if len(e.modelOverrides) > 0 {
+		run.ModelOverrides = e.modelOverrides
+	}
+	// Same resume-preserving guard: the launch's raw rows are stamped
+	// once and never re-derived.
+	if len(e.launchModelOverrides) > 0 {
+		run.LaunchModelOverrides = e.launchModelOverrides
+	}
+	if e.llmRoutePolicy != nil {
+		lp := *e.llmRoutePolicy // copy: never share the caller's pointer
+		run.LLMRoutePolicy = &lp
+	}
+	// Same resume-preserving guard: the contract is immutable after
+	// launch, a resume never re-supplies it.
+	if e.routingPolicy != nil {
+		run.RoutingPolicy = e.routingPolicy
+	}
+	if e.budgetOverrides != nil {
+		copy := *e.budgetOverrides
+		run.BudgetOverrides = &copy
+	}
+	// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
+	// in cloud, the platform ceiling clamp — both mutate wf.Budget
+	// before the engine runs) so the studio Overview draws budget meters
+	// with a denominator. A resume re-stamps the same value through
+	// stampEffectiveBudget, including an uncapped attempt.
+	run.Budget = e.effectiveBudgetSnapshot()
+	// The raw ask next to the effective caps: what a resume replays
+	// (Run.Budget is what it displays). Only ever set here, at launch;
+	// a raise on resume is persisted by the resume surface itself.
+	if e.budgetAsk != nil {
+		run.BudgetOverrides = RunBudgetOverridesOf(e.budgetAsk)
+	}
+	if e.bundle != nil {
+		run.BundleHash = e.bundle.Hash
+		run.BundlePath = e.bundle.SourcePath
+		if e.bundle.Manifest != nil {
+			run.BundleName = e.bundle.Manifest.Name
+			run.BundleVersion = e.bundle.Manifest.Version
+			run.BundleDisplayName = e.bundle.Manifest.DisplayName
+			if rel, relErr := filepath.Rel(e.bundle.Dir, e.filePath); relErr == nil {
+				rel = filepath.ToSlash(rel)
+				for _, exp := range e.bundle.Manifest.Exports.Workflows {
+					if exp.Path == rel {
+						run.BundleWorkflow = exp.ID
+						break
+					}
+				}
+			}
+		}
+	}
+	if e.source != nil {
+		// Copy so the engine's option pointer can't later be mutated
+		// through the run record.
+		src := *e.source
+		run.Source = &src
+	}
+	if e.botOrigin != nil {
+		origin := *e.botOrigin
+		run.BotOrigin = &origin
+	}
+	if e.delegation != nil {
+		delegation := *e.delegation
+		run.Delegation = &delegation
+	}
+	if e.callbackURL != "" {
+		run.CallbackURL = e.callbackURL
+		run.CallbackToken = e.callbackToken
+		run.CallbackAnswerNode = e.callbackAnswerNode
+	}
+	if e.executionContext != nil {
+		ctxContract := e.executionContext.Clone()
+		if err := ctxContract.Normalize(); err != nil {
+			return fmt.Errorf("runtime: invalid execution context: %w", err)
+		}
+		// A queued/resumed run already has an authority-owned context
+		// stamped by its launcher. Preserve it; the admission gate compares
+		// the runner's wire declaration against that persisted value instead
+		// of allowing a stale message to overwrite the contract.
+		if run.ExecutionContext == nil {
+			run.ExecutionContext = ctxContract
+		}
+	}
+	// The public contract the program EXECUTES rides the run doc, in its
+	// wire form, and mirrors it on every pass: stamped at launch, and a
+	// resume whose program dropped the contract clears it — a parent that
+	// re-attaches to this run as a finished `subbot` child projects the
+	// output from the contract of the pass that actually ran, never from
+	// a source recompiled after the fact (#1280, ADR-099).
+	if e.workflow.Contract != nil {
+		raw, err := json.Marshal(e.workflow.Contract)
+		if err != nil {
+			return fmt.Errorf("runtime: encode run public contract: %w", err)
+		}
+		run.PublicContract = raw
+	} else {
+		run.PublicContract = nil
+	}
+	return nil
 }
 
 // effectiveBudgetSnapshot projects the caps THIS engine enforces onto the
@@ -821,17 +840,110 @@ func (e *Engine) runPromoteAttachments(ctx context.Context, runID string, run *s
 	return run, nil
 }
 
+// ownedSaveAttempts bounds saveRunOwned's reload-and-reapply loop.
+const ownedSaveAttempts = 5
+
+// saveRunOwned saves run once the caller has applied the fields it owns.
+// Other writers update the same document while the engine works on it — on
+// the Mongo store every run-log flush (runner/runlog_writer.go, each
+// runLogFlushInterval) fences the parent run with a version bump — so a
+// full-document save can lose its CAS without contradicting anything the
+// caller wrote. On store.ErrRunConflict the document is reloaded, reapply
+// writes the caller's fields onto the fresh copy and the save is retried, at
+// most ownedSaveAttempts saves in all. reapply touches the caller's fields
+// only: everything else comes from the fresh document, so the concurrent
+// write survives.
+//
+// A fresh document that is no longer this execution's (status, execution
+// epoch, birth or queue attempt moved) is never written over: the save stops
+// on ErrAdmissionStopped joined with the conflict. On success *run is the
+// saved document, with its new CAS version.
+func (e *Engine) saveRunOwned(ctx context.Context, run *store.Run, reapply func(*store.Run) error) error {
+	current := run
+	for attempt := 1; ; attempt++ {
+		saveErr := e.store.SaveRun(ctx, current)
+		if saveErr == nil {
+			if current != run {
+				*run = *current
+			}
+			return nil
+		}
+		if !errors.Is(saveErr, store.ErrRunConflict) {
+			return saveErr
+		}
+		if attempt == ownedSaveAttempts {
+			return fmt.Errorf("run %s: %d saves in a row lost the CAS to concurrent writes: %w", run.ID, attempt, saveErr)
+		}
+		_, fresh, err := store.LoadRunWithValueFormat(ctx, e.store, run.ID)
+		if err != nil {
+			return errors.Join(saveErr, fmt.Errorf("reload run %s after the lost CAS: %w", run.ID, err))
+		}
+		if moved := executionMoved(run, fresh); moved != "" {
+			return fmt.Errorf("%w: run %s %s: %w", ErrAdmissionStopped, run.ID, moved, saveErr)
+		}
+		if err := reapply(fresh); err != nil {
+			return fmt.Errorf("re-apply the owned fields of run %s: %w", run.ID, err)
+		}
+		current = fresh
+	}
+}
+
+// executionMoved names how fresh is no longer the execution that was
+// describes, or "" when only fields outside the execution identity changed.
+// An identity field unknown on either side (a copy built before the store
+// stamped it) is not compared.
+func executionMoved(was, fresh *store.Run) string {
+	switch {
+	case fresh.Status != was.Status:
+		return fmt.Sprintf("status %s became %s", was.Status, fresh.Status)
+	case was.ExecutionEpoch != "" && fresh.ExecutionEpoch != "" && fresh.ExecutionEpoch != was.ExecutionEpoch:
+		return "execution epoch changed"
+	case was.BirthID != "" && fresh.BirthID != "" && fresh.BirthID != was.BirthID:
+		return "birth identity changed"
+	case (was.QueuedAt == nil) != (fresh.QueuedAt == nil) || (was.QueuedAt != nil && !was.QueuedAt.Equal(*fresh.QueuedAt)):
+		return "queue attempt changed"
+	}
+	return ""
+}
+
+// workspaceStamp holds the workspace fields runPersistWorkspace owns.
+type workspaceStamp struct {
+	// workDir is empty for a throw-away work dir: the document keeps its own.
+	workDir  string
+	worktree bool
+	// baseline marks repoRoot/baseCommit as this run's: a workspace the
+	// runtime does not manage leaves the document's values alone.
+	baseline   bool
+	repoRoot   string
+	baseCommit string
+}
+
+func (ws workspaceStamp) apply(r *store.Run) {
+	if ws.workDir != "" {
+		r.WorkDir = ws.workDir
+	}
+	r.Worktree = ws.worktree
+	if ws.baseline {
+		r.RepoRoot = ws.repoRoot
+		r.BaseCommit = ws.baseCommit
+	}
+}
+
 // runPersistWorkspace persists the resolved workDir + worktree baseline
 // onto the run record, pushes workDir into the executor (when the
 // concrete executor implements SetWorkDir), and mirrors any bundle
 // skills into the workspace's .claude/skills/ directory.
 func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *store.Run, worktreeActive bool, wtCtx worktreeContext) error {
 	if e.workDir != "" {
+		// The fields this step owns are resolved once, then applied by
+		// applyWorkspace: saveRunOwned re-applies them to a fresh copy when a
+		// concurrent writer of other fields wins the CAS first.
+		var ws workspaceStamp
 		// A throw-away test workdir — this engine's, or a parent's handed down
 		// through WithWorkDir — is removed when its owner returns: recorded on
 		// the run, a later resume would adopt the removed path.
 		if !isThrowAwayWorkDir(e.workDir) {
-			run.WorkDir = e.workDir
+			ws.workDir = e.workDir
 		}
 		// run.Worktree reflects whether the runtime actually set up an
 		// isolated git worktree for this run — not just whether the
@@ -839,10 +951,11 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		// default, a non-git workspace degrades to in-place and must
 		// honestly report Worktree=false so downstream consumers
 		// (resume, finalize, FilesPanel) don't chase a phantom path.
-		run.Worktree = worktreeActive
+		ws.worktree = worktreeActive
 		if worktreeActive {
-			run.RepoRoot = wtCtx.repoRoot
-			run.BaseCommit = wtCtx.originalTip
+			ws.baseline = true
+			ws.repoRoot = wtCtx.repoRoot
+			ws.baseCommit = wtCtx.originalTip
 		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated && e.parentRunID == "" {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself. Only promote this to a managed-worktree baseline
@@ -875,17 +988,25 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
-					run.RepoRoot = mainRepoRoot
-					run.BaseCommit = head
-					run.Worktree = true
+					ws.baseline = true
+					ws.repoRoot = mainRepoRoot
+					ws.baseCommit = head
+					ws.worktree = true
 				}
 			}
 		}
-		if err := e.reconcileExecutionWorkspace(runID, run); err != nil {
+		applyWorkspace := func(r *store.Run) error {
+			ws.apply(r)
+			return e.reconcileExecutionWorkspace(runID, r)
+		}
+		if err := applyWorkspace(run); err != nil {
 			st, stCode, err := e.markFailedBestEffort(ctx, runID, "execution context workspace", err)
 			return setupErrFrom(st, stCode, fmt.Errorf("runtime: reconcile execution context workspace: %w", err))
 		}
-		if err := e.store.SaveRun(ctx, run); err != nil {
+		if err := e.saveRunOwned(ctx, run, applyWorkspace); err != nil {
+			if errors.Is(err, ErrAdmissionStopped) {
+				return fmt.Errorf("runtime: save work dir: %w", err)
+			}
 			st, stCode, err := e.markFailedBestEffort(ctx, runID, "save work dir", err)
 			return setupErrFrom(st, stCode, fmt.Errorf("runtime: save work dir: %w", err))
 		}
@@ -1377,17 +1498,21 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 	}, e.logger)
 	if finRes.FinalCommit != "" || finRes.FinalBranch != "" || finRes.MergedInto != "" || finRes.MergeStatus != "" || finRes.FinalBranchError != "" {
 		if _, r2, err := store.LoadRunWithValueFormat(ctx, e.store, runID); err == nil {
-			r2.FinalCommit = finRes.FinalCommit
-			r2.FinalBranch = finRes.FinalBranch
-			r2.FinalBranchError = finRes.FinalBranchError
-			r2.MergedInto = finRes.MergedInto
-			r2.MergeStatus = store.MergeStatus(finRes.MergeStatus)
-			r2.MergedCommit = finRes.MergedCommit
-			if e.mergeStrategy != "" {
-				r2.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
+			applyFinalize := func(r *store.Run) error {
+				r.FinalCommit = finRes.FinalCommit
+				r.FinalBranch = finRes.FinalBranch
+				r.FinalBranchError = finRes.FinalBranchError
+				r.MergedInto = finRes.MergedInto
+				r.MergeStatus = store.MergeStatus(finRes.MergeStatus)
+				r.MergedCommit = finRes.MergedCommit
+				if e.mergeStrategy != "" {
+					r.MergeStrategy = store.MergeStrategy(e.mergeStrategy)
+				}
+				r.AutoMerge = e.autoMerge
+				return nil
 			}
-			r2.AutoMerge = e.autoMerge
-			if saveErr := e.store.SaveRun(ctx, r2); saveErr != nil {
+			_ = applyFinalize(r2) // cannot fail: the error is saveRunOwned's signature
+			if saveErr := e.saveRunOwned(ctx, r2, applyFinalize); saveErr != nil {
 				if isRunValueFormatRefusal(saveErr) {
 					return
 				}
