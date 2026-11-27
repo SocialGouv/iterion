@@ -162,11 +162,17 @@ func (r *scriptedRun) Exec(context.Context, []string, ExecOpts) (ExecResult, err
 }
 func (r *scriptedRun) Cleanup(context.Context) error { return nil }
 
+// settlingSweepBudget is the budget of a sweep a test expects to settle: its
+// last attempt runs the real sweep program over this host's /proc, which a
+// loaded machine makes take seconds, and a sweep its budget kills does not
+// settle. A sweep that makes no second attempt ends at once, whatever it is.
+const settlingSweepBudget = 3 * time.Minute
+
 // Only an exec that never reached the container is tried again: it signalled
 // nothing. One that reached it and was cut may have, and its sweep is final.
 func TestSweepRetriesOnlyAnExecThatNeverReachedTheContainer(t *testing.T) {
 	never := &scriptedRun{steps: []string{"echo 'Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout' >&2; exit 1"}}
-	if o := NewCompletion("t").Sweep(never, 10*time.Second); !o.Stopped() || never.attempts != 2 {
+	if o := NewCompletion("t").Sweep(never, settlingSweepBudget); !o.Stopped() || never.attempts != 2 {
 		t.Fatalf("an exec that never reached the container: attempts=%d stopped=%v (%v), want a second, settling attempt", never.attempts, o.Stopped(), o.Err)
 	}
 	cut := &scriptedRun{steps: []string{"echo 'error: stream reset by peer' >&2; exit 1"}}
@@ -192,7 +198,7 @@ func TestSweepEndsWithinItsBudget(t *testing.T) {
 // exec that never reached the container: the sweep is tried again.
 func TestSweepRetriesWhenKubectlsServerRefusedTheConnection(t *testing.T) {
 	refused := &scriptedRun{steps: []string{"echo 'The connection to the server 10.0.0.1:6443 was refused - did you specify the right host or port?' >&2; exit 1"}}
-	if o := NewCompletion("t").Sweep(refused, 10*time.Second); !o.Stopped() || refused.attempts != 2 {
+	if o := NewCompletion("t").Sweep(refused, settlingSweepBudget); !o.Stopped() || refused.attempts != 2 {
 		t.Fatalf("a refused API server: attempts=%d stopped=%v (%v), want a second, settling attempt", refused.attempts, o.Stopped(), o.Err)
 	}
 }
@@ -212,7 +218,7 @@ func TestSweepRetriesAnExecContainerdRefusedBeforeItStarted(t *testing.T) {
 		`failed to wait for process "0f3c": context deadline exceeded`,
 	} {
 		refused := &scriptedRun{steps: []string{"echo '" + relay + cause + "' >&2; exit 1"}}
-		if o := NewCompletion("t").Sweep(refused, 10*time.Second); !o.Stopped() || refused.attempts != 2 {
+		if o := NewCompletion("t").Sweep(refused, settlingSweepBudget); !o.Stopped() || refused.attempts != 2 {
 			t.Errorf("containerd refused before the start (%s): attempts=%d stopped=%v (%v), want a second, settling attempt", cause, refused.attempts, o.Stopped(), o.Err)
 		}
 	}

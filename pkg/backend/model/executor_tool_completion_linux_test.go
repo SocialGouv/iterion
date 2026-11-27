@@ -513,7 +513,7 @@ func TestSandboxedToolNodeUnknownEndWithAFailedSweepIsAmbiguous(t *testing.T) {
 		ambiguous  bool
 	}{
 		{"the sweep failed", true, 200 * time.Millisecond, true},
-		{"the sweep finished", false, 30 * time.Second, false},
+		{"the sweep finished", false, toolSweepBudget, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requireSetsid(t)
@@ -656,7 +656,11 @@ func TestSandboxedToolNodeSweepOutlivesAShortOutage(t *testing.T) {
 	dir := t.TempDir()
 	heart := filepath.Join(dir, "heartbeat")
 	e := newTestClawExecutor(NewRegistry(), &ir.Workflow{}, WithWorkDir(dir))
-	e.sweepBudget = 10 * time.Second
+	// The production budget: the second attempt runs the real sweep program
+	// over this host's /proc, which a loaded machine makes take seconds, and
+	// a sweep its budget kills is an undecided end too. An attempt that is
+	// never made fails this test at once, whatever the budget.
+	e.sweepBudget = toolSweepBudget
 	run := &execClientRun{client: "lost", dir: dir, running: heart, sweepFailures: 1}
 	e.SetSandbox(run)
 	_, err := e.Execute(context.Background(), &ir.ToolNode{BaseNode: ir.BaseNode{ID: "gate"}, Command: grandchildRecipe(heart)}, map[string]any{})
