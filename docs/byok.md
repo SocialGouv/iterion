@@ -322,8 +322,11 @@ program — not the bot as it is now — with credentials and a slot admission
 resolved again as on every resume, so a key rotated during the wait is the one
 sealed and reserved ([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)).
 A run parked before it started, and every operator resume, take the current
-bot. The freeze is counted on `iterion_capacity_frozen_program_total{outcome}`
-(`written`, `not_started`, `freeze_failed`, `hash_mismatch`).
+bot. The freeze is counted on
+`iterion_capacity_frozen_program_total{source="capacity",outcome}`
+(`written`, `not_started`, `freeze_failed`, `hash_mismatch`); a run parked on a
+provider usage window keeps its program too, under its own rule
+([resume.md](resume.md#a-usage-parked-run-resumes-its-bots-current-program-unless-that-changed)).
 
 **Model-idle is not a release.** The runner sets `run.llm_idle_since` the
 moment the run's last model-calling node finishes and clears it the moment

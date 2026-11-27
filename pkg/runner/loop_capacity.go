@@ -567,7 +567,7 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 	started := run.ProgramStarted()
 	var frozen *store.FrozenProgram
 	if started {
-		frozen = g.freezeProgram(ctx, run)
+		frozen = g.r.freezeProgram(ctx, g.msg, run, store.FrozenProgramSourceCapacity, "lost its capacity place", g.logger)
 	}
 	retryAfter := time.Now().UTC().Add(store.CredSlotProbeInterval)
 	parked, attempt, err := parker.ParkRunOnCapacity(sctx, g.msg.RunID, store.CapacityPark{
@@ -589,9 +589,9 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 		g.disown()
 		switch {
 		case frozen != nil:
-			g.r.countFrozenProgram(metrics.FrozenProgramWritten)
+			g.r.countFrozenProgram(store.FrozenProgramSourceCapacity, metrics.FrozenProgramWritten)
 		case !started:
-			g.r.countFrozenProgram(metrics.FrozenProgramNotStarted)
+			g.r.countFrozenProgram(store.FrozenProgramSourceCapacity, metrics.FrozenProgramNotStarted)
 		}
 		if g.r.cfg.Metrics != nil {
 			g.r.cfg.Metrics.RunsRetryScheduled.Inc()
@@ -612,39 +612,41 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 	return "capacity_place_lost_moved"
 }
 
-// capacityFreezeTimeout bounds the freeze of a parked delivery's program: a
+// programFreezeTimeout bounds the freeze of a parked delivery's program: a
 // fetch of an out-of-band IR, a compile of its source snapshot, two blob
-// writes.
-const capacityFreezeTimeout = 30 * time.Second
+// writes. Its own budget, detached from the park's store writes, so a slow
+// freeze never leaves the park an expired context.
+const programFreezeTimeout = 30 * time.Second
 
-// freezeProgram freezes the program this delivery carried for the park of
-// run, a run that started (runview.FreezeProgram), and returns the record the
-// park writes. Any failure parks the run without one, said loudly and
-// counted: the park still lands — no nak, no longer transit — and the
-// re-admission resumes the bot's current program, refused if it changed.
-func (g *capacityGuard) freezeProgram(ctx context.Context, run *store.Run) *store.FrozenProgram {
-	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), capacityFreezeTimeout)
+// freezeProgram freezes the program msg carried for the park of run, a run
+// that started, on behalf of the park source names (runview.FreezeProgram),
+// and returns the record the park writes. Any failure is said — why names
+// what parked the run — and counted, and returns nil: the park still lands
+// (no nak, no longer wait), and the re-admission resumes the bot's current
+// program, refused if that program changed.
+func (r *Runner) freezeProgram(ctx context.Context, msg *queue.RunMessage, run *store.Run, source, why string, logger *iterlog.Logger) *store.FrozenProgram {
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), programFreezeTimeout)
 	defer cancel()
-	fctx = store.WithIdentity(fctx, g.msg.TenantID, g.msg.OwnerID)
-	fp, err := runview.FreezeProgram(fctx, store.AsIRBlobStore(g.r.cfg.Store), g.msg, run, store.FrozenProgramSourceCapacity)
+	fctx = store.WithIdentity(fctx, msg.TenantID, msg.OwnerID)
+	fp, err := runview.FreezeProgram(fctx, store.AsIRBlobStore(r.cfg.Store), msg, run, source)
 	if err != nil {
 		outcome := metrics.FrozenProgramFreezeFailed
 		if errors.Is(err, runview.ErrFreezeHashMismatch) {
 			outcome = metrics.FrozenProgramHashMismatch
 		}
-		g.r.countFrozenProgram(outcome)
-		g.logger.Error("runner: run %s started, lost its capacity place, and its program could not be frozen (%v) — parked WITHOUT it: its re-admission resumes the bot's current program, and is refused if that program changed", g.msg.RunID, err)
+		r.countFrozenProgram(source, outcome)
+		logger.Error("runner: run %s started and %s, and its program could not be frozen (%v) — parked WITHOUT it: its re-admission resumes the bot's current program, and is refused if that program changed", msg.RunID, why, err)
 		return nil
 	}
 	return fp
 }
 
-// countFrozenProgram counts one capacity park's freeze outcome.
-func (r *Runner) countFrozenProgram(outcome string) {
+// countFrozenProgram counts one park's freeze outcome, by the park's source.
+func (r *Runner) countFrozenProgram(source, outcome string) {
 	if r.cfg.Metrics == nil || r.cfg.Metrics.CapacityFrozenProgramTotal == nil {
 		return
 	}
-	r.cfg.Metrics.CapacityFrozenProgramTotal.WithLabelValues(store.FrozenProgramSourceCapacity, outcome).Inc()
+	r.cfg.Metrics.CapacityFrozenProgramTotal.WithLabelValues(source, outcome).Inc()
 }
 
 // endFinal ends the owned transit as final — nobody resumes the run by itself

@@ -363,6 +363,15 @@ identically local and cloud. A run that stops retrying records **why**
 (budget spent, admission denied, source no longer resolvable) rather than
 going quiet.
 
+**A bot changed during the wait (cloud).** A run that started keeps the
+program it was parked with: the park records it on the run before it arms the
+retry, bound to the attempt it parks. When the window reopens the run resumes
+its bot's current program; if that resume is refused because the bot's source
+changed, the same pass resumes the program the run was parked with instead,
+unforced ([resume.md](resume.md#a-usage-parked-run-resumes-its-bots-current-program-unless-that-changed)).
+A run that never started, or whose program could not be recorded, is refused
+for the changed source and re-armed against its budget, as before.
+
 **One window, every reader (cloud).** The run record names the window a
 parked run waits on: the wall its park is on (`RunRetryState.Wall`, the
 provider's own instant or the bounded guess) and the reopening of a credential
@@ -474,12 +483,12 @@ and pulled a fresh canary within the hour:
   (`run.retry.release_deferred`), instead of the announced instant a probe's
   stand-down puts back: the answer that released it cannot release it again.
   Any other failure of that resume takes the stand-down after that one
-  failure: a bot redeployed under the run (its workflow hash moved) fails the
-  same way every quarter hour, and a publish that may have landed keeps the
-  admission it metered, so on the backoff either repeated until the date —
-  four days of them under a weekly wall. The announced instant is back, and
-  until it only the window's probes relaunch the run, one per floor within
-  the window's budget;
+  failure: a bot redeployed under a run whose park recorded no program (its
+  workflow hash moved) fails the same way every quarter hour, and a publish
+  that may have landed keeps the admission it metered, so on the backoff
+  either repeated until the date — four days of them under a weekly wall. The
+  announced instant is back, and until it only the window's probes relaunch
+  the run, one per floor within the window's budget;
 - when the canary meets the wall again, nobody else moves: its free re-arm
   puts back the provider's instant, and its pull stamp paces the window for a
   floor. A run released on an answer is not released again on it, and the

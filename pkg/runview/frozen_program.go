@@ -20,15 +20,18 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store/blob"
 )
 
-// Frozen-program re-admission (ADR-167 T4a). A started run that loses its
-// capacity place while the queue redelivers it is parked on CRED_SLOT_WAIT,
-// and the retry sweeper re-admits it later. A redelivery would have run the
-// program its message carried, whatever the bot became since; the
-// re-admission keeps that contract: the parking runner freezes the delivered
-// program (FreezeProgram) into a content-addressed envelope the park's record
-// names (store.FrozenProgram), and the re-admission republishes the
-// envelope's IR and bundle reference verbatim (ResumeSpec.Frozen), never
-// forced, its credentials and capacity resolved again as every resume's are.
+// Frozen-program re-admission (ADR-167 T4a). A started run parked on a wait
+// the retry sweeper ends — a capacity place lost while the queue redelivered
+// it (CRED_SLOT_WAIT), a provider usage window — is re-admitted later by the
+// sweeper. A redelivery would have run the program its message carried,
+// whatever the bot became since; the re-admission keeps that contract where
+// the park asks for it: the parking runner freezes the delivered program
+// (FreezeProgram) into a content-addressed envelope the park's record names
+// (store.FrozenProgram), and the re-admission republishes the envelope's IR
+// and bundle reference verbatim (ResumeSpec.Frozen), never forced, its
+// credentials and capacity resolved again as every resume's are. A capacity
+// park's program is always re-admitted; a usage-window park's only when the
+// bot's current program is refused because its source changed.
 //
 // The envelope holds the program and nothing else: no capacity holds, no
 // sealed secrets or their key, no resume patch — those belong to an attempt,

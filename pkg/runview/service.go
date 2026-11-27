@@ -648,11 +648,12 @@ type ResumeSpec struct {
 	// studio, MCP) leave this false.
 	Automatic bool
 
-	// Frozen, when set, re-admits the program a capacity park froze
-	// (FrozenResume, LoadFrozenProgram) instead of the run's current
-	// source: no file path or source is resolved or compiled, the
-	// envelope's IR and bundle reference are republished verbatim, and the
-	// record's binding to the run is checked again on every document the
+	// Frozen, when set, re-admits the program a park froze (FrozenResume,
+	// LoadFrozenProgram) instead of the run's current source — a capacity
+	// park's always, a usage-window park's once its current source was
+	// refused for a change: no file path or source is resolved or compiled,
+	// the envelope's IR and bundle reference are republished verbatim, and
+	// the record's binding to the run is checked again on every document the
 	// resume acts on (ErrFrozenProgramStale). Cloud only, never forced; the
 	// credentials, the capacity admission and everything else an attempt
 	// carries are resolved as every resume's are. Set by the retry sweeper.

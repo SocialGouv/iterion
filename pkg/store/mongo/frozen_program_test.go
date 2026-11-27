@@ -278,3 +278,118 @@ func TestFrozenProgram_EnvelopeKeyIsTenantMediatedAndSweptWithTheRun(t *testing.
 		t.Fatalf("after the run's deletion the envelope reads %v, want swept", err)
 	}
 }
+
+// usageRecord is the record a runner hands a usage-window park's write:
+// everything but the attempt marker.
+func usageRecord(digest string) *store.FrozenProgram {
+	return &store.FrozenProgram{
+		Key: "ir/run-a-bundle-program-" + digest + ".json", Digest: digest, WorkflowHash: "h1",
+		Source: store.FrozenProgramSourceUsageWindow, FrozenAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+}
+
+// startedParkedOnUsage is a started run (a checkpoint, the hash h1, the
+// attempt marker q1) failed_resumable, as a usage-window park finds it.
+func startedParkedOnUsage(t *testing.T, a *Store, id string) (q1 time.Time) {
+	t.Helper()
+	stampedRun(t, a, id, store.RunStatusRunning)
+	if err := a.FailRunResumable(transitCtx(), id, &store.Checkpoint{NodeID: "n1"}, "usage window", store.FailureUsageLimitBlocked); err != nil {
+		t.Fatalf("FailRunResumable %s: %v", id, err)
+	}
+	q1 = time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	if _, err := a.runs.UpdateOne(context.Background(), bson.M{"_id": id}, bson.M{"$set": bson.M{"queued_at": q1, "workflow_hash": "h1"}}); err != nil {
+		t.Fatalf("seed queued_at and hash: %v", err)
+	}
+	return q1
+}
+
+// A usage-window park's record, written by one client and read by another:
+// bound to the attempt the caller names, in one versioned write, replacing a
+// record an earlier park left, and written only while the run is
+// failed_resumable on exactly that attempt — another attempt, another
+// status, an instant no flip stamps, leave the stored record as it was. An
+// incomplete record or a missing attempt is refused. Red when the write
+// drops its attempt fence, its status fence, or its check of the record.
+func TestFrozenProgram_UsageRecordBindsTheAttemptItNames(t *testing.T) {
+	a, b := transitPair(t)
+	ctx := transitCtx()
+	q1 := startedParkedOnUsage(t, a, "run-a")
+	old := frozenRecord()
+	old.QueuedAt = q1.Add(-time.Hour)
+	if _, err := a.runs.UpdateOne(context.Background(), bson.M{"_id": "run-a"}, bson.M{"$set": bson.M{frozenProgramField: old}}); err != nil {
+		t.Fatalf("seed an earlier park's record: %v", err)
+	}
+	load := func(t *testing.T) *store.Run {
+		t.Helper()
+		r, err := a.LoadRun(ctx, "run-a")
+		if err != nil {
+			t.Fatalf("LoadRun: %v", err)
+		}
+		return r
+	}
+	before := load(t)
+
+	fp := usageRecord("d-usage-1")
+	set, err := b.SetRunFrozenProgram(ctx, "run-a", q1, fp)
+	if err != nil || !set {
+		t.Fatalf("SetRunFrozenProgram on the run's attempt: set=%v err=%v", set, err)
+	}
+	after := load(t)
+	want := *fp
+	want.QueuedAt = q1
+	if after.FrozenProgram == nil || !reflect.DeepEqual(*after.FrozenProgram, want) {
+		t.Fatalf("record %+v, want %+v", after.FrozenProgram, want)
+	}
+	if after.CASVersion != before.CASVersion+1 {
+		t.Fatalf("version %d→%d, want the record in one versioned write", before.CASVersion, after.CASVersion)
+	}
+	if got, v := after.ReadmitFrozen(); v != store.FrozenBound || got.Source != store.FrozenProgramSourceUsageWindow {
+		t.Fatalf("the run reads %s (%+v), want its usage record bound", v, got)
+	}
+
+	unchanged := func(t *testing.T, what string) {
+		t.Helper()
+		if got := load(t).FrozenProgram; got == nil || !reflect.DeepEqual(*got, want) {
+			t.Fatalf("after %s the record reads %+v, want %+v", what, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		queuedAt time.Time
+	}{
+		{"another attempt", q1.Add(time.Millisecond)},
+		{"an instant no flip stamps", q1.Add(time.Microsecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set, err := b.SetRunFrozenProgram(ctx, "run-a", tc.queuedAt, usageRecord("d-other"))
+			if err != nil || set {
+				t.Fatalf("SetRunFrozenProgram on %s: set=%v err=%v, want not written", tc.name, set, err)
+			}
+			unchanged(t, tc.name)
+		})
+	}
+	t.Run("incomplete record", func(t *testing.T) {
+		incomplete := usageRecord("d-incomplete")
+		incomplete.WorkflowHash = ""
+		if set, err := b.SetRunFrozenProgram(ctx, "run-a", q1, incomplete); err == nil || set {
+			t.Fatalf("an incomplete record: set=%v err=%v, want refused", set, err)
+		}
+		unchanged(t, "an incomplete record")
+	})
+	t.Run("no attempt", func(t *testing.T) {
+		if set, err := b.SetRunFrozenProgram(ctx, "run-a", time.Time{}, usageRecord("d-none")); err == nil || set {
+			t.Fatalf("a zero attempt: set=%v err=%v, want refused", set, err)
+		}
+		unchanged(t, "a zero attempt")
+	})
+	t.Run("another status", func(t *testing.T) {
+		flip, ok, err := a.FlipToQueued(ctx, "run-a", store.RunStatusFailedResumable, time.Now())
+		if err != nil || !ok {
+			t.Fatalf("FlipToQueued: %v %v", ok, err)
+		}
+		if set, err := b.SetRunFrozenProgram(ctx, "run-a", flip.At, usageRecord("d-queued")); err != nil || set {
+			t.Fatalf("a queued run: set=%v err=%v, want not written", set, err)
+		}
+		unchanged(t, "a queued run")
+	})
+}

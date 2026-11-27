@@ -1254,11 +1254,13 @@ jobs:
           go test -mod=vendor -count=1 -v -timeout 5m ./pkg/runview/... \
             -run '^(TestSnapshotOriginNativeMongo|TestMergeExpectedBirthNativeMongo|TestRunListingWindowNativeMongo)$'
           # The runner's capacity guard (ADR-167 C2) against the real ledger
-          # and the one-write park, a started run's frozen program included.
-          # The `/...` form keeps pkg/runner visible to pkg/store/mongo's
-          # gated-package guard; -run leaves the rest of it to `test`.
+          # and the one-write park, a started run's frozen program included,
+          # and the program a usage-window park records on the attempt it
+          # parks. The `/...` form keeps pkg/runner visible to
+          # pkg/store/mongo's gated-package guard; -run leaves the rest of it
+          # to `test`.
           go test -mod=vendor -count=1 -v -timeout 3m ./pkg/runner/... \
-            -run '^TestCapacityTransit.*Mongo$'
+            -run '^(TestCapacityTransit.*Mongo|TestUsageParkFrozenProgram.*Mongo)$'
 
       - name: Subbot lease Mongo and NATS witness
         env:

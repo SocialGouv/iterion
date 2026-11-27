@@ -1313,8 +1313,42 @@ What still takes the bot's current program:
   `frozen_stale` and `frozen_unavailable` on `iterion_runs_retry_resumed_total`).
 
 A stored bot deleted during the wait still ends the run's automation, frozen or
-not. An inline-source cloud run parked on capacity now resumes too. Usage-window
-parks are not frozen yet: their retry resumes the current bot.
+not. An inline-source cloud run parked on capacity now resumes too. A run parked
+on a provider usage window keeps its program as well, under the rule of the
+next section.
+
+### A usage-parked run resumes its bot's current program, unless that changed
+
+A run that started and is then parked on its provider's usage window
+([scheduling.md](scheduling.md#retry--a-provider-quota-window-is-waited-out-not-re-attempted))
+keeps the program its delivery carried the same way: before the park arms its
+retry, the runner freezes the delivered IR and bundle reference into an
+envelope and records it on the run (`frozen_program`, source `usage_window`),
+bound to the attempt it parks. When the window reopens, the retry sweeper
+resumes the bot's **current** program, so skills, devbox and subbot snapshot
+updated during the wait are taken. Only when that resume is refused because
+the bot's source changed (its workflow hash, or a shared dependency's
+identity) does the same pass resume the recorded program instead — on the
+admission the first resume was judged under, never with `--force`
+(`frozen_readmitted` on `iterion_runs_retry_resumed_total`). A pull-forward
+probe whose resume meets the window again parks the run again on that
+resume's attempt, and records the program again there, so the record follows
+the run from wait to wait.
+
+What is still refused for a changed source, and re-armed against the retry
+budget as before:
+
+- a park of a run that never started (`not_started` on
+  `iterion_capacity_frozen_program_total{source="usage_window"}`);
+- a park whose program was not recorded (`freeze_failed` or `hash_mismatch` on
+  the same counter): its retry is armed all the same;
+- a record whose envelope is gone or corrupt (`frozen_unavailable` on
+  `iterion_runs_retry_resumed_total`).
+
+A stored bot deleted during the wait ends the automation: the current program
+is resolved first, and its resolution says the bot is gone. An inline-source
+cloud run takes the same first step and cannot resolve a current source: its
+retry is abandoned, as before — resume it by hand.
 
 An automatic retry, frozen or not, stops at its first due with the reason named
 when the resume needs a person: an effect left undecided, a scratch or a

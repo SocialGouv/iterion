@@ -83,9 +83,11 @@ type Registry struct {
 	// RunsRetryResumed counts the sweeper's passes on a due run by result
 	// (enqueued|abandoned|failed|slot_wait|window_wait|release_deferred), and
 	// the frozen-program annotations counted beside a pass's own result:
-	// frozen_readmitted (a capacity park's frozen program republished),
-	// frozen_stale (a record that no longer binds its run, ignored),
-	// frozen_unavailable (a record whose envelope is gone or corrupt, ignored).
+	// frozen_readmitted (a park's frozen program republished — a capacity
+	// park's at once, a usage-window park's after its bot's current program
+	// was refused for a changed source), frozen_stale (a record that no
+	// longer binds its run, ignored), frozen_unavailable (a record whose
+	// envelope is gone or corrupt, ignored).
 	RunsRetryResumed *prometheus.CounterVec
 	RunsRetryPending prometheus.Gauge
 	// RunsRetrySweeps is what makes the three above readable. Every one of
@@ -170,13 +172,15 @@ type Registry struct {
 	// gone and a new reservation took a place; parked: none was free;
 	// error: the ledger did not answer and the launch failed).
 	CapacityLaunchReassertTotal *prometheus.CounterVec // outcome
-	// CapacityFrozenProgramTotal counts what a runner's capacity park did with
-	// the program of the delivery it parked, by source (capacity) and outcome:
-	// written (a started run, parked with its program frozen for the retry
-	// sweeper's re-admission), not_started (nothing ran, nothing frozen: the
-	// re-admission resumes the bot's current program), freeze_failed and
-	// hash_mismatch (a started run parked without its program — its
-	// re-admission resumes the current program, refused if it changed).
+	// CapacityFrozenProgramTotal counts what a runner's park did with the
+	// program of the delivery it parked, by source — capacity (a lost
+	// capacity place) or usage_window (a provider usage window) — and
+	// outcome: written (a started run, parked with its program frozen for
+	// the retry sweeper's re-admission), not_started (nothing ran, nothing
+	// frozen: the re-admission resumes the bot's current program),
+	// freeze_failed and hash_mismatch (a started run parked without its
+	// program — its re-admission resumes the current program, refused if it
+	// changed).
 	CapacityFrozenProgramTotal *prometheus.CounterVec // source, outcome
 }
 
@@ -343,7 +347,7 @@ func New() *Registry {
 	})
 	r.RunsRetryResumed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_runs_retry_resumed_total",
-		Help: "Outcomes of the retry sweeper acting on a due run, by result. frozen_readmitted, frozen_stale and frozen_unavailable annotate a capacity park's frozen program and are counted beside the pass's own result (enqueued, failed...), never instead of it.",
+		Help: "Outcomes of the retry sweeper acting on a due run, by result. frozen_readmitted, frozen_stale and frozen_unavailable annotate a park's frozen program (a capacity park's, re-admitted at once; a usage-window park's, re-admitted when its bot's current program is refused for a changed source) and are counted beside the pass's own result (enqueued, failed...), never instead of it.",
 	}, []string{"result"})
 	r.RunsRetryPending = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_runs_retry_pending",
@@ -396,7 +400,7 @@ func New() *Registry {
 	}, []string{"outcome"})
 	r.CapacityFrozenProgramTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_capacity_frozen_program_total",
-		Help: "What a runner's capacity park did with the program of the delivery it parked (ADR-167 T4a), by source (capacity) and outcome: written (a started run's program frozen for its re-admission), not_started (nothing ran, the re-admission resumes the current bot), freeze_failed or hash_mismatch (a started run parked without its program — its re-admission resumes the current program, refused if it changed).",
+		Help: "What a runner's park did with the program of the delivery it parked (ADR-167 T4a), by source (capacity: a lost capacity place; usage_window: a provider usage window) and outcome: written (a started run's program frozen for its re-admission), not_started (nothing ran, the re-admission resumes the current bot), freeze_failed or hash_mismatch (a started run parked without its program — its re-admission resumes the current program, refused if it changed).",
 	}, []string{"source", "outcome"})
 	r.DLQDepthByPool = newGaugeSnapshot(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth_by_pool",

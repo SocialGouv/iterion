@@ -582,9 +582,10 @@ func (s *Store) saveRun(ctx context.Context, r *store.Run, park *store.CapacityP
 		// The transit instant is the continuation's: kept and cleared with it.
 		"continuation_until": bson.M{"$cond": bson.A{statusChanged, "$$REMOVE", bson.M{"$ifNull": bson.A{"$continuation_until", "$$REMOVE"}}}},
 		"failure_code":       bson.M{"$cond": bson.A{bornOrChanged, docCode, bson.M{"$ifNull": bson.A{"$failure_code", "$$REMOVE"}}}},
-		// The frozen program is the capacity park's (ParkRunOnCapacity), bound
-		// to the attempt it found: a saver's copy never writes it, and the
-		// stored one survives the save whatever the copy carries.
+		// The frozen program is a park's (ParkRunOnCapacity,
+		// SetRunFrozenProgram), bound to the attempt it parked: a saver's copy
+		// never writes it, and the stored one survives the save whatever the
+		// copy carries.
 		frozenProgramField: bson.M{"$ifNull": bson.A{"$" + frozenProgramField, "$$REMOVE"}},
 		// The launch-frozen contract is IMMUTABLE: once persisted it
 		// wins over whatever the saver carries (a stale full-document

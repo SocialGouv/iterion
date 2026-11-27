@@ -24,9 +24,9 @@ import (
 // message's IR with newer skills/prompts is the silent-wrong-result façade.
 // The caller routes the error through nak/redelivery; an operator's resume
 // re-resolves the current version end-to-end and self-heals. A frozen
-// re-admission (a capacity park's, runview.FrozenResume) never reaches the
-// legacy rebuild: it carries the parked delivery's snapshot, stored out of
-// band under its content-addressed key.
+// re-admission (a capacity or usage-window park's, runview.FrozenResume)
+// never reaches the legacy rebuild: it carries the parked delivery's
+// snapshot, stored out of band under its content-addressed key.
 func (r *Runner) materializeBotBundle(ctx context.Context, ref *queue.BotBundleRef) (*bundle.Bundle, func(), error) {
 	if ref.SnapshotDigest != "" || len(ref.Snapshot) > 0 || ref.SnapshotRef != nil {
 		body := ref.Snapshot

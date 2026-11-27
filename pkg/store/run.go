@@ -1858,11 +1858,12 @@ type Run struct {
 	// CreateRun time; zero in local mode. Used to compute
 	// queue-position aggregates and queue-wait duration metrics.
 	QueuedAt *time.Time `json:"queued_at,omitempty" bson:"queued_at,omitempty"`
-	// FrozenProgram is the program a capacity park froze for the retry
-	// sweeper's re-admission (frozen_program.go), bound to the QueuedAt the
-	// park found. Written only by that park's single write (Mongo only:
-	// the filesystem store hosts no durable retry); a whole-document save
-	// keeps the stored one. Never on the wire or in the studio's JSON.
+	// FrozenProgram is the program a park froze for the retry sweeper's
+	// re-admission (frozen_program.go), bound to the QueuedAt of the attempt
+	// it parked. Written only by a capacity park's single write and by a
+	// usage-window park's FrozenProgramWriter (Mongo only: the filesystem
+	// store hosts no durable retry); a whole-document save keeps the stored
+	// one. Never on the wire or in the studio's JSON.
 	FrozenProgram *FrozenProgram `json:"-" bson:"frozen_program,omitempty"`
 	// SubmissionAttemptAt is the QueuedAt of the queue attempt the launch
 	// path itself made for an idempotent submission — its first launch, or a

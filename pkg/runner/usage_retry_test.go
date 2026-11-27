@@ -671,7 +671,7 @@ func TestArmUsageWindowRetry_SurvivesACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	got := r.armUsageWindowRetry(ctx, weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), "run-a", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(ctx, weeklyWindowErr(time.Now().UTC().Add(30*time.Hour)), usageMsg("run-a"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed — a cancelled ctx must not disable the carve-out", got)
 	}
@@ -691,7 +691,7 @@ func TestArmUsageWindowRetry_SlowCircuitLeavesTimeForMandatoryArm(t *testing.T) 
 	r := &Runner{cfg: Config{Store: st}}
 
 	started := time.Now()
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-slow-circuit", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), usageMsg("run-slow-circuit"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryArmed || !st.armed {
 		t.Fatalf("outcome = %v armed=%v, want mandatory per-run retry after circuit timeout", got, st.armed)
 	}
@@ -706,7 +706,7 @@ func TestArmUsageWindowRetry_NotAUsageWindow(t *testing.T) {
 	st := &cancelAwareStore{run: &store.Run{ID: "run-b", Status: store.RunStatusFailedResumable}}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), errors.New("tool blew up"), "run-b", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), errors.New("tool blew up"), usageMsg("run-b"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryNotApplicable {
 		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
 	}
@@ -719,7 +719,7 @@ func TestArmUsageWindowRetry_NotAUsageWindow(t *testing.T) {
 // a store with no durable retry surface must not swallow the delivery.
 func TestArmUsageWindowRetry_NoRetryStoreFallsThrough(t *testing.T) {
 	r := &Runner{cfg: Config{Store: plainStore{}}}
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), "run-c", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(time.Now().UTC().Add(time.Hour)), usageMsg("run-c"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 	if got != usageRetryNotApplicable {
 		t.Errorf("outcome = %v, want usageRetryNotApplicable", got)
 	}

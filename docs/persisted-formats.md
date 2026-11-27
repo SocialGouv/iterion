@@ -141,19 +141,22 @@ for its consumers), so a release adding an `outcome_seq` CONSUMER must ship
 only after the fleet fully carries the writer.
 
 `frozen_program` (Mongo only, never in the run's JSON) is the program a
-capacity park of a started run froze for its re-admission (ADR-167 T4a):
-`key` (the envelope's IR-blob storage key,
-`ir/<run>-bundle-program-<sha256>.json`), `digest` (the sha256 of the
-envelope body, checked on read), `workflow_hash` (the hash the envelope's IR
-derives), `queued_at` (the document's own attempt marker, copied by the park's
-write), `source` (`capacity`) and `frozen_at`. The envelope is JSON
+park of a started run froze for its re-admission (ADR-167 T4a): `key` (the
+envelope's IR-blob storage key, `ir/<run>-bundle-program-<sha256>.json`),
+`digest` (the sha256 of the envelope body, checked on read), `workflow_hash`
+(the hash the envelope's IR derives), `queued_at` (the document's own attempt
+marker, copied by the write that records it), `source` (`capacity` or
+`usage_window`) and `frozen_at`. The envelope is JSON
 `{v: 1, run_id, workflow_name, workflow_hash, ir, bot_bundle}`: `ir` is the
 delivered transport IR as base64 bytes, kept byte for byte; `bot_bundle` the
 delivered bundle reference with its snapshot stored out of band under
 `ir/<run>-bundle-<snapshot digest>.json` — no capacity holds, sealed secrets,
-key or resume patch. Only that park writes the record, and only while the
-record's `queued_at` and `workflow_hash` equal the run's does it bind: a
-resume's flip moves the marker, its revert puts it back. A whole-document save
+key or resume patch. Two parks write the record: a capacity park, in its own
+single write (`ParkRunOnCapacity`), and a usage-window park, before it arms
+its retry, in one write fenced to `failed_resumable` and the exact `queued_at`
+of the attempt it parks (`SetRunFrozenProgram`). Only while the record's
+`queued_at` and `workflow_hash` equal the run's does it bind: a resume's flip
+moves the marker, its revert puts it back. A whole-document save
 keeps the stored record; an old replica's save keeps it as an unknown field.
 `DeleteRunIR` sweeps the envelope with the run.
 

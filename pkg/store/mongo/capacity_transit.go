@@ -15,13 +15,15 @@ import (
 )
 
 // Mongo half of store.CapacityTransitStore and the Mongo-only
-// store.CapacityParker. Each is one conditional write on the run document:
-// the transit's begin and end, and a park whose status, failure, armed retry
-// and continuation land together.
+// store.CapacityParker and store.FrozenProgramWriter. Each is one conditional
+// write on the run document: the transit's begin and end, a park whose
+// status, failure, armed retry and continuation land together, and a
+// usage-window park's frozen program.
 
 var (
 	_ store.CapacityTransitStore = (*Store)(nil)
 	_ store.CapacityParker       = (*Store)(nil)
+	_ store.FrozenProgramWriter  = (*Store)(nil)
 )
 
 // majorityRuns is the runs collection with majority acknowledgement: a
@@ -157,11 +159,12 @@ func (s *Store) ParkRunOnCapacity(ctx context.Context, runID string, p store.Cap
 // (store.Run.FrozenProgram).
 const frozenProgramField = "frozen_program"
 
-// frozenProgramValue is the park pipeline's value of the record: fp with the
-// attempt marker read off the document by the same write ("$queued_at" — the
-// park's own fence decided the attempt, so the record binds exactly it), or
-// $$REMOVE when the park froze nothing. The strings are literals: a value
-// starting with "$" would otherwise read as a field path.
+// frozenProgramValue is a park pipeline's value of the record (the capacity
+// park's, SetRunFrozenProgram's): fp with the attempt marker read off the
+// document by the same write ("$queued_at" — the write's own fence decided the
+// attempt, so the record binds exactly it), or $$REMOVE when the park froze
+// nothing. The strings are literals: a value starting with "$" would otherwise
+// read as a field path.
 func frozenProgramValue(fp *store.FrozenProgram) any {
 	if fp == nil {
 		return "$$REMOVE"
@@ -174,6 +177,33 @@ func frozenProgramValue(fp *store.FrozenProgram) any {
 		"source":        bson.M{"$literal": fp.Source},
 		"frozen_at":     fp.FrozenAt.UTC(),
 	}
+}
+
+// SetRunFrozenProgram implements store.FrozenProgramWriter: one conditional
+// pipeline update on the run root, fenced to the attempt the caller parks —
+// status failed_resumable and queued_at exactly queuedAt — writing the record
+// with the same builder the capacity park uses, its attempt marker read off
+// the document by this write.
+func (s *Store) SetRunFrozenProgram(ctx context.Context, runID string, queuedAt time.Time, fp *store.FrozenProgram) (bool, error) {
+	if runID == "" || queuedAt.IsZero() {
+		return false, fmt.Errorf("store/mongo: set the frozen program of run %q: run id and the attempt's queued_at are required (queued_at=%v)", runID, queuedAt)
+	}
+	if !fp.Valid() {
+		return false, fmt.Errorf("store/mongo: set the frozen program of run %s: incomplete record %+v", runID, fp)
+	}
+	filter := notDeleted(withTenantFilter(ctx, bson.M{"_id": runID, "status": string(store.RunStatusFailedResumable)}))
+	if !applyExactQueuedAt(filter, queuedAt) {
+		return false, nil
+	}
+	set := bson.M{frozenProgramField: frozenProgramValue(fp), "updated_at": time.Now().UTC()}
+	res, err := s.updateRunMetadata(ctx, runID, filter, versionRunUpdate(mongo.Pipeline{{{Key: "$set", Value: set}}}))
+	if errors.Is(err, store.ErrRunNotFound) || errors.Is(err, store.ErrRunDeleted) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store/mongo: set the frozen program of run %s: %w", runID, err)
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // SaveParkedLaunchRun implements store.CapacityParker: SaveRun's replacement

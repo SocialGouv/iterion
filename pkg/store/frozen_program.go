@@ -1,25 +1,40 @@
 package store
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // A frozen program (ADR-167 T4a, frozen-program re-admission): the program a
-// started run executed, kept when the run is parked on a capacity wait, so the
-// retry sweeper's re-admission resumes that program — the one its checkpoint
-// was taken under — and not whatever the bot became during the wait. A
-// redelivery of the run's message would have run it verbatim; the re-admission
-// is its stand-in once the place it held is gone.
+// started run executed, kept when the run is parked on a wait the retry
+// sweeper ends, so the sweeper's re-admission can resume that program — the
+// one its checkpoint was taken under — and not whatever the bot became during
+// the wait. A redelivery of the run's message would have run it verbatim; the
+// re-admission is its stand-in.
 //
 // The record lives on the run root and names an envelope (an IR blob holding
-// the transport IR and the bundle reference the parked delivery carried). It
-// is written by the park itself (CapacityParker.ParkRunOnCapacity), in the
-// same single write, bound to the attempt marker the park found (queued_at)
-// and to the run's workflow hash. Nothing else writes it: every reader asks
-// ReadmitFrozen, and a record whose attempt or hash moved since is stale —
-// ignored, never cleared, never an error.
+// the transport IR and the bundle reference the parked delivery carried). Two
+// parks write it, each bound to the attempt marker of the attempt it parks
+// (queued_at) and to the run's workflow hash:
+//   - a capacity park, in its own single write
+//     (CapacityParker.ParkRunOnCapacity): the re-admission resumes the frozen
+//     program, always;
+//   - a usage-window park, before it arms its retry
+//     (FrozenProgramWriter.SetRunFrozenProgram): the re-admission resumes the
+//     bot's current program, and the frozen one only when the current one is
+//     refused because its source changed.
+//
+// Nothing else writes it: every reader asks ReadmitFrozen, and a record whose
+// attempt or hash moved since is stale — ignored, never cleared, never an
+// error.
 
 // FrozenProgramSourceCapacity names a record a capacity park wrote: the run
 // lost the place its admission reserved while the queue redelivered it.
 const FrozenProgramSourceCapacity = "capacity"
+
+// FrozenProgramSourceUsageWindow names a record a usage-window park wrote:
+// the run met its provider's usage window and waits for it to reopen.
+const FrozenProgramSourceUsageWindow = "usage_window"
 
 // FrozenProgram is the record of a frozen program on the run root.
 type FrozenProgram struct {
@@ -32,8 +47,9 @@ type FrozenProgram struct {
 	// WorkflowHash is the hash the envelope's IR derives at freeze — the run's
 	// WorkflowHash then, which the binding compares with the run's now.
 	WorkflowHash string `bson:"workflow_hash"`
-	// QueuedAt is the attempt marker the park found on the document, copied
-	// by the park's own pipeline: the record binds that attempt only.
+	// QueuedAt is the attempt marker of the attempt the park parked, copied
+	// off the document by the write that records it: the record binds that
+	// attempt only.
 	QueuedAt time.Time `bson:"queued_at"`
 	// Source names the park that froze the program (FrozenProgramSource*).
 	Source   string    `bson:"source"`
@@ -90,3 +106,22 @@ func (r *Run) ReadmitFrozen() (*FrozenProgram, FrozenVerdict) {
 	}
 	return fp, FrozenBound
 }
+
+// FrozenProgramWriter is the optional capability that records the program a
+// usage-window park froze (FrozenProgram) on the run root. Mongo only, like
+// RunRetryStore and CapacityParker: the filesystem store hosts no durable
+// retry, so nothing there re-admits a run and AsFrozenProgramWriter answers
+// nil.
+type FrozenProgramWriter interface {
+	// SetRunFrozenProgram writes fp on run runID, bound to the attempt
+	// queuedAt names, in one conditional write: the run must be
+	// failed_resumable and its queued_at exactly queuedAt. A run that moved
+	// (another status, another attempt) is not written: set false, no error.
+	// The record's QueuedAt is queuedAt; an incomplete fp (FrozenProgram.Valid)
+	// or a zero queuedAt is an error.
+	SetRunFrozenProgram(ctx context.Context, runID string, queuedAt time.Time, fp *FrozenProgram) (set bool, err error)
+}
+
+// AsFrozenProgramWriter returns s as FrozenProgramWriter when the backend
+// hosts it, or nil otherwise. Callers MUST nil-check.
+func AsFrozenProgramWriter(s RunStore) FrozenProgramWriter { return capability[FrozenProgramWriter](s) }
