@@ -148,6 +148,17 @@ func IRBundleSnapshotPrefix(runID string) (string, error) {
 	return "ir/" + runID + store.IRBlobFamilyInfix, nil
 }
 
+// FrozenProgramLogicalKey is the IR blob id of a run's frozen-program
+// envelope (store.FrozenProgram): "<run_id>-bundle-program-<digest>", stored
+// at ir/<run_id>-bundle-program-<digest>.json. It lives in the bundle-snapshot
+// key space on purpose: the IR read's tenant mediation resolves its owning run
+// on the "-bundle-" infix (store/mongo GetIRBlob), and DeleteRunIR sweeps it
+// with the run (IRBundleSnapshotPrefix). Content-addressed, so no later write
+// of the run replaces it.
+func FrozenProgramLogicalKey(runID, digest string) string {
+	return runID + store.IRBlobFamilyInfix + "program-" + digest
+}
+
 // validateIRBlobKey re-derives the canonical IR key from a storage key
 // carried on the wire (queue.IRRef.StorageKey) and confirms they match,
 // so a tampered or malformed reference can never escape the ir/ prefix.

@@ -303,6 +303,14 @@ const SchemaVersion = 35
 
 const codemodeStoreSchemaVersion = 35
 
+// CapacityAdmission is the places a message's admission reserved
+// (RunMessage.Capacity): each capped subject it holds a ledger entry of, by
+// that entry's admission identity (store.CapacityHold.Token, the
+// CredSlotAdmission.At the reservation returned).
+type CapacityAdmission struct {
+	Holds []store.CapacityHold `json:"holds,omitempty"`
+}
+
 // ContentBoundaryProducerSchemaVersion is the first wire version whose
 // publisher seals a team_gateway run's gateway key and arms its
 // AmbientLLMRefused on the stamp's decision: a message older than it that
@@ -560,6 +568,19 @@ type RunMessage struct {
 	// RunMessage version bump (the same doctrine as FallbackModelClasses
 	// above).
 	CredPlan map[string]string `json:"cred_plan,omitempty"`
+	// Capacity is what the admission that published this message reserved on
+	// the run-admission ledger (ADR-167): one hold per capped subject, each
+	// naming the ledger entry that admission wrote. The runner that picks up
+	// a redelivery of the message re-asserts each hold before it resumes and
+	// parks the run when one is gone (CapacityAdmission). Non-nil with no
+	// holds: the admission reserved nothing — no subject it sealed is capped.
+	// Nil: a publisher older than the field, whose runs a runner resumes
+	// unguarded, as before. An older runner ignores the field and resumes
+	// unguarded too — the mixed-version stance of the ledger's observe phase
+	// — so the field needs no RunMessage version bump. A subbot child's copy
+	// of its parent's message clears it: the parent's places are the
+	// parent's.
+	Capacity *CapacityAdmission `json:"capacity,omitempty"`
 	// ParentRunID is set on child runs spawned by a parent workflow
 	// (e.g. by `iterion __scan-shards`). Empty for root runs. When
 	// non-empty, the runner copies it into the persisted Run document

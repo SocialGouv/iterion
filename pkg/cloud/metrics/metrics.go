@@ -59,7 +59,7 @@ type Registry struct {
 	// Deliberately NO tenant labels anywhere (cardinality discipline);
 	// per-org accounting lives in the Mongo orgusage counters.
 	WebhookDeliveriesTotal  *prometheus.CounterVec // provider, status
-	WebhookThrottledTotal   *prometheus.CounterVec // provider, reason (rate_limited|quota_exceeded)
+	WebhookThrottledTotal   *prometheus.CounterVec // provider, reason (rate_limited|quota_exceeded|backlog_full)
 	AuthLoginsTotal         *prometheus.CounterVec // result (success|invalid|locked|password_change_required|error)
 	AuthPasswordResetsTotal *prometheus.CounterVec // step (requested|confirmed)
 	LaunchDeniedTotal       *prometheus.CounterVec // reason (org_suspended|monthly_run_quota_exceeded|…)
@@ -80,8 +80,16 @@ type Registry struct {
 	// parked run just sits there as failed_resumable.
 	RunsUsageWindowBlocked prometheus.Counter
 	RunsRetryScheduled     prometheus.Counter
-	RunsRetryResumed       *prometheus.CounterVec // result (enqueued|abandoned|failed|slot_wait|window_wait|release_deferred)
-	RunsRetryPending       prometheus.Gauge
+	// RunsRetryResumed counts the sweeper's passes on a due run by result
+	// (enqueued|abandoned|failed|slot_wait|window_wait|release_deferred), and
+	// the frozen-program annotations counted beside a pass's own result:
+	// frozen_readmitted (a park's frozen program republished — a capacity
+	// park's at once, a usage-window park's after its bot's current program
+	// was refused for a changed source), frozen_stale (a record that no
+	// longer binds its run, ignored), frozen_unavailable (a record whose
+	// envelope is gone or corrupt, ignored).
+	RunsRetryResumed *prometheus.CounterVec
+	RunsRetryPending prometheus.Gauge
 	// RunsRetrySweeps is what makes the three above readable. Every one of
 	// them sits at 0 on a healthy idle deployment — and also on a deployment
 	// where the sweeper never started, because a registered-but-never-Set
@@ -143,6 +151,122 @@ type Registry struct {
 	// samples (the server) publishes it, so a runner pod sharing the
 	// registry never reports an availability nobody measured.
 	GatewayAliveRunsUnavailable *SampledGauge
+
+	// --- Capacity transit (ADR-167 T4a) -----------------------------
+	// CapacityReassertTotal counts the runner's re-assertions of the places
+	// a delivery's admission reserved, by stage (delivery: at pickup, under
+	// the run's lock; pre_engine: before the engine loads a delivery whose
+	// clone outlasted a quarter of the hold; claim: at the engine's claim),
+	// outcome (held, missing: the place is gone and the run parks, error:
+	// the ledger did not answer, expired: the hold lapsed before the claim,
+	// legacy: a message from a publisher older than the guard, resumed
+	// unguarded, unheld_out_of_transit: a delivery that resumes a run holding
+	// nothing — neither alive nor in its transit — while the run's stamp names
+	// a subject its message holds no place for — counted per such subject, the
+	// delivery proceeding)
+	// and kind (key|gateway). legacy must read 0 before the per-gateway bound
+	// moves to enforce.
+	CapacityReassertTotal *prometheus.CounterVec // stage, outcome, kind
+	// CapacityTransitEndTotal counts the transits a delivery ended itself
+	// because it resumed nothing (restored: the continuation put back;
+	// claimed_or_moved: the run had moved on and nothing was written).
+	CapacityTransitEndTotal *prometheus.CounterVec // outcome
+	// CapacityLaunchReassertTotal counts the launch's re-assertion of its
+	// admission right before publishing (held; reserved_again: the entry was
+	// gone and a new reservation took a place; parked: none was free;
+	// error: the ledger did not answer and the launch failed).
+	CapacityLaunchReassertTotal *prometheus.CounterVec // outcome
+	// CapacityFrozenProgramTotal counts what a runner's park did with the
+	// program of the delivery it parked, by source — capacity (a lost
+	// capacity place) or usage_window (a provider usage window) — and
+	// outcome: written (a started run, parked with its program frozen for
+	// the retry sweeper's re-admission), not_started (nothing ran, nothing
+	// frozen: the re-admission resumes the bot's current program),
+	// freeze_failed and hash_mismatch (a started run parked without its
+	// program — its re-admission resumes the current program, refused if it
+	// changed). written and not_started count a park once it lands; a failed
+	// freeze is counted when it fails, a park the store then refused
+	// included.
+	CapacityFrozenProgramTotal *prometheus.CounterVec // source, outcome
+}
+
+// Outcomes and stages of CapacityReassertTotal and its siblings.
+const (
+	CapacityStageDelivery  = "delivery"
+	CapacityStagePreEngine = "pre_engine"
+	CapacityStageClaim     = "claim"
+
+	CapacityHeld    = "held"
+	CapacityMissing = "missing"
+	CapacityError   = "error"
+	CapacityExpired = "expired"
+	CapacityLegacy  = "legacy"
+	// CapacityUnheldOutOfTransit is a delivery stage's count, per subject, of
+	// a resume of a run holding nothing on a subject its message does not
+	// hold (runner countUnheldOutOfTransit).
+	CapacityUnheldOutOfTransit = "unheld_out_of_transit"
+
+	CapacityKindKey     = "key"
+	CapacityKindGateway = "gateway"
+	// CapacityKindNone is the kind of a count that names no subject (legacy).
+	CapacityKindNone = "none"
+
+	CapacityTransitRestored       = "restored"
+	CapacityTransitClaimedOrMoved = "claimed_or_moved"
+
+	CapacityLaunchHeld          = "held"
+	CapacityLaunchReservedAgain = "reserved_again"
+	CapacityLaunchParked        = "parked"
+	CapacityLaunchError         = "error"
+
+	FrozenProgramWritten      = "written"
+	FrozenProgramNotStarted   = "not_started"
+	FrozenProgramFreezeFailed = "freeze_failed"
+	FrozenProgramHashMismatch = "hash_mismatch"
+
+	// The sources of CapacityFrozenProgramTotal: the values of
+	// store.FrozenProgramSourceCapacity and store.FrozenProgramSourceUsageWindow,
+	// restated so this package stays a leaf (a runner test pins them equal).
+	FrozenProgramSourceCapacity    = "capacity"
+	FrozenProgramSourceUsageWindow = "usage_window"
+)
+
+// The reasons of WebhookThrottledTotal.
+const (
+	WebhookThrottledRateLimited   = "rate_limited"
+	WebhookThrottledQuotaExceeded = "quota_exceeded"
+	WebhookThrottledBacklogFull   = "backlog_full"
+)
+
+// webhookProviders are the inbound webhook providers the server accepts
+// (pkg/server supportedProviders, which a server test pins equal): the
+// provider label of WebhookThrottledTotal.
+var webhookProviders = []string{"gitlab", "github", "forgejo", "generic", "connector"}
+
+// launchDeniedReasons are the admission gate's denial tokens (pkg/server's
+// deny* constants, which a server test pins equal): the reason label of
+// LaunchDeniedTotal.
+var launchDeniedReasons = []string{
+	"org_suspended",
+	"monthly_run_quota_exceeded",
+	"monthly_cost_cap_exceeded",
+	"concurrency_cap_exceeded",
+	"launch_rate_limited",
+	"repo_quota_exceeded",
+	"no_workspace",
+	"member_role_required",
+	"fork_team_unreadable",
+	"fork_org_unreadable",
+	"fork_metering_unavailable",
+	"fork_metering_error",
+	"fork_author_run_quota_exceeded",
+	"fork_author_cost_cap_exceeded",
+	"resume_run_unreadable",
+	"fork_run_unfunded",
+	"fork_funding_unreadable",
+	"fork_funding_unjudgeable",
+	"fork_lane_pool_refused",
+	"maintenance_fence",
 }
 
 // The dispositions of one pull-forward probe, each counted at the ONE site
@@ -247,7 +371,7 @@ func New() *Registry {
 	}, []string{"provider", "status"})
 	r.WebhookThrottledTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_webhook_throttled_total",
-		Help: "Inbound webhook deliveries rejected before processing, by provider and reason (rate_limited|quota_exceeded).",
+		Help: "Inbound webhook deliveries rejected before processing, by provider and reason (rate_limited|quota_exceeded|backlog_full).",
 	}, []string{"provider", "reason"})
 	r.AuthLoginsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_auth_logins_total",
@@ -279,7 +403,7 @@ func New() *Registry {
 	})
 	r.RunsRetryResumed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "iterion_runs_retry_resumed_total",
-		Help: "Outcomes of the retry sweeper acting on a due run, by result.",
+		Help: "Outcomes of the retry sweeper acting on a due run, by result. frozen_readmitted, frozen_stale and frozen_unavailable annotate a park's frozen program (a capacity park's, re-admitted at once; a usage-window park's, re-admitted when its bot's current program is refused for a changed source) and are counted beside the pass's own result (enqueued, failed...), never instead of it.",
 	}, []string{"result"})
 	r.RunsRetryPending = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "iterion_runs_retry_pending",
@@ -318,6 +442,22 @@ func New() *Registry {
 		Name: "iterion_gateway_alive_runs_unavailable",
 		Help: "1 until a pass succeeds and after any failed or timed-out read; the per-host series of iterion_gateway_alive_runs then hold their last values. Published only by a process that samples them (the server).",
 	})
+	r.CapacityReassertTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_capacity_reassert_total",
+		Help: "Runner re-assertions of the capacity places a delivery's admission reserved (ADR-167 C2), by stage (delivery|pre_engine|claim), outcome (held|missing|error|expired|legacy|unheld_out_of_transit) and kind (key|gateway). legacy counts messages from a publisher older than the guard, resumed unguarded: it must read 0 before the per-gateway bound enforces. unheld_out_of_transit counts, per subject, a delivery that resumes a run holding nothing — neither alive nor in its transit: the hold lapsed or was never stamped, or an operator pause — while the run's stamp names a subject its message holds no place for: nothing re-asserts it, and the delivery proceeds.",
+	}, []string{"stage", "outcome", "kind"})
+	r.CapacityTransitEndTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_capacity_transit_end_total",
+		Help: "Capacity transits a delivery ended itself because it resumed nothing: restored (the continuation put back) or claimed_or_moved (the run had moved on).",
+	}, []string{"outcome"})
+	r.CapacityLaunchReassertTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_capacity_launch_reassert_total",
+		Help: "A launch's re-assertion of its capacity places right before it publishes (ADR-167 C3): held, reserved_again (the entry was gone, a new reservation took a place), parked (none was free) or error (the ledger did not answer, the launch failed).",
+	}, []string{"outcome"})
+	r.CapacityFrozenProgramTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "iterion_capacity_frozen_program_total",
+		Help: "What a runner's park did with the program of the delivery it parked (ADR-167 T4a), by source (capacity: a lost capacity place; usage_window: a provider usage window) and outcome: written (a started run's program frozen for its re-admission), not_started (nothing ran, the re-admission resumes the current bot), freeze_failed or hash_mismatch (a started run parked without its program — its re-admission resumes the current program, refused if it changed). written and not_started count a park once it lands; a failed freeze is counted when it fails, a park the store then refused included.",
+	}, []string{"source", "outcome"})
 	r.DLQDepthByPool = newGaugeSnapshot(prometheus.GaugeOpts{
 		Name: "iterion_dlq_depth_by_pool",
 		Help: "Messages parked on each registry-known, non-disabled runner pool DLQ.",
@@ -336,8 +476,40 @@ func New() *Registry {
 		r.GatewayAliveRuns, r.GatewayAliveRunsUnavailable,
 		r.RunsUsageWindowBlocked, r.RunsRetryScheduled,
 		r.RunsRetryResumed, r.RunsRetryPending, r.RunsRetrySweeps, r.RunsRetryProbes,
+		r.CapacityReassertTotal, r.CapacityTransitEndTotal, r.CapacityLaunchReassertTotal,
+		r.CapacityFrozenProgramTotal,
 	)
+	r.createRuleChildren()
 	return r
+}
+
+// createRuleChildren creates at 0 every child a chart rule reads through
+// increase() or rate() (charts/iterion/templates/prometheus-rule.yaml), on
+// every process at its boot. A child born by its first Inc is first scraped
+// at 1, and increase() never sees that event: a single freeze failure, a
+// single legacy resume per pod, would read 0. An event before a pod's first
+// scrape stays invisible all the same.
+func (r *Registry) createRuleChildren() {
+	for _, reason := range launchDeniedReasons {
+		r.LaunchDeniedTotal.WithLabelValues(reason)
+	}
+	for _, provider := range webhookProviders {
+		for _, reason := range []string{WebhookThrottledRateLimited, WebhookThrottledQuotaExceeded, WebhookThrottledBacklogFull} {
+			r.WebhookThrottledTotal.WithLabelValues(provider, reason)
+		}
+	}
+	for _, stage := range []string{CapacityStageDelivery, CapacityStagePreEngine, CapacityStageClaim} {
+		for _, kind := range []string{CapacityKindKey, CapacityKindGateway} {
+			r.CapacityReassertTotal.WithLabelValues(stage, CapacityError, kind)
+		}
+	}
+	r.CapacityReassertTotal.WithLabelValues(CapacityStageDelivery, CapacityLegacy, CapacityKindNone)
+	r.CapacityLaunchReassertTotal.WithLabelValues(CapacityLaunchError)
+	for _, source := range []string{FrozenProgramSourceCapacity, FrozenProgramSourceUsageWindow} {
+		for _, outcome := range []string{FrozenProgramFreezeFailed, FrozenProgramHashMismatch} {
+			r.CapacityFrozenProgramTotal.WithLabelValues(source, outcome)
+		}
+	}
 }
 
 // Handler returns an http.Handler suitable for mounting at /metrics.

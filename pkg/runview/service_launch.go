@@ -1141,8 +1141,17 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if spec.ExpectedStatus == store.RunStatusCancelled {
 		return nil, fmt.Errorf("runview: durable resume refuses cancelled run %q", spec.RunID)
 	}
-	if spec.FilePath == "" {
+	// A frozen re-admission carries its program, not a path to compile.
+	if spec.FilePath == "" && spec.Frozen == nil {
 		return nil, errors.New("runview: file_path is required")
+	}
+	if spec.Frozen != nil {
+		if s.publisher == nil {
+			return nil, fmt.Errorf("runview: resume %s: %w", spec.RunID, ErrFrozenResumeNotCloud)
+		}
+		if spec.Force {
+			return nil, fmt.Errorf("runview: resume %s: a frozen-program re-admission is never forced", spec.RunID)
+		}
 	}
 	if err := supervise.ValidateSupervisorsMode(spec.Supervisors); err != nil {
 		return nil, fmt.Errorf("supervisors: %w", err)
@@ -1225,23 +1234,35 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	if err := validateResumable(r, spec.Answers, spec.Automatic); err != nil {
 		return nil, err
 	}
+	// A frozen re-admission resumes the program its record names, bound to
+	// THIS document: an operator's resume or a re-admission since moved its
+	// attempt, and the record no longer speaks for the run.
+	if spec.Frozen != nil {
+		if err := spec.Frozen.Bind(r); err != nil {
+			return nil, err
+		}
+	}
 
 	// A bare spec (answer-human HTTP/WS, the async auto-resume) carries no
 	// source: re-derive it from the persisted run so a stored-bot run
 	// resumes on ITS bundle, not the pod's baked twin. Callers that already
 	// resolved (the resume handler, the retry sweeper) are left untouched.
-	if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
-		cleanup, ferr := s.resumeFiller(parent, r, &spec)
-		if ferr != nil {
-			return nil, fmt.Errorf("runview: resolve resume source: %w", ferr)
+	// A frozen re-admission resolves no source: its program travels with it.
+	var identityErr error
+	if spec.Frozen == nil {
+		if s.resumeFiller != nil && spec.Source == "" && spec.BundleDir == "" && spec.BotBundle == nil {
+			cleanup, ferr := s.resumeFiller(parent, r, &spec)
+			if ferr != nil {
+				return nil, fmt.Errorf("runview: resolve resume source: %w", ferr)
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
 		}
-		if cleanup != nil {
-			defer cleanup()
+		identityErr, err = resolveSharedResumeSpec(r, &spec)
+		if err != nil {
+			return nil, err
 		}
-	}
-	identityErr, err := resolveSharedResumeSpec(r, &spec)
-	if err != nil {
-		return nil, err
 	}
 	if s.resumePolicyFiller != nil {
 		if err := s.resumePolicyFiller(parent, r, &spec); err != nil {
@@ -1260,8 +1281,27 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	//
 	// Engine.Resume repeats the same check after acquiring the run lock, so a
 	// source/status change between this point and execution still fails closed.
-	spec.BundleDir = resumeBundleDir(r, spec)
-	wf, cs, resumeBundle, err := compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+	var wf *ir.Workflow
+	var cs *CompiledSource
+	var resumeBundle *bundle.Bundle
+	if spec.Frozen != nil {
+		// The parked program, decoded as the runner decodes it, its identity
+		// the envelope's — equal to the run's by the binding above, so no
+		// source check follows.
+		wf, err = DecodeTransportWorkflow(spec.Frozen.Envelope.IR)
+		if err != nil {
+			return nil, fmt.Errorf("runview: resume %s: decode its frozen program: %w", spec.RunID, err)
+		}
+		cs = &CompiledSource{Hash: spec.Frozen.Envelope.WorkflowHash}
+	} else {
+		spec.BundleDir = resumeBundleDir(r, spec)
+		wf, cs, resumeBundle, err = compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+		if err != nil {
+			// Typed here, not inside the compile: its path shortening
+			// rebuilds the error from its text.
+			err = currentProgramUnloadable{err}
+		}
+	}
 	if err == nil {
 		// The launch's codemode warnings, restated — judged on the EFFECTIVE
 		// values (the re-state coalesced over the doc's replay, exactly what
@@ -1284,7 +1324,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// never rewrites the run — a whole-document save outside the claim
 	// would race every other writer).
 	hash := cs.Hash
-	sourceErr, legacy := resumeSourceRefusal(r, hash, resumeBundle, identityErr)
+	var sourceErr error
+	var legacy bool
+	if spec.Frozen == nil {
+		sourceErr, legacy = resumeSourceRefusal(r, hash, resumeBundle, identityErr)
+	}
 	if err := runtime.ValidateResumeScratch(parent, s.store, r, wf, spec.AcceptScratchLoss); err != nil {
 		return nil, alsoNamingSourceChange(err, sourceErr, spec.Force)
 	}

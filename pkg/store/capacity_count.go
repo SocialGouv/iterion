@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 // AliveCapacityLister lists every run the run-admission ledger counts as a
-// holder of some credential or capacity subject: alive
-// (RunStatus.HoldsCredentialSlot) and not deleted, model-idle and
-// admission-pending runs included — exactly the set Run.SpendsCredential
-// reads. The per-subject readings (CountCapacityHolders, the gateway gauge,
-// the gateway status route) group this one listing in Go, through
-// SpendsCredential itself, so none can answer differently from the ledger's
+// holder of some credential or capacity subject at the listing's instant:
+// alive or in its redelivery transit (Run.HoldsCapacity) and not deleted,
+// model-idle and admission-pending runs included — exactly the set
+// Run.SpendsCredential reads. The listing decides the holders; the
+// per-subject readings (CountCapacityHolders, the gateway gauge, the gateway
+// status route) group it in Go by stamp alone (Run.StampsCapacity), so none
+// reads a clock of its own and none can answer differently from the ledger's
 // count.
 //
 // The listing is tenant-blind by contract, whatever ctx carries: a shared
@@ -23,9 +25,9 @@ import (
 // the subject it holds.
 //
 // Each run is projected to the fields the readings need: ID, TenantID,
-// BotID, Status, ParentRunID, ParentNodeID, CredFingerprints,
-// CapacitySubjects, CapacityStampedFor and ContentBoundary.KeyID
-// (ProjectForCapacity).
+// BotID, Status, ContinuationState, ContinuationUntil, ParentRunID,
+// ParentNodeID, CredFingerprints, CapacitySubjects, CapacityStampedFor and
+// ContentBoundary.KeyID (ProjectForCapacity).
 type AliveCapacityLister interface {
 	ListAliveRunsForCapacity(ctx context.Context) ([]Run, error)
 }
@@ -47,6 +49,8 @@ func ProjectForCapacity(r *Run) Run {
 		TenantID:           r.TenantID,
 		BotID:              r.BotID,
 		Status:             r.Status,
+		ContinuationState:  r.ContinuationState,
+		ContinuationUntil:  cloneTimePtr(r.ContinuationUntil),
 		ParentRunID:        r.ParentRunID,
 		ParentNodeID:       r.ParentNodeID,
 		CredFingerprints:   slices.Clone(r.CredFingerprints),
@@ -66,8 +70,9 @@ func ProjectForCapacity(r *Run) Run {
 // listing spans every tenant whatever ctx carries.
 func (s *FilesystemRunStore) ListAliveRunsForCapacity(ctx context.Context) ([]Run, error) {
 	read := map[string]Run{}
+	now := time.Now()
 	ids, err := s.filterRunsSortedChecked(ctx, func(r *Run) bool {
-		if !r.Status.HoldsCredentialSlot() {
+		if !r.HoldsCapacity(now) {
 			return false
 		}
 		read[r.ID] = ProjectForCapacity(r)
@@ -131,9 +136,10 @@ type CapacityCount struct {
 	Trees int
 }
 
-// CountCapacityHolders is the per-subject count over one alive listing: for
-// every value with the prefix that some run's stamp names (CapacitySubjects or
-// CredFingerprints), the runs that spend it (Run.SpendsCredential, each run
+// CountCapacityHolders is the per-subject count over one alive listing
+// (AliveCapacityLister, whose runs are the holders at its instant): for every
+// value with the prefix that some run's stamp names (CapacitySubjects or
+// CredFingerprints), the runs stamped with it (Run.StampsCapacity, each run
 // once) and the distinct subbot trees among them. The answer does not depend
 // on the order of runs. Prefix GatewayCapacitySubjectPrefix reads the gateway
 // subjects; an empty prefix reads every stamped value.
@@ -144,7 +150,7 @@ func CountCapacityHolders(runs []Run, prefix string) map[string]CapacityCount {
 	for i := range runs {
 		r := &runs[i]
 		for _, subject := range slices.Concat(r.CapacitySubjects, r.CredFingerprints) {
-			if !strings.HasPrefix(subject, prefix) || !r.SpendsCredential(subject) {
+			if !strings.HasPrefix(subject, prefix) || !r.StampsCapacity(subject) {
 				continue
 			}
 			if holders[subject] == nil {

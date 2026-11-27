@@ -829,3 +829,71 @@ func TestDLQAdmin_ThePoolReachesTheBackend(t *testing.T) {
 		}
 	}
 }
+
+// TestDLQAdmin_ReplayOfAGuardedMessageIsRefusedLikeItsDelivery: a parked
+// message that carries its admission's capacity holds is replayed only where
+// a runner would execute it (queue.Admit). On an operator-paused run, whose
+// pause released those holds, and on a run whose retry is armed, the replay is
+// refused with the way out and the copy is kept; the same states with a
+// message older than the field are replayed, as a runner resumes them.
+func TestDLQAdmin_ReplayOfAGuardedMessageIsRefusedLikeItsDelivery(t *testing.T) {
+	ctx := context.Background()
+	for i, tc := range []struct {
+		name    string
+		status  store.RunStatus
+		meta    store.RunOutcomeMeta
+		guarded bool
+		want    int
+		remedy  string
+	}{
+		{name: "operator pause, guarded", status: store.RunStatusPausedOperator, guarded: true, want: http.StatusConflict, remedy: "paused by an operator"},
+		{name: "retry armed, guarded", status: store.RunStatusFailedResumable,
+			meta: store.RunOutcomeMeta{Code: store.FailureCredSlotWait, Continuation: store.ContinuationRetryArmed}, guarded: true, want: http.StatusConflict, remedy: "retry armed"},
+		{name: "operator pause, legacy", status: store.RunStatusPausedOperator, want: http.StatusOK},
+		{name: "retry armed, legacy", status: store.RunStatusFailedResumable,
+			meta: store.RunOutcomeMeta{Code: store.FailureCredSlotWait, Continuation: store.ContinuationRetryArmed}, want: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newDLQAdminServer(t)
+			runID := fmt.Sprintf("run-guarded-%d", i)
+			w.seedRun(t, runID, store.RunStatusRunning)
+			if ok, err := w.runs.UpdateRunStatusIf(ctx, runID, store.RunStatusQueued, "", []store.RunStatus{store.RunStatusRunning}); err != nil || !ok {
+				t.Fatalf("the attempt's flip: %v %v", ok, err)
+			}
+			queued, err := w.runs.LoadRun(ctx, runID)
+			if err != nil || queued.QueuedAt == nil {
+				t.Fatalf("load: %v %v", queued, err)
+			}
+			seq := uint64(400 + i)
+			w.q.parkPublished(seq, runID, "max deliver exhausted", queued.QueuedAt.Add(3*time.Millisecond))
+			if tc.guarded {
+				w.q.mu.Lock()
+				m := w.q.parked[seq]
+				m.payload = json.RawMessage(fmt.Sprintf(`{"run_id":%q,"schema_version":6,"published_at":%q,"capacity":{"holds":[{"subject":"fp-capped","token":"2026-11-26T12:00:00Z"}]}}`,
+					runID, queued.QueuedAt.Add(3*time.Millisecond).UTC().Format(time.RFC3339Nano)))
+				w.q.parked[seq] = m
+				w.q.mu.Unlock()
+			}
+			if ok, err := w.runs.UpdateRunOutcome(ctx, runID, tc.status, "boom", tc.meta, []store.RunStatus{store.RunStatusQueued}); err != nil || !ok {
+				t.Fatalf("state: %v %v", ok, err)
+			}
+			code, body := dlqDo(t, w.hs, "POST", fmt.Sprintf("/api/admin/dlq/%d/replay", seq), w.admin)
+			republished, _, remaining := w.q.snapshot()
+			if code != tc.want {
+				t.Fatalf("replay answered %d %s, want %d", code, body, tc.want)
+			}
+			if tc.want == http.StatusOK {
+				if len(republished) != 1 || remaining != 0 {
+					t.Fatalf("a replay a runner admits: republished=%v remaining=%d", republished, remaining)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.remedy) {
+				t.Fatalf("the refusal does not name its cause (%q): %s", tc.remedy, body)
+			}
+			if len(republished) != 0 || remaining != 1 {
+				t.Fatalf("a refused replay must keep the message parked: republished=%v remaining=%d", republished, remaining)
+			}
+		})
+	}
+}

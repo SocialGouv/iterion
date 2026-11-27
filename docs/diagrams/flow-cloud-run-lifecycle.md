@@ -57,7 +57,8 @@ sequenceDiagram
 | runner | long-polls one message at a time; one in-flight run per pod. A pool pod attaches its pool's durable consumer and refuses a missing or mis-pointed one; the shared pod prepares `iterion-runners` | `Runner.loop`, `processOne`, `Conn.AttachPoolConsumer`, `Conn.PrepareConsumer` |
 | runner | the pure admission rule, shared with the DLQ replay refusal | `queue.Admit`, `dispositionForStatus` |
 | runner | CAS-creates the lease, then holds it with a 20 s heartbeat against a 60 s TTL | `acquireRunLock`, `store.LockRun`, `executeHoldingLease` |
-| runner | re-decides under the lease, before the engine: a newer queued attempt, and a `running` doc with no lease holder — old enough, it is CAS-promoted to `failed_resumable` / `PROCESS_ORPHANED` with the continuation `redelivery_pending`, and the delivery is converted into a resume | `supersededUnderLock`, `adoptRunningUnderLock`, `store.UpdateRunOutcome` |
+| runner | re-decides under the lease, before the engine: a newer queued attempt, and a `running` doc with no lease holder — old enough, it is CAS-promoted to `failed_resumable` / `PROCESS_ORPHANED` with the continuation `redelivery_pending` and its `continuation_until`, and the delivery is converted into a resume | `supersededUnderLock`, `adoptRunningUnderLock`, `store.UpdateRunOutcome` |
+| runner | a guarded delivery (`RunMessage.capacity` set) proves its admission's places: the transit written, then each hold re-asserted on the ledger; a place gone parks the run `CRED_SLOT_WAIT` (`retry_armed`, one write) and acks; a ledger that cannot answer naks after 30 s | `capacityAtPickup`, `store.EnterCapacityTransit`, `store.CapacityParker` |
 | runner | hydrates the IR, opens the bundle, pre-flights the cap, clones the repository | `executeRun`, `injectCredentials`, `usageCapPreflight`, `prepareRepoWorkspace` |
 | engine | the queued-to-running transition, and the refusal to restart any other status | `runResolveDoc`, `runStartQueued` |
 | runner | picks the one disposition and decides whether anything is announced | `dispatchExecOutcome`, `outcomeSideEffectsFire` |
@@ -106,7 +107,7 @@ stateDiagram-v2
 | `claimed` | this pod owns the run; without the lease it may write neither outcome nor continuation. Two re-decisions run here, before the engine: a newer queued attempt, and a `running` doc no lease holder backs | `acquireRunLock`, `nats.LeaseInfo`, `supersededUnderLock`, `adoptRunningUnderLock` |
 | `executing` | the engine holds the run, the heartbeat holds the lease, a lost refresh interrupts | `executeHoldingLease`, `startLeaseHeartbeat` |
 | `Ack` | settled: nothing will be re-offered | `actionAck`, `ackTerminal` |
-| `Nak` / `NakDelayed` | the platform itself will retry; `redelivery_pending` says so on the run | `actionNak`, `actionNakDelayed`, `ContinuationRedeliveryPending` |
+| `Nak` / `NakDelayed` | the platform itself will retry; `redelivery_pending` says so on the run, and `continuation_until` keeps its capacity places until the redelivery | `actionNak`, `actionNakDelayed`, `ContinuationRedeliveryPending` |
 | `Term` | refused for good: JetStream drops it without consuming the budget | `actionTerm`, `termTerminal` |
 | `usage_park` | a retry is armed on the run, then the delivery is acked | `parkUsageLimitRetry`, `ScheduleRunRetry` |
 | `dlq_park` | the parked copy is the recoverable artifact; a replay of it is refused | `parkOnDLQOnFinalDelivery`, `handleAdmissionMismatch`, `handleDLQReplay` |

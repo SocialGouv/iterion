@@ -536,6 +536,28 @@ first shape names another run's IR object as its own: its tenant reads it,
 and its deletion deletes it. A run with the second has its IR objects swept
 by the deletion of the run named before that ending.
 
+## `capacity` (no bump): the places a publication's admission reserved
+
+**What it carries.** `RunMessage.capacity.holds` names each capped subject the
+publication's admission reserved on the run-admission ledger, by the identity
+of the ledger entry it wrote (`subject`, `token` — the entry's `admitted_at`).
+A runner picking up a redelivery re-asserts each hold before it resumes and
+parks the run on `CRED_SLOT_WAIT` when one is gone (ADR-167 T4a,
+[byok.md](byok.md#concurrency-ceiling--what-counts)). An admission that
+reserved nothing publishes `capacity: {}`; a publisher older than the field
+publishes none.
+
+**Why no bump.** The field carries no operator choice, and both stale sides
+fall back to the behaviour every run had before it: a runner that does not
+know it resumes the redelivery unguarded, and a message without it is resumed
+unguarded by a runner that does (counted
+`iterion_capacity_reassert_total{outcome="legacy"}`). That is the ledger's
+observe-phase stance on a mixed fleet; the version checklist before a
+per-gateway bound moves to `enforce` requires every runner upgraded and the
+`legacy` series at 0 (messages already in the stream age out at its
+`MaxAge`) — the chart's alert pack records it as
+`iterion:capacity_reassert_legacy:increase24h`.
+
 ## Rollout procedure for a schema bump vN → vN+1
 
 These two paths accompany the **server-first** default. Choose **one** of

@@ -55,7 +55,10 @@ episode via the registry claim.
 
 Exclusions the offer enforces: cancelled runs (an operator's stop is never
 auto-routed), paused runs, runs owned by a platform continuation
-(`redelivery_pending` / `retry_armed`), pre-episode runs (`outcome_seq == 0`),
+(`redelivery_pending` / `retry_armed` — a `redelivery_pending` run also holds
+its capacity places until `continuation_until`, and its redelivery either
+resumes it, parks it on `CRED_SLOT_WAIT` with `retry_armed`, or ends the
+transit itself), pre-episode runs (`outcome_seq == 0`),
 already-merged runs, and a `merge` verdict on a non-`finished` run (a stale
 checkpoint is not a verdict — downgraded to escalate).
 

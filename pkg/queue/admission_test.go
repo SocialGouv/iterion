@@ -79,3 +79,44 @@ func TestSuperseded_identityOfAnAttempt(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+// TestAdmit_guardedPublications pins the two drops a guarded publication
+// (RunMessage.Capacity set) adds, for a launch and a resume alike — the rule
+// is read before the two are told apart: an operator-paused run whose message
+// carries reserved holds is not resumed by it, and a run whose retry is armed
+// is the sweeper's. A legacy message (Capacity nil) and an admission that
+// reserved nothing keep the unguarded verdicts.
+func TestAdmit_guardedPublications(t *testing.T) {
+	queuedAt := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
+	current := queuedAt.Add(time.Millisecond).Format(time.RFC3339Nano)
+	holds := &CapacityAdmission{Holds: []store.CapacityHold{{Subject: "fp", Token: queuedAt}}}
+	empty := &CapacityAdmission{}
+	paused := store.Run{Status: store.RunStatusPausedOperator}
+	armed := store.Run{Status: store.RunStatusFailedResumable, ContinuationState: store.ContinuationRetryArmed}
+	for _, tc := range []struct {
+		name     string
+		run      store.Run
+		capacity *CapacityAdmission
+		launch   Admission
+		resume   Admission
+	}{
+		{"paused operator with holds", paused, holds, Admission{Drop: DropOperatorPausedHoldsCapacity}, Admission{Drop: DropOperatorPausedHoldsCapacity}},
+		{"paused operator, nothing reserved", paused, empty, Admission{AsResume: true}, Admission{}},
+		{"paused operator, legacy message", paused, nil, Admission{AsResume: true}, Admission{}},
+		{"retry armed, guarded", armed, holds, Admission{Drop: DropRetryArmed}, Admission{Drop: DropRetryArmed}},
+		{"retry armed, nothing reserved", armed, empty, Admission{Drop: DropRetryArmed}, Admission{Drop: DropRetryArmed}},
+		{"retry armed, legacy message", armed, nil, Admission{AsResume: true}, Admission{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := queuedAt
+			run := tc.run
+			run.ID, run.QueuedAt = "r", &q
+			if got := Admit(&RunMessage{RunID: "r", PublishedAtRFC: current, Capacity: tc.capacity}, &run); got != tc.launch {
+				t.Errorf("launch: %+v, want %+v", got, tc.launch)
+			}
+			if got := Admit(&RunMessage{RunID: "r", PublishedAtRFC: current, Resume: &ResumeSpec{}, Capacity: tc.capacity}, &run); got != tc.resume {
+				t.Errorf("resume: %+v, want %+v", got, tc.resume)
+			}
+		})
+	}
+}

@@ -1528,8 +1528,18 @@ iterion remote api GET /api/admin/llm/gateway-alive-runs
   key store that cannot answer is a `501` with its `error_code`
   (`run_store_without_alive_capacity_listing`,
   `api_key_store_without_gateway_key_lookup`), never an empty success.
+- **Runs in transit count.** A run the queue is redelivering keeps its places until
+  its `continuation_until` (ADR-167 T4a), so the host's trees include it, like the
+  ledger's count does. The listing decides who holds at its instant; the readings
+  only group it.
 - **Observe-only.** Nothing reserves a place on a gateway yet; the typed CLI verb and
-  the `gateway_capacity` configuration come with the next slices.
+  the `gateway_capacity` configuration come with the next slices. The capped keys'
+  slots a redelivery re-asserts before it resumes (a place lost parks the run on
+  `CRED_SLOT_WAIT`) are described in
+  [byok.md](byok.md#concurrency-ceiling--what-counts). A run parked that way
+  after it started is re-admitted on the program it was parked with, its
+  credentials sealed and its slot reserved again as on every resume
+  ([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)).
 
 ## Re-pointing the OAuth endpoints (OEM CLI, proxy, air-gapped IdP)
 

@@ -80,7 +80,7 @@ func TestArmUsageWindowRetry_AReFailureAfterAProbeSpendsNoAttempt(t *testing.T) 
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
@@ -130,7 +130,7 @@ func TestArmUsageWindowRetry_AProbedReFailureArmsEvenWithTheBudgetSpent(t *testi
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 5)} // 5 of 5 spent
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed — a probe must not retire a run on an attempt it did not spend", got)
@@ -149,7 +149,7 @@ func TestArmUsageWindowRetry_WithoutAProbeMarkerTheArmingIsPaid(t *testing.T) {
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-plain", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-plain"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if st.probeRearmed {
@@ -167,7 +167,7 @@ func TestArmUsageWindowRetry_AFailedFreeReArmFallsBackToThePaidOne(t *testing.T)
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2), probeRearmErr: errors.New("mongo is down")}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed — the fallback is what keeps the run from being dropped", got)
 	}
 	if !st.armed {
@@ -188,7 +188,7 @@ func TestArmUsageWindowRetry_AProbedBlindReFailureKeepsTheAnnouncedInstant(t *te
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2)}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
@@ -214,7 +214,7 @@ func TestArmUsageWindowRetry_AProbedDatedReFailureTakesTheFreshInstant(t *testin
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2)}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if want := fresh.Add(time.Minute); !st.probeRearmedAt.Equal(want) {
@@ -233,7 +233,7 @@ func TestArmUsageWindowRetry_AnUnprobedBlindRefusalStillTakesTheBlindWait(t *tes
 	r := &Runner{cfg: Config{Store: st}}
 
 	before := time.Now().UTC()
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-plain", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-plain"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if !st.armed {
@@ -255,7 +255,7 @@ func TestArmUsageWindowRetry_AStoreBlipNeverRetiresABudgetSpentProbedRun(t *test
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 5), probeRearmErr: errors.New("mongo is down")}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if len(st.abandoned) != 0 {
 		t.Fatalf("a store blip retired a probed run %s before the instant the provider announced: %q", time.Until(wall).Round(time.Hour), st.abandoned)
@@ -279,7 +279,7 @@ func TestArmUsageWindowRetry_ATransientBlipRestoresTheAnnouncedInstantForFree(t 
 	}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if len(st.abandoned) != 0 {
@@ -308,7 +308,7 @@ func TestArmUsageWindowRetry_AProbedReFailureIsNeitherANewBlockNorACircuitFailur
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if got := counterValue(t, reg.RunsUsageWindowBlocked); got != 0 {
@@ -332,7 +332,7 @@ func TestArmUsageWindowRetry_AnUnprobedReFailureCountsTheBlockAndTheCircuit(t *t
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-plain", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-plain"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if got := counterValue(t, reg.RunsUsageWindowBlocked); got != 1 {
@@ -376,7 +376,7 @@ func TestArmUsageWindowRetry_AFreeReArmKeepsTheAnnouncedWallOverASkippedCredenti
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if want := wall.Add(time.Minute); !st.probeRearmedAt.Equal(want) {
@@ -412,7 +412,7 @@ func TestArmUsageWindowRetry_APaidParkOnAProbedRowKeepsTheAnnouncedWall(t *testi
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st, Metrics: metrics.New()}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentTokens,
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentTokens,
 		iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
@@ -441,7 +441,7 @@ func TestArmUsageWindowRetry_TheCostOfKeepingTheWallIsOneProbeFloor(t *testing.T
 	wall := now.Add(96 * time.Hour)
 	reopens := now.Add(3 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wall: %v", out)
 	}
 	armed := w.st.Row().RetryAfter
@@ -455,7 +455,7 @@ func TestArmUsageWindowRetry_TheCostOfKeepingTheWallIsOneProbeFloor(t *testing.T
 		t.Fatalf("the resume's clear: %v", err)
 	}
 	w.st.Mutate(func(run *store.Run) { run.SkippedCredReopensAt = &reopens })
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the probed re-failure: %v", out)
 	}
 
@@ -497,7 +497,7 @@ func probeTheWait(t *testing.T, w *probeWorld, wall, from time.Time, n int) time
 		if err := w.st.ClearRunRetry(ctx, w.runID); err != nil {
 			t.Fatalf("probe %d of %d: the resume's clear: %v", i, n, err)
 		}
-		if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+		if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 			t.Fatalf("probe %d of %d: the probed re-failure: %v", i, n, out)
 		}
 	}
@@ -521,7 +521,7 @@ func TestArmUsageWindowRetry_ASpentProbeBudgetCostsTheSkippedCredentialTheRestOf
 	wall := now.Add(96 * time.Hour)
 	reopens := now.Add(3 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wait: %v", out)
 	}
 	// Every probe but the last, each one leaving the row on its wall.
@@ -542,7 +542,7 @@ func TestArmUsageWindowRetry_ASpentProbeBudgetCostsTheSkippedCredentialTheRestOf
 		t.Fatalf("the resume's clear: %v", err)
 	}
 	w.st.Mutate(func(run *store.Run) { run.SkippedCredReopensAt = &reopens })
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the probed re-failure on the budget's last probe: %v", out)
 	}
 
@@ -586,7 +586,7 @@ func TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedge
 	now := time.Now().UTC()
 	wall := now.Add(96 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wait: %v", out)
 	}
 	// Spend the budget but the last probe, then take the last pull and leave
@@ -613,7 +613,7 @@ func TestArmUsageWindowRetry_AStaleMarkerParkIsChargedAndKeepsTheWallsProbeLedge
 			before.ProbeCount, before.ProbeFrom, probePropertyProbeBudget)
 	}
 
-	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the stale-marker park: %v", out)
 	}
 
@@ -653,7 +653,7 @@ func TestArmUsageWindowRetry_ARefusedFreeReArmAlsoKeepsTheWallsProbeLedger(t *te
 	now := time.Now().UTC()
 	wall := now.Add(96 * time.Hour)
 
-	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the park that opens the wait: %v", out)
 	}
 	armed := w.st.Row().RetryAfter
@@ -668,7 +668,7 @@ func TestArmUsageWindowRetry_ARefusedFreeReArmAlsoKeepsTheWallsProbeLedger(t *te
 	}
 	w.st.RearmErr = errors.New("mongo is down")
 
-	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, spentNothing, quiet); out != usageRetryArmed {
+	if out := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 		t.Fatalf("the probed re-failure whose free re-arm the store refused: %v", out)
 	}
 
@@ -698,7 +698,7 @@ func TestArmUsageWindowRetry_AnUnprobedLastAttemptStillPinsTheWall(t *testing.T)
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-plain", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-plain"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if want := wall.Add(time.Minute); !st.armedAt.Equal(want) {
@@ -716,7 +716,7 @@ func TestArmUsageWindowRetry_ThePaidFallbackAlsoKeepsTheAnnouncedInstant(t *test
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 2), probeRearmErr: errors.New("mongo is down")}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if !st.armed {
@@ -737,7 +737,7 @@ func TestArmUsageWindowRetry_WithTheMarkerGoneAnExhaustedRunStillSettles(t *test
 	st := &cancelAwareStore{run: probedRunDoc("run-2247", wall, 5), probeRearmRefuse: true}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryExhausted {
 		t.Fatalf("outcome = %v, want usageRetryExhausted", got)
@@ -761,7 +761,7 @@ func TestArmUsageWindowRetry_ThePaidFallbackStillPinsTheWallOnItsLastAttempt(t *
 	st := &cancelAwareStore{run: run, probeRearmErr: errors.New("mongo is down")}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(wall), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if want := wall.Add(time.Minute); !st.armedAt.Equal(want) {
@@ -787,7 +787,7 @@ func TestArmUsageWindowRetry_ABlindReFailureKeepsTheWallThroughTheSkippedCredent
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if !st.probeRearmedAt.Equal(wall) {
@@ -816,7 +816,7 @@ func TestArmUsageWindowRetry_AParkThatFollowedRealWorkIsCharged(t *testing.T) {
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), "run-worked", spentTokens, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), usageMsg("run-worked"), spentTokens, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if st.probeRearmed {
@@ -854,7 +854,7 @@ func TestArmUsageWindowRetry_TheRestoredInstantIsTaggedOnce(t *testing.T) {
 	}
 	r := &Runner{cfg: Config{Store: st}}
 
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2247", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2247"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	src, _ := st.events[0].Data["reset_source"].(string)
@@ -1009,7 +1009,7 @@ func TestArmUsageWindowRetry_ABlindReFailureKeepsTheWallWhoeverPays(t *testing.T
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-2247", usage.spentOnTheProvider(), logger); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-2247"), usage.spentOnTheProvider(), logger); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if !st.armedAt.Equal(wall) {
@@ -1051,7 +1051,7 @@ func TestArmUsageWindowRetry_ASpentParkOnAnExhaustedBudgetKeepsTheWall(t *testin
 	st := &cancelAwareStore{run: run}
 	r := &Runner{cfg: Config{Store: st}}
 
-	got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-spent", spentTokens, iterlog.New(iterlog.LevelError, io.Discard))
+	got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-spent"), spentTokens, iterlog.New(iterlog.LevelError, io.Discard))
 
 	if got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed — the run was retired %s before the instant its provider named", got, time.Until(wall).Round(time.Hour))
@@ -1089,7 +1089,7 @@ func TestArmUsageWindowRetry_TheProbeLoopNeverRetiresARunWhoseWallIsAhead(t *tes
 		run.RetryState.ProbeFrom = &armed
 		before := run.RetryState.Attempts
 
-		got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), "run-loop", spentTokens, logger)
+		got := r.armUsageWindowRetry(context.Background(), blindUsageWindowErr(), usageMsg("run-loop"), spentTokens, logger)
 		if got != usageRetryArmed {
 			t.Fatalf("cycle %d (attempt %d/5): outcome = %v, want usageRetryArmed — settlements %v",
 				cycle, before, got, st.abandoned)
@@ -1153,7 +1153,7 @@ func TestArmUsageWindowRetry_AMarkerFromAProbeThatNeverParkedPaysItsOwnWay(t *te
 
 	// A genuinely NEW wall, dated, 36 hours out.
 	fresh := now.Add(36 * time.Hour)
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), "run-stale-pull", spentNothing,
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), usageMsg("run-stale-pull"), spentNothing,
 		iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
@@ -1203,7 +1203,7 @@ func TestArmUsageWindowRetry_AStaleProbePullKeepsTheAnnouncedWallOverAGuess(t *t
 			Reason: "usage_window", Code: "USAGE_LIMIT_BLOCKED",
 		}
 	})
-	if got := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), w.runID, spentNothing, quiet); got != usageRetryArmed {
+	if got := w.r.armUsageWindowRetry(ctx, blindUsageWindowErr(), usageMsg(w.runID), spentNothing, quiet); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	row := w.st.Row()
@@ -1240,7 +1240,7 @@ func TestArmUsageWindowRetry_AMarkerFromAFinishedWaitIsNotAProbe(t *testing.T) {
 	reg := metrics.New()
 	r := &Runner{cfg: Config{Store: st, Metrics: reg}}
 
-	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), "run-stale", spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
+	if got := r.armUsageWindowRetry(context.Background(), weeklyWindowErr(fresh), usageMsg("run-stale"), spentNothing, iterlog.New(iterlog.LevelError, io.Discard)); got != usageRetryArmed {
 		t.Fatalf("outcome = %v, want usageRetryArmed", got)
 	}
 	if st.probeRearmed {
@@ -1339,7 +1339,7 @@ func TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant(t *tes
 			wall := now.Add(96 * time.Hour)
 			dated := now.Add(72 * time.Hour) // what a DATED re-failure names here
 
-			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), w.runID, spentNothing, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, weeklyWindowErr(wall), usageMsg(w.runID), spentNothing, quiet); out != usageRetryArmed {
 				t.Fatalf("the park that opens the wait: %v", out)
 			}
 			announced := *w.st.Row().RetryAfter
@@ -1368,7 +1368,7 @@ func TestArmUsageWindowRetry_ThePaidArmingsThatRestoreTheAnnouncedInstant(t *tes
 			if tc.blind {
 				refusal = blindUsageWindowErr()
 			}
-			if out := w.r.armUsageWindowRetry(ctx, refusal, w.runID, tc.spend, quiet); out != usageRetryArmed {
+			if out := w.r.armUsageWindowRetry(ctx, refusal, usageMsg(w.runID), tc.spend, quiet); out != usageRetryArmed {
 				t.Fatalf("the second park: %v", out)
 			}
 

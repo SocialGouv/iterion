@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +31,8 @@ import (
 //
 // The ledger never becomes a second truth, in either direction. A slot is
 // released by what already releases one today — the run going terminal,
-// parking, pausing, or re-stamping onto another credential — and a refusal
+// parking (once its redelivery transit is over: Run.InCapacityTransit),
+// pausing, or re-stamping onto another credential — and a refusal
 // re-reads the row's holders against the run documents before it is final
 // (CredSlotHolderStale): a holder whose run no longer spends the credential
 // is evicted and the admission retried once. And a run whose document
@@ -77,9 +77,22 @@ type CredSlotStore interface {
 	// Every admission writes the holder's entry at a new instant
 	// (NextCredSlotInstant), returned as the admission's At: the entry's
 	// identity, so an eviction or a release judged against an earlier
-	// admission misses it.
+	// admission misses it. The entry also keeps that instant as its
+	// admitted_at, which no later write moves: the token a re-assertion
+	// names (ReassertCredSlot). An adopted entry carries none.
 	// max <= 0 is a caller error: an uncapped key reserves nothing.
 	ReserveCredSlot(ctx context.Context, fingerprint, runID string, max int) (CredSlotAdmission, error)
+	// ReassertCredSlot proves that the entry the admission `token` wrote
+	// (its CredSlotAdmission.At, kept as the entry's admitted_at) still
+	// holds runID's place under fingerprint, and moves the entry's instant
+	// forward (NextCredSlotInstant) so an eviction judged before the call
+	// misses it: Held, with the entry's new instant At — the one a release
+	// names from then on. It never creates a row or an entry, never checks
+	// the cap, never touches admitted_at. No row, no entry of runID, or an
+	// entry another admission wrote (adopted, or re-admitted since) is not
+	// held: Held false, nothing written. An empty fingerprint or run id, or
+	// a zero token, is a caller error.
+	ReassertCredSlot(ctx context.Context, fingerprint, runID string, token time.Time) (CredSlotReassertion, error)
 	// ReleaseCredSlot gives back the slot runID holds under fingerprint by
 	// the admission at `at` (its CredSlotAdmission.At), if it still does:
 	// the undo of an admission whose launch or resume did not land. A run
@@ -94,6 +107,13 @@ type CredSlotStore interface {
 	// not name it — one capped after the resume. A run no longer queued for
 	// that flip is left alone. A zero queuedAt is a caller error.
 	SettleCredSlotAdmission(ctx context.Context, runID string, queuedAt time.Time) error
+}
+
+// CredSlotReassertion is what ReassertCredSlot found.
+type CredSlotReassertion struct {
+	Held bool
+	// At is the entry's new instant once Held; zero otherwise.
+	At time.Time
 }
 
 // CredSlotAdmission is what ReserveCredSlot decided.
@@ -130,19 +150,17 @@ func AsCredSlotStore(s RunStore) CredSlotStore { return capability[CredSlotStore
 const CredSlotGrace = 2 * time.Minute
 
 // SpendsCredential reports whether the run holds a slot of the credential
-// with this fingerprint, or of the capacity subject of that name, right
-// now: alive (RunStatus.HoldsCredentialSlot) and stamped with it — in
-// CredFingerprints or in CapacitySubjects. Model-idle (LLMIdleSince)
-// releases nothing — the ledger's rule above. The one predicate the
-// alive-run count, the ledger's reconcile and the filesystem twin read, so
-// none can answer differently from the others; the Mongo count's query
-// filter is its mirror, witnessed by the CredFingerprintMeter and
-// CapacitySubjectHolder conformance rows.
-func (r *Run) SpendsCredential(fingerprint string) bool {
-	if r == nil || fingerprint == "" || !r.Status.HoldsCredentialSlot() {
-		return false
-	}
-	return slices.Contains(r.CredFingerprints, fingerprint) || slices.Contains(r.CapacitySubjects, fingerprint)
+// with this fingerprint, or of the capacity subject of that name, at now: a
+// holder (HoldsCapacity — alive, or in its redelivery transit) stamped with
+// it (StampsCapacity — in CredFingerprints or in CapacitySubjects).
+// Model-idle (LLMIdleSince) releases nothing — the ledger's rule above. The
+// one predicate the alive-run count, the ledger's reconcile and the
+// filesystem twin read, so none can answer differently from the others; the
+// Mongo count's query filter is its mirror, witnessed by the
+// CredFingerprintMeter, CapacitySubjectHolder and CapacityTransitHolder
+// conformance rows.
+func (r *Run) SpendsCredential(fingerprint string, now time.Time) bool {
+	return r.HoldsCapacity(now) && r.StampsCapacity(fingerprint)
 }
 
 // gatewayCapacitySubjectPrefix opens every gateway capacity subject.
@@ -200,11 +218,13 @@ func (r *Run) AwaitsCredSlotAdmission() bool {
 
 // CredSlotAdoptable reports whether an admission on the credential with
 // this fingerprint adopts the run when the ledger's row does not name it:
-// the run spends the credential (SpendsCredential) and no admission of its
-// own is still to come (AwaitsCredSlotAdmission). Shared by both twins'
-// adoption; the Mongo query filter is its mirror.
-func (r *Run) CredSlotAdoptable(fingerprint string) bool {
-	return r.SpendsCredential(fingerprint) && !r.AwaitsCredSlotAdmission()
+// the run spends the credential at now (SpendsCredential — a run in transit
+// included) and no admission of its own is still to come
+// (AwaitsCredSlotAdmission). Shared by both twins' adoption; the Mongo query
+// filter is its mirror. An adopted entry carries no admission identity, so
+// the adopted run's own re-assertion does not hold it (ReassertCredSlot).
+func (r *Run) CredSlotAdoptable(fingerprint string, now time.Time) bool {
+	return r.SpendsCredential(fingerprint, now) && !r.AwaitsCredSlotAdmission()
 }
 
 // CredSlotHolderStale decides whether a ledger holder may be evicted, from
@@ -216,7 +236,7 @@ func (r *Run) CredSlotAdoptable(fingerprint string) bool {
 func CredSlotHolderStale(run *Run, loadErr error, reservedAt, now time.Time, fingerprint string) bool {
 	switch {
 	case loadErr == nil:
-		return !run.SpendsCredential(fingerprint)
+		return !run.SpendsCredential(fingerprint, now)
 	case errors.Is(loadErr, ErrRunNotFound), errors.Is(loadErr, ErrRunDeleted):
 		return now.Sub(reservedAt) > CredSlotGrace
 	default:

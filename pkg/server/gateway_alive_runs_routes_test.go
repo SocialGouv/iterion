@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -116,6 +117,20 @@ func TestGatewayAliveRunsReport(t *testing.T) {
 		}
 		if v.UnresolvedTrees != 0 {
 			t.Fatalf("unresolved_trees = %d, want 0 — its key's row names the host it is on", v.UnresolvedTrees)
+		}
+	})
+	t.Run("a run the listing holds in transit counts on its subject, whatever the reader's clock", func(t *testing.T) {
+		// The listing decided at its own instant that the run held its
+		// places; the hold has lapsed since by this reader's clock. Every
+		// reading groups the one listing by stamp — a reader that judged the
+		// hold again would count what the ledger's count did not.
+		lapsed := time.Now().Add(-time.Second)
+		r := aliveRun("transit", []string{"fp-a"}, subjA)
+		r.Status, r.ContinuationState, r.ContinuationUntil = store.RunStatusFailedResumable, store.ContinuationRedeliveryPending, &lapsed
+		v := reportBothOrders(t, []store.Run{r}, keysOn)
+		h := wantHost(t, v, "a.example", 1, 1, 0)
+		if !reflect.DeepEqual(h.Bots, []gatewayBotAliveTrees{{BotID: "bot-transit", AliveTrees: 1}}) {
+			t.Fatalf("bots = %+v, want the transit run's tree under its bot", h.Bots)
 		}
 	})
 	t.Run("(viii) a rotated key with no subject is unresolved", func(t *testing.T) {

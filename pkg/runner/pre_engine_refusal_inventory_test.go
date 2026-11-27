@@ -141,7 +141,11 @@ func TestEveryPreEngineReturnHasARecorder(t *testing.T) {
 					specialized[recorded]++
 					continue
 				}
-				if guard == "r.admitAttempt" || guard == "r.guardEngineRequirement" {
+				// The capacity refresh's refusal is recorded by the delivery's
+				// capacity guard (capacityGuard.afterEngine parks the run or
+				// re-offers the delivery), never as a pre-engine refusal: its
+				// run must not move to a pre-engine verdict's status.
+				if guard == "r.admitAttempt" || guard == "r.guardEngineRequirement" || guard == "r.capacityBeforeEngine" {
 					specialized[guard]++
 					continue
 				}
@@ -167,7 +171,7 @@ func TestEveryPreEngineReturnHasARecorder(t *testing.T) {
 	if direct != 8 {
 		t.Errorf("direct refusal exits=%d want8", direct)
 	}
-	for _, name := range []string{"r.failUnloadableIR", "r.admitAttempt", "r.guardEngineRequirement"} {
+	for _, name := range []string{"r.failUnloadableIR", "r.admitAttempt", "r.guardEngineRequirement", "r.capacityBeforeEngine"} {
 		if specialized[name] != 1 {
 			t.Errorf("specialized %s=%d", name, specialized[name])
 		}
@@ -224,7 +228,7 @@ func checkPreEnginePaths(t preEnginePathReporter, fs *token.FileSet, fn *ast.Fun
 					guarded := false
 					if a, ok := s.Init.(*ast.AssignStmt); ok && len(a.Rhs) == 1 {
 						n := callName(a.Rhs[0])
-						guarded = n == "r.admitAttempt" || n == "r.guardEngineRequirement"
+						guarded = n == "r.admitAttempt" || n == "r.guardEngineRequirement" || n == "r.capacityBeforeEngine"
 					}
 					next = append(next, walk(s.Body.List, state || guarded)...)
 					switch e := s.Else.(type) {

@@ -386,6 +386,15 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// remain for cross-tenant admin views.
 	if err := s.ensureIndexes(ctx, s.runs, "runs", []mongo.IndexModel{
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("status_created")},
+		// The capacity transit (store.Run.InCapacityTransit): the holder
+		// arm of every ledger reading that is not a status — the count, the
+		// adoption, the alive listing (holdsCapacityBranches). Partial on the
+		// transit itself, so it holds the runs a redelivery is bringing back
+		// and nothing else: the range on the instant reads them alone.
+		{Keys: bson.D{{Key: "continuation_until", Value: 1}}, Options: options.Index().SetName("capacity_transit").SetPartialFilterExpression(bson.M{
+			"status":             string(store.RunStatusFailedResumable),
+			"continuation_state": string(store.ContinuationRedeliveryPending),
+		})},
 		{Keys: bson.D{{Key: "workflow_name", Value: 1}, {Key: "created_at", Value: -1}}, Options: options.Index().SetName("workflow_created_desc")},
 		{Keys: bson.D{{Key: "updated_at", Value: -1}}, Options: options.Index().SetName("updated_desc")},
 		// The run listings' order (ListRunWindow): newest first, the id

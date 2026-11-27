@@ -15,6 +15,8 @@ erDiagram
         string status "queued|running|paused_waiting_human|paused_operator|finished|failed|failed_resumable|cancelled, plus the tombstone 'deleted'"
         int64 outcome_seq
         string continuation_state "redelivery_pending|retry_armed|final; empty means UNKNOWN"
+        datetime continuation_until "end of the capacity transit, beside redelivery_pending only"
+        object frozen_program "a park's frozen program (capacity or usage_window): key, digest, workflow_hash, queued_at, source, frozen_at"
         string failure_code
         object checkpoint
         int64 version
@@ -440,6 +442,8 @@ stateDiagram-v2
 - `IsTerminal` is `finished`, `failed`, `failed_resumable`, `cancelled`. `failed_resumable` and `cancelled` are terminal *and* resumable.
 - A local resume has no queue and CASes from one of the four resumable statuses to `running` — on an answered human gate, `replayAnsweredGate` can first write `paused_waiting_human`, the status a replay that dies before its claim leaves.
 - `continuation_state` says who owns a terminal run's future: `redelivery_pending` (the queue still holds the message), `retry_armed` (a scheduled retry will resume it), `final` (acting on it is the consumer's decision).
+- `continuation_until` is written with `redelivery_pending` by the runner that hands the delivery back (its clock plus `ITERION_REDELIVERY_HOLD_TTL`): until then the run holds its capacity places (`Run.InCapacityTransit`, partial index `capacity_transit`). Any other continuation removes it; a transit the redelivery resumed nothing from is ended by that delivery, which puts back the continuation it replaced.
+- `frozen_program` is written only by a park of a run that started — the capacity park (`ParkRunOnCapacity`), in its own write, and the usage-window park (`SetRunFrozenProgram`), before it arms its retry, fenced to `failed_resumable` and the exact `queued_at` of the attempt it parks: the storage key of an envelope `ir/<run>-bundle-program-<digest>.json` holding the delivered IR and bundle reference, its digest, the workflow hash it derives, the document's own `queued_at` copied by that write, and the park's `source` (`capacity` or `usage_window`). It binds the run only while `queued_at` and `workflow_hash` still equal the run's (`Run.ReadmitFrozen`); a stale record is ignored, never cleared. A whole-document save keeps the stored record; a capacity park that froze nothing removes it, a usage-window park that froze nothing leaves it as it is. Never in the run's JSON.
 - `deleted` is written only by `DeleteRun`. A reader querying `runs` by status therefore meets a ninth value the enum does not declare.
 
 ## Collections

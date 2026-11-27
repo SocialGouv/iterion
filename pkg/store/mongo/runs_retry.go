@@ -76,44 +76,32 @@ func probeCountForWall(wall time.Time) bson.M {
 	}}
 }
 
-// ScheduleRunRetry arms a retry, conditioning on the run still being
-// failed_resumable and under its attempt budget. Both preconditions are in
-// the FILTER rather than checked first and written second: an operator
-// resuming the run by hand between the two would otherwise have their
-// resume silently re-armed.
-//
-// An aggregation pipeline rather than a plain update document, because the
-// probe ledger's fate depends on the row's OWN stored wall: read it in the
-// caller and the sweeper's pull lands in between, handing one wall a second
-// budget on a stale comparison.
-func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall time.Time, reason, code string, maxAttempts int) (bool, int, error) {
-	if maxAttempts <= 0 {
-		return false, 0, nil
+// retryBudgetClauses is the filter of a charged arming: the run is under its
+// attempt budget. The absent case needs its own branch: Mongo's comparison
+// operators are type-bracketed, so {$lt: n} does NOT match a document where
+// the field is missing. A run that never retried has no retry_state.attempts,
+// so a bare $lt would refuse to arm the FIRST retry of every run — silently
+// disabling the whole feature.
+func retryBudgetClauses(maxAttempts int) bson.A {
+	return bson.A{
+		bson.M{retryPath("attempts"): bson.M{"$exists": false}},
+		bson.M{retryPath("attempts"): bson.M{"$lt": maxAttempts}},
 	}
-	now := time.Now().UTC()
-	filter := withTenantFilter(ctx, bson.M{
-		"_id":    runID,
-		"status": string(store.RunStatusFailedResumable),
-		// The absent case needs its own branch: Mongo's comparison
-		// operators are type-bracketed, so {$lt: n} does NOT match a
-		// document where the field is missing. A run that never retried has
-		// no retry_state.attempts, so a bare $lt would refuse to arm the
-		// FIRST retry of every run — silently disabling the whole feature.
-		"$or": []bson.M{
-			{retryPath("attempts"): bson.M{"$exists": false}},
-			{retryPath("attempts"): bson.M{"$lt": maxAttempts}},
-		},
-	})
+}
+
+// retryArmingSet is the pipeline $set every arming of a durable retry writes
+// (ScheduleRunRetry, ParkRunOnCapacity, SaveParkedLaunchRun): the retry
+// instant, its reason and code, the attempt charged (charge) or left as it
+// is, and the continuation retry_armed — one builder, so no two armings can
+// disagree on what an armed row carries.
+func retryArmingSet(at, wall time.Time, reason, code string, charge bool, now time.Time) bson.M {
 	set := bson.M{
-		retryPath("retry_after"):  at.UTC(),
+		retryPath("retry_after"): at.UTC(),
+		// Always now, never kept: the arming this write performs is the one
+		// the row's scheduled_at dates.
 		retryPath("scheduled_at"): now,
 		retryPath("reason"):       reason,
 		retryPath("code"):         code,
-		// $inc's pipeline spelling, with the absent case the filter above
-		// documents: a row that never retried has no attempts at all.
-		retryPath("attempts"): bson.M{"$add": bson.A{
-			bson.M{"$ifNull": bson.A{"$" + retryPath("attempts"), 0}}, 1,
-		}},
 		// A fresh arming supersedes the previous failure note and claim.
 		retryPath("last_error"): "$$REMOVE",
 		retryPath("claimed_at"): "$$REMOVE",
@@ -133,14 +121,24 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 		// retry_armed once a retry actually exists (the block point
 		// stamps unknown), and this write is the one that creates it.
 		"continuation_state": store.ContinuationRetryArmed,
+		// An armed retry ends any redelivery transit: the sweeper owns the
+		// run's future, and the run holds no place while it waits.
+		"continuation_until": "$$REMOVE",
 		"updated_at":         now,
+	}
+	if charge {
+		// $inc's pipeline spelling, with the absent case the budget filter
+		// documents: a row that never retried has no attempts at all.
+		set[retryPath("attempts")] = bson.M{"$add": bson.A{
+			bson.M{"$ifNull": bson.A{"$" + retryPath("attempts"), 0}}, 1,
+		}}
 	}
 	// A zero wall is the caller saying this arming brought no news about where
 	// the provider's window ends (a park that put the held-aside instant back,
-	// a re-arm after a failed resume): the row keeps the wall it is on, and
-	// with it the probe ledger of that wall. Writing the zero instant here
-	// instead would make every such park look like a new wall — which is
-	// exactly the max_attempts × budget ceiling this rule removes.
+	// a re-arm after a failed resume, a capacity park): the row keeps the wall
+	// it is on, and with it the probe ledger of that wall. Writing the zero
+	// instant here instead would make every such park look like a new wall —
+	// which is exactly the max_attempts × budget ceiling this rule removes.
 	if !wall.IsZero() {
 		set[retryPath("wall")] = wall.UTC()
 		// The probe BUDGET belongs to the WALL: it bounds the probes of one
@@ -152,6 +150,30 @@ func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall tim
 		// never written here: probeCountForWall says what clearing it cost.
 		set[retryPath("probe_count")] = probeCountForWall(wall)
 	}
+	return set
+}
+
+// ScheduleRunRetry arms a retry, conditioning on the run still being
+// failed_resumable and under its attempt budget. Both preconditions are in
+// the FILTER rather than checked first and written second: an operator
+// resuming the run by hand between the two would otherwise have their
+// resume silently re-armed.
+//
+// An aggregation pipeline rather than a plain update document, because the
+// probe ledger's fate depends on the row's OWN stored wall: read it in the
+// caller and the sweeper's pull lands in between, handing one wall a second
+// budget on a stale comparison.
+func (s *Store) ScheduleRunRetry(ctx context.Context, runID string, at, wall time.Time, reason, code string, maxAttempts int) (bool, int, error) {
+	if maxAttempts <= 0 {
+		return false, 0, nil
+	}
+	now := time.Now().UTC()
+	filter := withTenantFilter(ctx, bson.M{
+		"_id":    runID,
+		"status": string(store.RunStatusFailedResumable),
+		"$or":    retryBudgetClauses(maxAttempts),
+	})
+	set := retryArmingSet(at, wall, reason, code, true, now)
 	update := mongo.Pipeline{{{Key: "$set", Value: set}}}
 	var updated struct {
 		RetryState *store.RunRetryState `bson:"retry_state"`
@@ -336,6 +358,7 @@ func (s *Store) RearmProbedRunRetry(ctx context.Context, runID string, at, wall 
 		// outcome consumer deferring to retry_armed must not see a
 		// window where nothing is coming.
 		"continuation_state": store.ContinuationRetryArmed,
+		"continuation_until": "$$REMOVE",
 		"updated_at":         now,
 	}
 	if !wall.IsZero() {
@@ -436,6 +459,7 @@ func (s *Store) AbandonRunRetry(ctx context.Context, runID, reason string, expec
 		},
 		"$unset": bson.M{
 			retryPath("retry_after"): "",
+			"continuation_until":     "",
 			// Nothing is armed, so there is no wait left to probe: a marker
 			// surviving here would make the next arming of a
 			// hand-resumed run free.

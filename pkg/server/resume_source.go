@@ -222,21 +222,10 @@ func (s *Server) resolveLegacyCatalogResume(ctx context.Context, run *store.Run,
 // first, then the baked catalog — so an override pushed after the launch
 // applies on resume, matching "effective at the next launch".
 func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath string, sourceOverride ...string) (*launchBot, error) {
-	slug := inferCatalogBotID(filePath)
 	if botSourceTenant != "" {
-		if slug == "" || s.botSources == nil {
-			return nil, fmt.Errorf("run launched from stored bot (tenant %s) but %q does not name it — resume with inline source", botSourceTenant, filePath)
-		}
-		bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, botSourceTenant), botSourceTenant, slug)
+		bs, err := s.storedResumeBot(ctx, botSourceTenant, filePath)
 		if err != nil {
-			if errors.Is(err, botsource.ErrNotFound) {
-				// %w so the inline-source path above (and the sweeper) can
-				// tell "row deleted" from a transient store failure.
-				return nil, fmt.Errorf("the stored bot this run launched from (tenant %s, slug %s) no longer exists — it was deleted after the launch; relaunch the bot, or resume with inline source: %w", botSourceTenant, slug, err)
-			}
-			// Transient (a store blip): typed so the retry sweeper RE-ARMS
-			// instead of permanently abandoning a paid usage-window retry.
-			return nil, fmt.Errorf("%w: resolve stored bot %s/%s: %v", errResumeResolveTransient, botSourceTenant, slug, err)
+			return nil, err
 		}
 		origin := "team"
 		if botsource.IsPlatform(botSourceTenant) {
@@ -264,6 +253,33 @@ func (s *Server) resolveResumeBot(ctx context.Context, botSourceTenant, filePath
 		return s.snapshotResumeBot(ctx, "", lb, sourceOverride...)
 	}
 	return lb, nil
+}
+
+// storedResumeBot reads the stored row a run launched from
+// (Run.BotSourceTenant) — its tier and the slug its file path names. A row
+// that vanished is an explicit error wrapping botsource.ErrNotFound and naming
+// the remedy (the operator deleted the stored bot after the launch: deletion
+// is the operator's lever to stop the run's automation); a store failure is
+// errResumeResolveTransient, so the retry sweeper re-arms instead of
+// abandoning. Shared by the resume's resolution and the frozen re-admission's
+// existence check (retry_sweeper.go), which must answer alike.
+func (s *Server) storedResumeBot(ctx context.Context, botSourceTenant, filePath string) (botsource.BotSource, error) {
+	slug := inferCatalogBotID(filePath)
+	if slug == "" || s.botSources == nil {
+		return botsource.BotSource{}, fmt.Errorf("run launched from stored bot (tenant %s) but %q does not name it — resume with inline source", botSourceTenant, filePath)
+	}
+	bs, err := s.botSources.GetBySlug(store.WithTenant(ctx, botSourceTenant), botSourceTenant, slug)
+	if err != nil {
+		if errors.Is(err, botsource.ErrNotFound) {
+			// %w so the inline-source path above (and the sweeper) can
+			// tell "row deleted" from a transient store failure.
+			return botsource.BotSource{}, fmt.Errorf("the stored bot this run launched from (tenant %s, slug %s) no longer exists — it was deleted after the launch; relaunch the bot, or resume with inline source: %w", botSourceTenant, slug, err)
+		}
+		// Transient (a store blip): typed so the retry sweeper RE-ARMS
+		// instead of permanently abandoning a paid usage-window retry.
+		return botsource.BotSource{}, fmt.Errorf("%w: resolve stored bot %s/%s: %v", errResumeResolveTransient, botSourceTenant, slug, err)
+	}
+	return bs, nil
 }
 
 func (s *Server) snapshotResumeBot(ctx context.Context, teamID string, lb *launchBot, sourceOverride ...string) (*launchBot, error) {

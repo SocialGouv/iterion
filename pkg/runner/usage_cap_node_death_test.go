@@ -49,7 +49,7 @@ func assertNodeDeathPark(t *testing.T, caps usagecap.Store, wf *ir.Workflow, var
 	if (s.outcomes != 0) != wantPark {
 		t.Errorf("pre-flight writes %d outcomes, want park=%v", s.outcomes, wantPark)
 	}
-	got := r.armUsageWindowRetry(ctx, err, s.run.ID, spentNothing, iterlog.Nop())
+	got := r.armUsageWindowRetry(ctx, err, usageMsg(s.run.ID), spentNothing, iterlog.Nop())
 	if (got == usageRetryArmed) != wantPark || s.armed != wantPark {
 		t.Errorf("retry outcome=%v armed=%v, want park=%v", got, s.armed, wantPark)
 	}

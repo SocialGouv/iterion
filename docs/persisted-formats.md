@@ -111,7 +111,10 @@ resume rollback must not invent an episode). `(run_id, outcome_seq)` is the
 stable per-episode key an outcome consumer claims on; the event-derived id
 cannot serve (second-truncated timestamps collide, and every save refreshes
 `updated_at`). `continuation_state` says who owns the run's future after a
-park: `redelivery_pending` (the RUNNER promoted it at an actual queue Nak),
+park: `redelivery_pending` (the RUNNER promoted it at an actual queue Nak;
+`continuation_until` beside it is the instant, at that runner's clock, until
+which the run keeps the capacity places its admission reserved — ADR-167 T4a —
+removed with any other continuation and restored by a resume's rollback),
 `retry_armed` (a quota-window retry exists — promotion happens when
 `ScheduleRunRetry` arms, demotion to `final` when it abandons), or `final`
 (nobody — acting is the consumer's decision). Empty = UNKNOWN, which a
@@ -136,6 +139,26 @@ same status is a same-status save, which keeps the stored code and epoch.
 old binary's `SaveRun` drops the fields entirely (rewinding the episode key
 for its consumers), so a release adding an `outcome_seq` CONSUMER must ship
 only after the fleet fully carries the writer.
+
+`frozen_program` (Mongo only, never in the run's JSON) is the program a
+park of a started run froze for its re-admission (ADR-167 T4a): `key` (the
+envelope's IR-blob storage key, `ir/<run>-bundle-program-<sha256>.json`),
+`digest` (the sha256 of the envelope body, checked on read), `workflow_hash`
+(the hash the envelope's IR derives), `queued_at` (the document's own attempt
+marker, copied by the write that records it), `source` (`capacity` or
+`usage_window`) and `frozen_at`. The envelope is JSON
+`{v: 1, run_id, workflow_name, workflow_hash, ir, bot_bundle}`: `ir` is the
+delivered transport IR as base64 bytes, kept byte for byte; `bot_bundle` the
+delivered bundle reference with its snapshot stored out of band under
+`ir/<run>-bundle-<snapshot digest>.json` — no capacity holds, sealed secrets,
+key or resume patch. Two parks write the record: a capacity park, in its own
+single write (`ParkRunOnCapacity`), and a usage-window park, before it arms
+its retry, in one write fenced to `failed_resumable` and the exact `queued_at`
+of the attempt it parks (`SetRunFrozenProgram`). Only while the record's
+`queued_at` and `workflow_hash` equal the run's does it bind: a resume's flip
+moves the marker, its revert puts it back. A whole-document save
+keeps the stored record; an old replica's save keeps it as an unknown field.
+`DeleteRunIR` sweeps the envelope with the run.
 
 `nodes_served` maps each LLM node's id to the last `(backend, model)` that
 served it (`model` is the provider-reported effective model; `declared_model`

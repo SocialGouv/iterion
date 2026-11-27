@@ -3,10 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -111,22 +109,5 @@ func TestExecuteRun_UnloadableIRWritesTheVerdictBeforeReturning(t *testing.T) {
 	}
 	if run.Checkpoint == nil || run.Checkpoint.NodeID != "n3" {
 		t.Fatalf("checkpoint = %+v, want preserved through the verdict", run.Checkpoint)
-	}
-}
-
-// The verdict names the errors that blocked the load, not the warnings the
-// compiler happened to append first.
-func TestSummariseDiagnostics_ErrorsOnly(t *testing.T) {
-	diags := []ir.Diagnostic{
-		{Code: "C089", Severity: ir.SeverityWarning, Message: "ultracode on a model that is not opus"},
-		{Code: "C128", Severity: ir.SeverityWarning, Message: "sandbox note"},
-		{Code: "C001", Severity: ir.SeverityError, Message: "unknown node kind"},
-	}
-	errs := compileErrors(diags)
-	if len(errs) != 1 || errs[0].Code != "C001" {
-		t.Fatalf("compileErrors = %v, want the single error", errs)
-	}
-	if got := summariseDiagnostics(errs); !strings.Contains(got, "C001") || strings.Contains(got, "C089") {
-		t.Fatalf("summary = %q, want the error named and the warnings absent", got)
 	}
 }

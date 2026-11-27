@@ -14,12 +14,15 @@ import (
 // reconciles against, on the same admission, adoption and eviction rules as
 // the Mongo ledger (Run.SpendsCredential, CredSlotHolderStale).
 
-// credSlotHolder is one admitted run and the instant of its latest
-// admission — the instant CredSlotGrace is measured from when its document
-// is missing.
+// credSlotHolder is one admitted run and the instant of its entry — the
+// instant CredSlotGrace is measured from when its document is missing, moved
+// by every admission and re-assertion. admittedAt is the instant of the
+// admission that wrote the entry, its identity for ReassertCredSlot: zero on
+// an adopted entry.
 type credSlotHolder struct {
-	runID string
-	at    time.Time
+	runID      string
+	at         time.Time
+	admittedAt time.Time
 }
 
 var _ CredSlotStore = (*FilesystemRunStore)(nil)
@@ -58,11 +61,11 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 		switch {
 		case held >= 0 && len(holders) <= max:
 			at := NextCredSlotInstant(holders[held].at, now)
-			holders[held].at = at
+			holders[held].at, holders[held].admittedAt = at, at
 			return CredSlotAdmission{Granted: true, Held: len(holders), At: at}, nil
 		case held < 0 && len(holders) < max:
 			at := NextCredSlotInstant(time.Time{}, now)
-			s.credSlots[fingerprint] = append(holders, credSlotHolder{runID: runID, at: at})
+			s.credSlots[fingerprint] = append(holders, credSlotHolder{runID: runID, at: at, admittedAt: at})
 			return CredSlotAdmission{Granted: true, Held: len(holders) + 1, At: at}, nil
 		}
 		// Full of other runs — or, under a cap lowered below its holders,
@@ -79,10 +82,11 @@ func (s *FilesystemRunStore) ReserveCredSlot(ctx context.Context, fingerprint, r
 // other than runID whose document spends it with no admission of its own
 // still to come (Run.CredSlotAdoptable) and that the row does not name —
 // the adoption store.CredSlotStore's admission performs before it decides,
-// outside the cap. Called under credSlotMu; the scan takes no store lock.
+// outside the cap. The adopted entry carries no admission identity. Called
+// under credSlotMu; the scan takes no store lock.
 func (s *FilesystemRunStore) adoptUnledgeredCredSlotHolders(ctx context.Context, fingerprint, runID string, now time.Time) error {
 	spenders, err := s.filterRunsSorted(ctx, func(r *Run) bool {
-		return r.ID != runID && r.CredSlotAdoptable(fingerprint)
+		return r.ID != runID && r.CredSlotAdoptable(fingerprint, now)
 	})
 	if err != nil {
 		return fmt.Errorf("store: reserve cred slot %s for run %s: list the runs that spend it: %w", fingerprint, runID, err)
@@ -115,6 +119,32 @@ func (s *FilesystemRunStore) evictStaleCredSlotHolders(ctx context.Context, fing
 	}
 	s.credSlots[fingerprint] = kept
 	return len(holders) - len(kept)
+}
+
+// ReassertCredSlot implements CredSlotStore under the ledger mutex: the entry
+// of runID whose admission identity is token moves to a new instant; any
+// other state writes nothing.
+func (s *FilesystemRunStore) ReassertCredSlot(_ context.Context, fingerprint, runID string, token time.Time) (CredSlotReassertion, error) {
+	if fingerprint == "" || runID == "" {
+		return CredSlotReassertion{}, fmt.Errorf("store: re-assert cred slot: fingerprint and run id are required (fingerprint=%q run=%q)", fingerprint, runID)
+	}
+	if token.IsZero() {
+		return CredSlotReassertion{}, fmt.Errorf("store: re-assert cred slot %s of run %s: no admission token — a re-assertion names the admission it proves", fingerprint, runID)
+	}
+	s.credSlotMu.Lock()
+	defer s.credSlotMu.Unlock()
+	for i, h := range s.credSlots[fingerprint] {
+		if h.runID != runID {
+			continue
+		}
+		if h.admittedAt.IsZero() || !h.admittedAt.Equal(token) {
+			return CredSlotReassertion{}, nil
+		}
+		at := NextCredSlotInstant(h.at, time.Now().UTC())
+		s.credSlots[fingerprint][i].at = at
+		return CredSlotReassertion{Held: true, At: at}, nil
+	}
+	return CredSlotReassertion{}, nil
 }
 
 // ReleaseCredSlot implements CredSlotStore: the entry of runID admitted at

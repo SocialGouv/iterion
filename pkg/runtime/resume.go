@@ -1878,7 +1878,11 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 // path's order: their writes, then their claim.
 func (e *Engine) claimsFirst(r *store.Run) bool {
 	return e.correctionProtocolCapable() || r.ResumePauseHandoff != nil || r.Status == store.RunStatusQueued ||
-		!e.queuedAttempt.IsZero() || !e.resumeCodemodeQueuedAt.IsZero() || e.resumeCodemodeQuota != (store.CodemodeScratchLimits{})
+		!e.queuedAttempt.IsZero() || !e.resumeCodemodeQueuedAt.IsZero() || e.resumeCodemodeQuota != (store.CodemodeScratchLimits{}) ||
+		// A claim guard judges the status the run is read in: a path that
+		// wrote first would move it (failed_resumable to
+		// paused_waiting_human) before the guard sees it.
+		e.resumeClaimGuard != nil
 }
 
 // claimPause is the claim of every pause path. Claiming first
@@ -1947,6 +1951,11 @@ func (e *Engine) casResumeClaim(ctx context.Context, run *store.Run, allowed []s
 	}
 	if err := e.supersededBy(run); err != nil {
 		return false, err
+	}
+	if e.resumeClaimGuard != nil {
+		if err := e.resumeClaimGuard(ctx, run); err != nil {
+			return false, err
+		}
 	}
 	quota := e.resumeCodemodeQuota
 	if run.ResumePauseHandoff != nil && quota == (store.CodemodeScratchLimits{}) {

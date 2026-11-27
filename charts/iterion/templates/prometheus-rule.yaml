@@ -87,6 +87,49 @@ spec:
           annotations:
             summary: "The bot override-shadow check cannot run"
             description: "A server replica cannot read its bot catalog or the platform bot_sources rows, so iterion_bot_override_shadows_newer is holding its last values and no override can be certified current. Check the server logs for the catalog walk and the bot-source store; GET /api/admin/bots answers shadow_check_unavailable the same way."
+        # The capacity transit (ADR-167 T4a). Counters every runner pod (the
+        # re-assertions, the freezes) or server replica (the launch's
+        # re-assertion) publishes, so every expression aggregates across
+        # pods: one page per condition, never one per replica. `expired` has
+        # no rule — a run the sweeper or an operator moved before the claim,
+        # or a clone and load that outlasted the claim's margin, reads
+        # expired and fails closed (re-offered, then parked); nor has
+        # unheld_out_of_transit, which measures an exposure, not a failure.
+        # Every child these rules (and the counter rules above) read through
+        # increase() or rate() is served at 0 from a pod's boot
+        # (pkg/cloud/metrics.New): a child born by its first increment is
+        # scraped at 1 and its event never counts. An event before a pod's
+        # first scrape stays invisible all the same. The reassert-error wait
+        # equals its window: one error the next re-offer cured never pages;
+        # errors that recur, at least a minute apart, do.
+        - alert: IterionCapacityReassertErrors
+          expr: sum by (stage) (increase(iterion_capacity_reassert_total{outcome="error"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The run-admission ledger is not answering the runners' re-assertions"
+            description: "Stage {{ `{{ $labels.stage }}` }}: re-assertions of a redelivery's capacity places keep failing. Each such delivery is re-offered every 30 s and parked on CRED_SLOT_WAIT on its last delivery — no run resumes unproven, but redeliveries stall. Check the Mongo primary and the runner logs (\"ledger could not prove\")."
+        - alert: IterionCapacityLaunchReassertErrors
+          expr: sum(increase(iterion_capacity_launch_reassert_total{outcome="error"}[15m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Launches fail on the re-assertion of their capacity places"
+            description: "The ledger did not answer a launch's re-assertion right before it published, so that launch failed. Check the Mongo primary and the server logs."
+        - alert: IterionFrozenProgramNotRecorded
+          expr: sum by (source, outcome) (increase(iterion_capacity_frozen_program_total{outcome=~"freeze_failed|hash_mismatch"}[1h])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "Started runs are parked without their program"
+            description: "Source {{ `{{ $labels.source }}` }}, outcome {{ `{{ $labels.outcome }}` }}: a park could not freeze the program its delivery carried. The re-admission resumes the bot's current program instead, refused if it changed. The runner logs say why (\"its program could not be frozen\", \"its program was not recorded\"): freeze_failed is an IR blob or run store that refused a read or a write, a program with no source snapshot (or a bundle reference with no snapshot digest), or a run that moved past the parked attempt; hash_mismatch is a run whose out-of-band IR a later publication replaced, or one older than the source digest."
+        # Not an alert: legacy is expected while a rolling deploy drains old
+        # publishers' messages. The version checklist reads it at 0 before a
+        # per-gateway bound moves to enforce.
+        - record: iterion:capacity_reassert_legacy:increase24h
+          expr: sum(increase(iterion_capacity_reassert_total{outcome="legacy"}[24h]))
     {{- if .Values.backup.enabled }}
     {{- $fullname := include "iterion.fullname" . }}
     # The off-cluster copy (#2013): a failed Job, a tier without a success

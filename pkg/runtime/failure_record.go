@@ -71,7 +71,19 @@ func (e *Engine) recordedFailureText(msg string) string {
 // TestEngineSweep_EveryRecordedFailureTextIsScrubbed keeps the tenth from
 // writing around it.
 func (e *Engine) recordFailureResumable(ctx context.Context, runID string, cp *store.Checkpoint, msg string, code store.FailureCode) error {
-	return e.store.FailRunResumable(ctx, runID, cp, e.recordedFailureText(msg), code)
+	if err := e.store.FailRunResumable(ctx, runID, cp, e.recordedFailureText(msg), code); err != nil {
+		return err
+	}
+	e.resumablePark(ctx, code)
+	return nil
+}
+
+// resumablePark tells the caller of WithOnResumablePark that the engine just
+// wrote failed_resumable on its own run, with the code it wrote.
+func (e *Engine) resumablePark(ctx context.Context, code store.FailureCode) {
+	if e.onResumablePark != nil {
+		e.onResumablePark(ctx, code)
+	}
 }
 
 func (e *Engine) recordFailureTerminal(ctx context.Context, runID string, cp *store.Checkpoint, msg string, code store.FailureCode) error {

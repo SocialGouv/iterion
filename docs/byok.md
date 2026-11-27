@@ -256,9 +256,9 @@ resume that reserves a capped key is refused when its re-stamp fails: a run
 whose document does not name the key it holds would be evicted while it
 executes. A run counts against a key only when **both** hold:
 
-1. **It is alive** — `queued` or `running` (`RunStatus.HoldsCredentialSlot`).
-   A parked or paused run spends nothing while it waits, and its resume
-   re-resolves against the ceiling like any claim.
+1. **It holds** — `queued` or `running`, or in its **redelivery transit**
+   (`Run.HoldsCapacity`, below). A parked or paused run spends nothing while
+   it waits, and its resume re-resolves against the ceiling like any claim.
 2. **Its stamp names the key.** The stamp (`run.cred_fingerprints`, written
    at launch and re-written at every resume) is narrowed to the credentials
    the run's **resolved routes can spend** — the same walk and vocabulary
@@ -271,6 +271,81 @@ executes. A run counts against a key only when **both** hold:
    gateway key (`openai_compatible`) is always counted: the walk seals it
    only for a run that may ride a gateway route, including a runner-pool
    run whose `${DIAL:-…}` routes the pod expands.
+**A run the queue hands back keeps its places for a while (ADR-167 T4a).**
+A delivery that ends on a nak the queue will redeliver — a drain, a lost
+heartbeat, a transient failure — leaves its run `failed_resumable` with
+`continuation_state: redelivery_pending`. Without more, that run held
+nothing: a reconcile on another replica evicted its entry, a newcomer took
+the slot, and the redelivery resumed onto a full key. The runner now stamps
+`continuation_until` with the continuation (its own clock plus
+`ITERION_REDELIVERY_HOLD_TTL`, 10 min by default, read on runners only), and
+until that instant the run is a holder for every reading — the count, the
+eviction and the adoption (`Run.InCapacityTransit`; Mongo index
+`capacity_transit`). The hold starts at the engine's own park write, not
+after the runner's post-engine steps.
+
+The redelivery then **proves** its places before it resumes, and never takes
+one: the message carries what its publication's admission reserved
+(`RunMessage.capacity.holds`, one subject and the identity of the ledger entry
+that admission wrote — the entry's `admitted_at`), and the runner, under the
+run's lock, writes the transit then re-asserts each hold
+(`ReassertCredSlot`): the entry moves to a new instant, so an eviction judged
+before it misses. It re-asserts again at the engine's claim, on the document
+the claim reads, and refreshes the transit before the engine loads the run
+when the clone took more than a quarter of the hold. An adopted entry, or one
+a later admission wrote, carries another identity and is not held. A place
+that is gone **parks the run on `CRED_SLOT_WAIT`** with its retry armed, in
+one write; the retry sweeper asks the ledger again like any parked run. The
+park is free when the run came back from an infrastructure cause
+(`INTERRUPTED`, `PROCESS_ORPHANED`, `SANDBOX_SETUP_TIMEOUT`,
+`SANDBOX_CAPACITY`, `ATTACHMENTS_UNFETCHABLE`) and spends one attempt of the
+run's retry budget otherwise, so a run that fails and loses its place in a
+loop stops at its `max_attempts`. A ledger that cannot answer re-offers the
+delivery after 30 s, and parks the run on its last delivery: a redelivery
+never resumes on places it could not prove. A delivery that resumes nothing
+and is not handed back ends the transit it wrote and gives its places back.
+
+**What the hold does not cover.** A run's stamp names every key it sealed and
+every gateway it may ride, capped or not; its message holds only the places
+its admission reserved. A key or a gateway capped after that admission is
+covered by the transit's adoption alone: a redelivery that resumes the run
+once its hold has lapsed, after a post-engine promote that failed (no
+`continuation_until` written), from a DLQ replay, or while an operator pause
+holds nothing (a message whose admission reserved no place) re-asserts
+nothing on it, and can run beside a run admitted in between. Such a delivery proceeds and is
+counted, once per such subject,
+`iterion_capacity_reassert_total{stage="delivery",outcome="unheld_out_of_transit"}`.
+And the hold can lapse on the way: two re-offers come before the guard and
+refresh nothing — the nak of a delivery whose lease another pod still holds
+(by its rank, past the default hold from the fifth delivery on) and a schema
+or epoch refusal during a rollout. A subject the message holds is still
+re-asserted on such a late redelivery, and the run parks on `CRED_SLOT_WAIT`
+when its place was taken.
+
+Behaviour that follows: a redelivery of an **operator-paused** run whose
+message carries reserved places is dropped (the pause released them; the
+operator's resume re-admits the run), and a run whose **retry is armed** is
+resumed by that retry only, never by a redelivery. A message from a publisher
+older than the field resumes unguarded, as before, and is counted
+`iterion_capacity_reassert_total{outcome="legacy"}`; that series must read 0
+before the per-gateway bound moves to `enforce` (the chart's alert pack records
+it as `iterion:capacity_reassert_legacy:increase24h`). A launch, too, re-asserts its
+slots right before it publishes: one lost while the launch stalled past the
+ledger's grace is asked for again, and the launch parks when none is free.
+
+A run parked that way **after it started** (it took a checkpoint or recorded
+an attempt) keeps the program its redelivery carried: the park records a
+frozen copy of it, and when a slot frees the retry sweeper republishes that
+program — not the bot as it is now — with credentials and a slot admission
+resolved again as on every resume, so a key rotated during the wait is the one
+sealed and reserved ([resume.md](resume.md#a-capacity-parked-run-resumes-the-program-it-was-parked-with)).
+A run parked before it started, and every operator resume, take the current
+bot. The freeze is counted on
+`iterion_capacity_frozen_program_total{source="capacity",outcome}`
+(`written`, `not_started`, `freeze_failed`, `hash_mismatch`); a run parked on a
+provider usage window keeps its program too, under its own rule
+([resume.md](resume.md#a-usage-parked-run-resumes-its-bots-current-program-unless-that-changed)).
+
 **Model-idle is not a release.** The runner sets `run.llm_idle_since` the
 moment the run's last model-calling node finishes and clears it the moment
 one starts (concurrent branches are counted, not flipped; every re-stamp

@@ -320,6 +320,12 @@ func (g runMetadataFormat) checkMiss(ctx context.Context, s *Store) error {
 
 // updateRunMetadata does not upsert and does not retry the caller's mutation.
 func (s *Store) updateRunMetadata(ctx context.Context, id string, filter bson.M, update any) (*mongo.UpdateResult, error) {
+	return s.updateRunMetadataOn(ctx, s.runs, id, filter, update)
+}
+
+// updateRunMetadataOn is updateRunMetadata on a clone of the runs collection
+// — one with its own write concern.
+func (s *Store) updateRunMetadataOn(ctx context.Context, runs *mongo.Collection, id string, filter bson.M, update any) (*mongo.UpdateResult, error) {
 	guard, err := s.prepareRunMetadataFormat(ctx, id)
 	if err != nil {
 		return nil, err
@@ -327,7 +333,7 @@ func (s *Store) updateRunMetadata(ctx context.Context, id string, filter bson.M,
 	if s.afterRunMetadataPrepare != nil {
 		s.afterRunMetadataPrepare(id)
 	}
-	result, err := s.runs.UpdateOne(ctx, guard.filter(ctx, filter), update)
+	result, err := runs.UpdateOne(ctx, guard.filter(ctx, filter), update)
 	if err != nil {
 		return nil, err
 	}
@@ -338,6 +344,12 @@ func (s *Store) updateRunMetadata(ctx context.Context, id string, filter bson.M,
 }
 
 func (s *Store) findOneAndUpdateRunMetadata(ctx context.Context, id string, filter bson.M, update any, opts ...options.Lister[options.FindOneAndUpdateOptions]) (*mongo.SingleResult, error) {
+	return s.findOneAndUpdateRunMetadataOn(ctx, s.runs, id, filter, update, opts...)
+}
+
+// findOneAndUpdateRunMetadataOn is findOneAndUpdateRunMetadata on a clone of
+// the runs collection — one with its own write concern.
+func (s *Store) findOneAndUpdateRunMetadataOn(ctx context.Context, runs *mongo.Collection, id string, filter bson.M, update any, opts ...options.Lister[options.FindOneAndUpdateOptions]) (*mongo.SingleResult, error) {
 	var configured options.FindOneAndUpdateOptions
 	for _, option := range opts {
 		for _, apply := range option.List() {
@@ -356,7 +368,7 @@ func (s *Store) findOneAndUpdateRunMetadata(ctx context.Context, id string, filt
 	if s.afterRunMetadataPrepare != nil {
 		s.afterRunMetadataPrepare(id)
 	}
-	result := s.runs.FindOneAndUpdate(ctx, guard.filter(ctx, filter), update, opts...)
+	result := runs.FindOneAndUpdate(ctx, guard.filter(ctx, filter), update, opts...)
 	if err = result.Err(); err != nil {
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, err

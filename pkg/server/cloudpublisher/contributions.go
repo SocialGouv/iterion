@@ -226,6 +226,27 @@ func botSourceTenantOf(ref *runview.BotBundleRef) string {
 // old appendTenantBotSkills partial transport, which shipped flat skills
 // only and let the stale baked bundle's copies shadow them by mirror
 // precedence.
+// resumeBotBundle is the bundle reference a resume's message carries: the
+// frozen envelope's for a frozen re-admission — its snapshot stored out of
+// band under a content-addressed key, so the offload leaves it as it is —
+// or the one the resume surface resolved.
+func resumeBotBundle(spec runview.ResumeSpec) *queue.BotBundleRef {
+	if spec.Frozen != nil && spec.Frozen.Envelope != nil {
+		ref := spec.Frozen.Envelope.BotBundle
+		if ref == nil {
+			return nil
+		}
+		out := *ref
+		out.Snapshot = nil
+		if ref.SnapshotRef != nil {
+			stored := *ref.SnapshotRef
+			out.SnapshotRef = &stored
+		}
+		return &out
+	}
+	return queueBotBundleRef(spec.BotBundle)
+}
+
 func queueBotBundleRef(ref *runview.BotBundleRef) *queue.BotBundleRef {
 	if ref == nil {
 		return nil

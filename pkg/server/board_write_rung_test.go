@@ -447,11 +447,11 @@ func TestLocalBoardWritesAreUntouchedByTheRung(t *testing.T) {
 }
 
 // launchDeniedSeries reads the whole iterion_launch_denied_total series —
-// every reason child with its value — because that is what the alert reads:
-// IterionLaunchDeniesSpiking sums the counter with NO reason filter
-// (charts/iterion/templates/prometheus-rule.yaml). A refusal that landed
-// under another token would still move the alert, so the witness below reads
-// the sum rather than one child.
+// every reason child that moved, with its value (the registry creates every
+// reason at 0) — rather than one child: a refusal that landed under another
+// token would still move the series, and IterionLaunchDeniesSpiking sums it
+// over every reason but member_role_required
+// (charts/iterion/templates/prometheus-rule.yaml).
 func launchDeniedSeries(t *testing.T, reg *cloudmetrics.Registry) map[string]float64 {
 	t.Helper()
 	ch := make(chan prometheus.Metric, 64)
@@ -469,7 +469,9 @@ func launchDeniedSeries(t *testing.T, reg *cloudmetrics.Registry) map[string]flo
 				reason = l.GetValue()
 			}
 		}
-		out[reason] = pb.GetCounter().GetValue()
+		if v := pb.GetCounter().GetValue(); v != 0 {
+			out[reason] = v
+		}
 	}
 	return out
 }

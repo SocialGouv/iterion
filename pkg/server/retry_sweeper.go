@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/retrycoord"
 	"github.com/SocialGouv/iterion/pkg/retrypolicy"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -192,6 +193,19 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		}
 	}
 
+	// A started run parked on a capacity wait resumes the program it was
+	// parked with — decided before anything is metered: a deleted stored bot
+	// ends the automation, an envelope the store could not read re-arms, and
+	// anything that does not bind — a slug re-created since the parked
+	// attempt among them — takes the path below on the bot's current program.
+	// A started run parked on a usage window takes that path first, and its
+	// frozen program (usageFrozen) only if its current program is refused
+	// because its source changed or it no longer compiles.
+	frozen, usageFrozen, settled := s.frozenReadmission(runCtx, retryStore, ref, run)
+	if settled {
+		return
+	}
+
 	// An automatic resume spends real money, so it passes the same
 	// admission gate as the operator-initiated one. Whether a denial ends
 	// the retry depends on the denial: a monthly quota refills on the 1st
@@ -246,27 +260,8 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		}
 	}
 
-	filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "", run)
-	if err != nil {
-		adm.rollback(s.logger)
-		if errors.Is(err, errResumeResolveTransient) {
-			// A store blip is not "the bot is gone" — re-arm within the
-			// attempt budget instead of permanently discarding a paid
-			// usage-window retry.
-			s.reArmRetry(runCtx, retryStore, ref, err)
-			return
-		}
-		// A bot removed from the catalog will never resolve; re-arming
-		// would just re-fail every 15 minutes forever.
-		s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
-		return
-	}
-	defer lb.Cleanup()
-
 	retrySpec := runview.ResumeSpec{
-		RunID:    ref.ID,
-		FilePath: filePath,
-		Source:   source,
+		RunID: ref.ID,
 		// Machinery resume: a cancelled doc is refused even with retry_after
 		// still set on the record — the SubmitResume CAS would otherwise
 		// flip cancelled → queued (clearing run.Error) and the runner would
@@ -275,9 +270,32 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 		// What the gate above judged and metered: the run service refuses
 		// the resume when the document it re-enters names another trust.
 		Admitted: gateAdmitted(subj, adm),
+		// The parked program, republished verbatim: no source is resolved
+		// or compiled for it, and the run service and the publisher check
+		// its binding again on the documents they act on.
+		Frozen: frozen,
 	}
-	if lb != nil {
-		lb.stampResumeBundle(&retrySpec)
+	if frozen == nil {
+		filePath, source, lb, err := s.resolveResumeSource(runCtx, ref.BotSourceTenant, ref.FilePath, "", "", run)
+		if err != nil {
+			adm.rollback(s.logger)
+			if errors.Is(err, errResumeResolveTransient) {
+				// A store blip is not "the bot is gone" — re-arm within the
+				// attempt budget instead of permanently discarding a paid
+				// usage-window retry.
+				s.reArmRetry(runCtx, retryStore, ref, err)
+				return
+			}
+			// A bot removed from the catalog will never resolve; re-arming
+			// would just re-fail every 15 minutes forever.
+			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
+			return
+		}
+		defer lb.Cleanup()
+		retrySpec.FilePath, retrySpec.Source = filePath, source
+		if lb != nil {
+			lb.stampResumeBundle(&retrySpec)
+		}
 	}
 	// Narrow the race window: read the run right before the resume and refuse
 	// if it is no longer auto-resumable (cancelled by stop-on-close, moved
@@ -290,17 +308,27 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 			fmt.Sprintf("auto-retry abandoned: run is %s (%s)", r.Status, strings.TrimSpace(r.Error)))
 		return
 	}
-	if _, err := resumer.Resume(runCtx, retrySpec); err != nil {
+	_, err = resumer.Resume(runCtx, retrySpec)
+	if err != nil && usageFrozen != nil && (errors.Is(err, runtime.ErrWorkflowSourceChanged) || errors.Is(err, runview.ErrCurrentProgramUnloadable)) {
+		// The bot changed during the usage wait — its source, or into a
+		// program that no longer compiles: its current program was refused
+		// before anything moved or was published, so the program the park
+		// froze is resumed instead, in this pass and on this admission.
+		frozen, err = s.resumeUsageFrozen(runCtx, resumer, ref, run, usageFrozen, retrySpec.Admitted, err)
+	}
+	if err != nil {
 		// Could be transient (a publish blip) or permanent (the bot was
 		// redeployed and the workflow hash moved). We do NOT pass Force:
 		// resuming a checkpoint against a workflow that changed underneath
-		// is how a run silently does the wrong thing. Re-arm within the
-		// attempt budget and surface the error verbatim. The metered slot
-		// follows the error's own fact (#1725): a resume whose publish
-		// landed and then reported failure keeps the slot — the runner may
-		// already have claimed that message, and a resume meters an
-		// execution attempt by design (the same charge handleResumeRun
-		// makes). Only a resume proven not to have started hands it back.
+		// is how a run silently does the wrong thing — a park's frozen
+		// program needs none, it IS the program the checkpoint was taken
+		// under. Re-arm within the attempt budget and surface the
+		// error verbatim. The metered slot follows the error's own fact
+		// (#1725): a resume whose publish landed and then reported failure
+		// keeps the slot — the runner may already have claimed that
+		// message, and a resume meters an execution attempt by design (the
+		// same charge handleResumeRun makes). Only a resume proven not to
+		// have started hands it back.
 		if !runview.RunMayHaveStarted(err) {
 			adm.rollback(s.logger)
 		}
@@ -331,8 +359,23 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 			s.deferCredSlotRetry(runCtx, retryStore, ref, run, err)
 			return
 		}
+		// A refusal only a person lifts — an undecided effect, a scratch or
+		// a lineage that does not travel, an artifact contract the program
+		// no longer meets, a required secret that resolves to nothing — is
+		// refused identically on every cycle: automation ends here, named,
+		// instead of spending the budget on it.
+		if runview.ResumeNeedsOperator(err) {
+			s.abandonRetry(runCtx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: resuming needs an operator (%v)", err))
+			return
+		}
+		if errors.Is(err, runview.ErrFrozenProgramStale) {
+			s.countRetry(retryResultFrozenStale)
+		}
 		s.reArmRetry(runCtx, retryStore, ref, err)
 		return
+	}
+	if frozen != nil {
+		s.countRetry(retryResultFrozenReadmitted)
 	}
 
 	// A PROBE's resume is speculative by construction: the preflight it
@@ -373,6 +416,115 @@ func (s *Server) resumeDueRetry(ctx context.Context, retryStore store.RunRetrySt
 	})
 	s.infof("retry sweeper: run %s (tenant %s) resumed after its provider quota window reopened (attempt %d)",
 		ref.ID, ref.TenantID, retryAttempts(ref))
+}
+
+// The frozen-program annotations of iterion_runs_retry_resumed_total, counted
+// beside a pass's own result.
+const (
+	retryResultFrozenReadmitted  = "frozen_readmitted"
+	retryResultFrozenStale       = "frozen_stale"
+	retryResultFrozenUnavailable = "frozen_unavailable"
+)
+
+// frozenReadmission decides, on the run read after the claim, which program
+// its resume carries (store.Run.ReadmitFrozen): frozen, the FrozenResume a
+// capacity park's record names, to republish now; usageFrozen, the record a
+// usage-window park left, resumed only if the bot's current program is
+// refused because its source changed or it no longer compiles
+// (resumeUsageFrozen); both nil for the bot's current program. settled true:
+// the retry was abandoned or re-armed here and the pass ends.
+//
+// A record that no longer binds the run (another attempt, another program) is
+// counted and ignored, never abandoned on. A bound record, capacity or usage,
+// is kept only while the stored bot it launched from still exists, as the
+// incarnation the parked attempt ran — deletion is the operator's lever to
+// stop a run's automation, frozen or not, so a deleted bot abandons the
+// retry, and a slug re-created since that attempt is another bot whose
+// predecessor's program is never re-admitted: its record is counted stale
+// and ignored. An inline or baked program has no row to delete. A bound
+// capacity record's envelope must read and verify: a store failure re-arms
+// (nothing is metered yet), an envelope that is gone or corrupt is counted
+// and the run takes the current program — refused if it changed, the same
+// answer as before any freeze. A bound usage record's envelope is read later,
+// only when needed.
+func (s *Server) frozenReadmission(ctx context.Context, retryStore store.RunRetryStore, ref mongostore.RetryDueRef, run *store.Run) (frozen *runview.FrozenResume, usageFrozen *store.FrozenProgram, settled bool) {
+	fp, verdict := run.ReadmitFrozen()
+	switch {
+	case verdict == store.FrozenStale:
+		s.countRetry(retryResultFrozenStale)
+		s.debugf("retry sweeper: run %s: its frozen program (%s) no longer binds the run — resuming its bot's current program", ref.ID, fp.Key)
+		return nil, nil, false
+	case verdict != store.FrozenBound:
+		return nil, nil, false
+	}
+	if run.BotSourceTenant != "" {
+		bs, err := s.storedResumeBot(ctx, run.BotSourceTenant, run.FilePath)
+		if err != nil {
+			if errors.Is(err, errResumeResolveTransient) {
+				s.reArmRetry(ctx, retryStore, ref, err)
+				return nil, nil, true
+			}
+			s.abandonRetry(ctx, retryStore, ref, fmt.Sprintf("auto-retry abandoned: %v", err))
+			return nil, nil, true
+		}
+		// An attempt resolves its stored bot before it is queued, so a row
+		// born after the parked attempt's marker is another incarnation of
+		// the slug: the program that attempt ran came from a row deleted
+		// since, and is never re-admitted, on either park's road. The record
+		// is ignored as a stale one is: the run takes its bot's current
+		// program, refused if it changed.
+		if bs.CreatedAt.After(fp.QueuedAt) {
+			s.countRetry(retryResultFrozenStale)
+			s.warnf("retry sweeper: run %s: its stored bot %s was re-created after its parked attempt — its frozen program (%s) is not re-admitted, resuming the bot's current program", ref.ID, bs.Slug, fp.Key)
+			return nil, nil, false
+		}
+	}
+	switch {
+	case fp.Source == store.FrozenProgramSourceUsageWindow:
+		return nil, fp, false
+	case fp.Source != store.FrozenProgramSourceCapacity:
+		s.warnf("retry sweeper: run %s: its frozen program (%s) names a park this server does not know (%q) — resuming its bot's current program", ref.ID, fp.Key, fp.Source)
+		return nil, nil, false
+	}
+	env, err := runview.LoadFrozenProgram(ctx, store.AsIRBlobStore(s.cfg.Store), run.ID, fp)
+	if errors.Is(err, runview.ErrFrozenProgramUnavailable) {
+		s.countRetry(retryResultFrozenUnavailable)
+		s.warnf("retry sweeper: run %s: %v — resuming its bot's current program instead, refused if it changed", ref.ID, err)
+		return nil, nil, false
+	}
+	if err != nil {
+		s.reArmRetry(ctx, retryStore, ref, err)
+		return nil, nil, true
+	}
+	return &runview.FrozenResume{Program: *fp, Envelope: env}, nil, false
+}
+
+// resumeUsageFrozen resumes the program a usage-window park froze (fp), once
+// the bot's current program was refused (refused) because its source changed
+// (runtime.ErrWorkflowSourceChanged) or it no longer compiles
+// (runview.ErrCurrentProgramUnloadable): the second resume of the pass, on
+// the admission the first was judged and metered under (admitted). It
+// returns the program it resumed and that resume's error, which the caller
+// handles as it handles any resume's.
+//
+// An envelope that is gone or corrupt is counted and the current program's
+// refusal stands (nil, refused): the run is re-armed on it as before any
+// freeze. Any other read error is returned as the pass's error, nothing
+// resumed: the caller refunds the admission and re-arms.
+func (s *Server) resumeUsageFrozen(ctx context.Context, resumer runResumer, ref mongostore.RetryDueRef, run *store.Run, fp *store.FrozenProgram, admitted *runview.GateAdmission, refused error) (*runview.FrozenResume, error) {
+	env, err := runview.LoadFrozenProgram(ctx, store.AsIRBlobStore(s.cfg.Store), run.ID, fp)
+	if errors.Is(err, runview.ErrFrozenProgramUnavailable) {
+		s.countRetry(retryResultFrozenUnavailable)
+		s.warnf("retry sweeper: run %s: its bot changed during its usage wait and %v — its current program's refusal stands", ref.ID, err)
+		return nil, refused
+	}
+	if err != nil {
+		return nil, fmt.Errorf("its bot changed during its usage wait (%v) and its frozen program could not be read: %w", refused, err)
+	}
+	frozen := &runview.FrozenResume{Program: *fp, Envelope: env}
+	s.infof("retry sweeper: run %s: its bot changed during its usage wait — resuming the program it was parked with", ref.ID)
+	_, err = resumer.Resume(ctx, runview.ResumeSpec{RunID: ref.ID, Automatic: true, Admitted: admitted, Frozen: frozen})
+	return frozen, err
 }
 
 // circuitRetryDelayAt spreads a circuit-delayed cohort while preserving the
@@ -563,10 +715,10 @@ var errRetryAdmissionDeferred = errors.New("admission deferred")
 // did not resolve for a store blip (errResumeResolveTransient). Those are the
 // transient causes reArmRetry is handed; the shared circuit and a credential's
 // slot cap defer the row before it gets there (DelayRunRetry, which keeps the
-// release). A Resume error is not one: the bot redeployed under the run and
-// its workflow hash moved, which fails identically on every cycle, or a
-// publish that may have landed (runview.RunMayHaveStarted), whose admission
-// the resume kept.
+// release). A Resume error is not one: the bot redeployed under a run whose
+// park recorded no program and its workflow hash moved, which fails
+// identically on every cycle, or a publish that may have landed
+// (runview.RunMayHaveStarted), whose admission the resume kept.
 func releasedRetryRefusalIsTransient(cause error) bool {
 	return errors.Is(cause, errRetryAdmissionDeferred) || errors.Is(cause, errResumeResolveTransient)
 }

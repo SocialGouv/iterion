@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,9 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/rendergate"
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -579,6 +584,233 @@ func TestChartRenderCloudBotOverrideAlerts(t *testing.T) {
 		if strings.Contains(fmt.Sprint(r["expr"]), "iterion_bot_override_unorderable_version") {
 			t.Errorf("a rule alerts on the unorderable class (%v) — it is informational only", r["alert"])
 		}
+	}
+}
+
+// bootSeries is every sample a fresh metrics registry serves before any
+// event, by family: what a rule sees on a pod that has counted nothing yet.
+func bootSeries(t *testing.T) map[string][]map[string]string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	metrics.New().Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+	fams, err := parser.TextToMetricFamilies(rec.Body)
+	if err != nil {
+		t.Fatalf("parse the registry's exposition: %v", err)
+	}
+	out := map[string][]map[string]string{}
+	for name, f := range fams {
+		for _, m := range f.GetMetric() {
+			labels := map[string]string{}
+			for _, l := range m.GetLabel() {
+				labels[l.GetName()] = l.GetValue()
+			}
+			out[name] = append(out[name], labels)
+		}
+	}
+	return out
+}
+
+// seriesSelector is one iterion_* vector selector of a rule expression.
+type seriesSelector struct {
+	name     string
+	matchers []labelMatcher
+	// ranged: the selector carries a range ([15m]) — the input of increase(),
+	// rate() and their kind.
+	ranged bool
+}
+
+type labelMatcher struct{ label, op, value string }
+
+func (s seriesSelector) String() string {
+	var ms []string
+	for _, m := range s.matchers {
+		ms = append(ms, fmt.Sprintf("%s%s%q", m.label, m.op, m.value))
+	}
+	return s.name + "{" + strings.Join(ms, ",") + "}"
+}
+
+var (
+	seriesSelectorRe = regexp.MustCompile(`\b(iterion_[A-Za-z0-9_]+)\s*(\{[^}]*\})?\s*(\[[^\]]+\])?`)
+	labelMatcherRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"\s*$`)
+	tokenAlternation = regexp.MustCompile(`^[A-Za-z0-9_]+(\|[A-Za-z0-9_]+)*$`)
+)
+
+// seriesSelectors reads the iterion_* selectors of a rule expression.
+func seriesSelectors(t *testing.T, expr string) []seriesSelector {
+	t.Helper()
+	var out []seriesSelector
+	for _, m := range seriesSelectorRe.FindAllStringSubmatch(expr, -1) {
+		sel := seriesSelector{name: m[1], ranged: m[3] != ""}
+		if body := strings.Trim(m[2], "{}"); strings.TrimSpace(body) != "" {
+			for _, part := range strings.Split(body, ",") {
+				lm := labelMatcherRe.FindStringSubmatch(part)
+				if lm == nil {
+					t.Fatalf("expr %q: matcher %q is not one this test reads (a comma inside a value?)", expr, part)
+				}
+				sel.matchers = append(sel.matchers, labelMatcher{lm[1], lm[2], lm[3]})
+			}
+		}
+		out = append(out, sel)
+	}
+	return out
+}
+
+// matches applies Prometheus's matcher semantics (a regex matches the whole
+// value) to one served label set.
+func (m labelMatcher) matches(labels map[string]string) bool {
+	v := labels[m.label]
+	switch m.op {
+	case "=":
+		return v == m.value
+	case "!=":
+		return v != m.value
+	}
+	ok := regexp.MustCompile("^(?:" + m.value + ")$").MatchString(v)
+	return ok == (m.op == "=~")
+}
+
+func servedMatching(served []map[string]string, matchers []labelMatcher) int {
+	n := 0
+	for _, labels := range served {
+		all := true
+		for _, m := range matchers {
+			all = all && m.matches(labels)
+		}
+		if all {
+			n++
+		}
+	}
+	return n
+}
+
+// instantPerKeyGauges are the series a rule reads as they stand whose
+// children are keyed by a value no boot can know (a bot slug): a gauge child
+// born at its value is read at its first scrape, so nothing is lost. Never
+// valid for a ranged read.
+var instantPerKeyGauges = map[string]string{
+	"iterion_bot_override_shadows_newer": "one gauge per platform override's slug, set by the shadow check's pass",
+}
+
+// Every iterion_* series a chart rule reads is served by a FRESH registry, at
+// boot, before the process counted anything: a counter child born by its
+// first Inc is first scraped at 1, and increase() or rate() never sees that
+// event — a single freeze failure would not page, a single legacy resume per
+// pod would record 0 on the gate the version checklist reads. A ranged read
+// must find, at boot, a child matching its matchers, and one for each value
+// an =~ alternation names; an instant read of a per-key gauge is the one
+// exemption, by name. Red when a rule reads a series, or a value of one, that
+// is left to its first Inc.
+func TestChartRenderRuleSeriesAreServedAtBoot(t *testing.T) {
+	docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "-f", "testdata/values-datastores.yaml", "-f", "testdata/values-backup.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+	boot := bootSeries(t)
+	ranged := 0
+	for group, rules := range ruleGroups(t, docs) {
+		for _, r := range rules {
+			name := fmt.Sprint(r["alert"])
+			if r["alert"] == nil {
+				name = fmt.Sprint(r["record"])
+			}
+			expr := fmt.Sprint(r["expr"])
+			sels := seriesSelectors(t, expr)
+			if strings.Contains(expr, "iterion_") && len(sels) == 0 {
+				t.Fatalf("%s/%s: expr %q names iterion_ and no selector was read: the scan is broken", group, name, expr)
+			}
+			for _, sel := range sels {
+				served := boot[sel.name]
+				if !sel.ranged {
+					if len(served) == 0 && instantPerKeyGauges[sel.name] == "" {
+						t.Errorf("%s/%s reads %s, which a fresh registry does not serve", group, name, sel.name)
+					}
+					continue
+				}
+				ranged++
+				if _, exempt := instantPerKeyGauges[sel.name]; exempt {
+					t.Errorf("%s/%s reads the per-key gauge %s through a range: its children are not created at boot", group, name, sel.name)
+				}
+				if servedMatching(served, sel.matchers) == 0 {
+					t.Errorf("%s/%s reads %s through a range, and a fresh registry serves no child it selects: the first event of each child is invisible to the rule", group, name, sel)
+					continue
+				}
+				for i, m := range sel.matchers {
+					if m.op != "=~" || !tokenAlternation.MatchString(m.value) {
+						continue
+					}
+					for _, v := range strings.Split(m.value, "|") {
+						one := slices.Clone(sel.matchers)
+						one[i] = labelMatcher{m.label, "=", v}
+						if servedMatching(served, one) == 0 {
+							t.Errorf("%s/%s reads %s{%s=%q} through a range, and a fresh registry serves no such child", group, name, sel.name, m.label, v)
+						}
+					}
+				}
+			}
+		}
+	}
+	if ranged == 0 {
+		t.Fatal("no ranged read of an iterion_* series in the render: the scan is broken")
+	}
+	for name := range instantPerKeyGauges {
+		if len(boot[name]) != 0 {
+			t.Errorf("%s is served at boot: drop its exemption", name)
+		}
+	}
+}
+
+// The capacity transit's alerts (ADR-167 T4a): each rule reads the outcome
+// the runner or the publisher really emits, aggregated across pods (every
+// runner pod and server replica publishes its own counters, so an
+// un-aggregated expr is one page per pod); that a fresh registry serves what
+// each reads is TestChartRenderRuleSeriesAreServedAtBoot's. `expired` and
+// `unheld_out_of_transit` page nobody: the first fails closed and is
+// expected, the second measures an exposure. `legacy` is recorded, never
+// alerted on: a rolling deploy expects it, and the version checklist reads
+// the recording.
+func TestChartRenderCapacityAlerts(t *testing.T) {
+	docs := manifests(t, mustRender(t, "-f", "values-prod.yaml", "--set", "metrics.prometheusRule.enabled=true"))
+	rules := ruleGroups(t, docs)["iterion.cloud"]
+	if len(rules) == 0 {
+		t.Fatal("no iterion.cloud group in the render")
+	}
+	for _, tc := range []struct{ alert, series, matcher, agg string }{
+		{"IterionCapacityReassertErrors", "iterion_capacity_reassert_total", fmt.Sprintf("outcome=%q", metrics.CapacityError), "sum by (stage) ("},
+		{"IterionCapacityLaunchReassertErrors", "iterion_capacity_launch_reassert_total", fmt.Sprintf("outcome=%q", metrics.CapacityLaunchError), "sum("},
+		{"IterionFrozenProgramNotRecorded", "iterion_capacity_frozen_program_total", fmt.Sprintf("outcome=~\"%s|%s\"", metrics.FrozenProgramFreezeFailed, metrics.FrozenProgramHashMismatch), "sum by (source, outcome) ("},
+	} {
+		r := rule(rules, tc.alert, map[string]string{"severity": "warning"})
+		if r == nil {
+			t.Errorf("no %s warning rule: the series would be scraped and read by nobody", tc.alert)
+			continue
+		}
+		expr := fmt.Sprint(r["expr"])
+		for _, want := range []string{tc.series + "{" + tc.matcher + "}", tc.agg, "> 0"} {
+			if !strings.Contains(expr, want) {
+				t.Errorf("%s expr = %q, want it to contain %q", tc.alert, expr, want)
+			}
+		}
+		if !strings.HasPrefix(expr, "sum") {
+			t.Errorf("%s expr = %q, want it aggregated across pods", tc.alert, expr)
+		}
+	}
+	var recorded map[string]any
+	for _, r := range rules {
+		expr := fmt.Sprint(r["expr"])
+		if r["alert"] != nil && strings.Contains(expr, "iterion_capacity_reassert_total") {
+			for _, quiet := range []string{metrics.CapacityExpired, metrics.CapacityUnheldOutOfTransit, metrics.CapacityLegacy} {
+				if strings.Contains(expr, quiet) {
+					t.Errorf("alert %v pages on %s: %q", r["alert"], quiet, expr)
+				}
+			}
+		}
+		if r["record"] == "iterion:capacity_reassert_legacy:increase24h" {
+			recorded = r
+		}
+	}
+	if recorded == nil {
+		t.Fatal("no recording of the legacy series: the version checklist has nothing to read")
+	}
+	if expr := fmt.Sprint(recorded["expr"]); expr != fmt.Sprintf("sum(increase(iterion_capacity_reassert_total{outcome=%q}[24h]))", metrics.CapacityLegacy) {
+		t.Errorf("legacy recording expr = %q", expr)
 	}
 }
 
