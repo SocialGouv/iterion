@@ -156,7 +156,7 @@ func IRBundleSnapshotPrefix(runID string) (string, error) {
 // with the run (IRBundleSnapshotPrefix). Content-addressed, so no later write
 // of the run replaces it.
 func FrozenProgramLogicalKey(runID, digest string) string {
-	return runID + "-bundle-program-" + digest
+	return runID + store.IRBlobFamilyInfix + "program-" + digest
 }
 
 // validateIRBlobKey re-derives the canonical IR key from a storage key

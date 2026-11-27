@@ -261,7 +261,7 @@ func frozenBundleRef(ctx context.Context, blobs store.IRBlobStore, runID string,
 		if err != nil {
 			return nil, err
 		}
-		key, err := blobs.PutIRBlob(ctx, runID+"-bundle-"+ref.SnapshotDigest, ref.Snapshot)
+		key, err := blobs.PutIRBlob(ctx, runID+store.IRBlobFamilyInfix+ref.SnapshotDigest, ref.Snapshot)
 		if err != nil {
 			return nil, fmt.Errorf("runview: freeze the program of run %s: store its bundle snapshot: %w", runID, err)
 		}
