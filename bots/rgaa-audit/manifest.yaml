@@ -1,7 +1,26 @@
 name: rgaa-audit
 display_name: Acci
 icon: ♿
-version: 3.3.0
+version: 3.4.0
+## 3.4.0 — shorter, cheaper runs; the rest is listed « à revérifier ». The
+## worklist triages out, at zero tokens, every criterion the engine says only
+## a rendered page decides when the audit read no page and the source
+## yielded no evidence (the engine's own unrenderedResidual rule): it stays
+## « à évaluer », untouched, and the coverage annex lists it. The first pass
+## is ONE fan-out (wave_batches 0, from 4: seven rounds for 92 criteria on
+## the production route), and a re-ask is spent only on a criterion with
+## evidence to cite, one the engine flags without subject, or one whose
+## batch was lost whole (never answered). The annex's
+## « Points à revérifier » names every open criterion with its title and why
+## it stayed open. An incomplete trial (a refutation batch lost after its
+## re-ask) is applied: the engine prunes what was refuted and reopens the
+## untried conformities, where the whole trial used to be dropped. The two
+## re-ask loops are priced by their own size from their first crossing
+## (sized_by reads the dispatched worklist / the trial's claims at entry),
+## and the caps move to 6h and $45 (80M tokens kept): at 3h a production
+## run's refutation re-ask was declined by the duration guard. The browser
+## probe and an unexpected render failure under `rendered=auto` degrade the
+## rendered layer instead of killing the run.
 ## 3.3.0 — ultra11y 9.6.6 (from 7.2.0). Two outcomes now exit 1 with their
 ## result written, and the bot reads them as data: a fold the gate refused
 ## part of (accepted verdicts written, ok: false; SocialGouv/ultra11y#223),

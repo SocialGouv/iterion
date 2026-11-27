@@ -35,6 +35,12 @@
 ##     ─► [publish_list ─► publish_diff ─► publish_each ⇒ publish_create
 ##     ─► publish_verify_read ─► publish_verify] ─► done
 ##
+## What the run does NOT buy: a criterion only a rendered page decides,
+## with nothing harvested and no page read, is triaged out by `worklist`
+## (never dispatched); the first pass is one fan-out; a re-ask goes only to
+## a criterion with evidence to cite. What stays open is listed in the
+## coverage annex as « Points à revérifier », never chased with more rounds.
+##
 ## Three engine facts the graph is built around (measured on 5.45.0, pinned
 ## by bots/rgaa_audit_engine_contract_test.go):
 ##   - `verify --apply` folds PARTIALLY: every accepted verdict lands, each
@@ -116,12 +122,15 @@ vars:
   ## bounded re-asks of the refusals the fold names (0 = none).
   batch_size: int = 8
   max_reask: int = 1
-  ## Batches dispatched per round (a wave; 0 = every batch at once). Each
-  ## wave is one iteration of the re-ask loop, so the loop budget guard can
-  ## decline the next one when the budget runs short: what was decided is
-  ## folded and the rest is reported « à évaluer » (#3746). `max_rounds`
-  ## bounds the loop — the waves plus their re-asks.
-  wave_batches: int = 4
+  ## Batches dispatched per round (a wave; 0 = every batch at once, the
+  ## default: ONE adjudication pass, then at most `max_reask` re-asks of the
+  ## criteria that carry evidence). A positive value splits the first pass
+  ## into waves, each one iteration of the re-ask loop, so the loop budget
+  ## guard can decline the next one when the budget runs short: what was
+  ## decided is folded and the rest is reported « à évaluer » (#3746). On
+  ## the production route the four-batch waves took seven rounds for 92
+  ## criteria. `max_rounds` bounds the loop — the waves plus their re-asks.
+  wave_batches: int = 0
   max_rounds: int = 40
   ## Second reader over the draft report (NC claims AND landed conformities;
   ## NA verdicts are not on trial — the engine's trial does not list them).
@@ -235,6 +244,13 @@ prompt adjudicate_system:
          anchors, copied as for a citation. A recommendation that is not
          such an object, or stands on no anchor of this item, is dropped
          before the fold and counted in the annex.
+    An item whose `evidence[]` is EMPTY is a quick call, not an
+    investigation: at most two searches (grep or glob) INSIDE the audited
+    workspace for the criterion's subject, then answer — NA when the
+    subject exists nowhere, otherwise `manual` with `reason`
+    "needs-rendered-dom" or "undecidable" and one sentence naming what you
+    found. Do not trace the whole repository for it: such a criterion is
+    listed in the report as a point to re-check, and it is not re-asked.
     5. Write every `justification`, finding `message` and recommendation
        `message` in FRENCH: they are rendered verbatim in the French report
        and the board issues.
@@ -511,6 +527,8 @@ schema worklist_output:
   fail_code: string
   reason: string
   count: int
+  asked: int
+  recheck_ids: json
   items_dir: string
   briefs_dir: string
   contract_path: string
@@ -600,6 +618,7 @@ schema probe_output:
   next_wave: int
   not_asked: int
   reask_spent: int
+  no_evidence: int
   applied: int
   rejected: int
   unfilled: int
@@ -710,7 +729,6 @@ schema refute_apply_input:
   run_dir: string
   workspace_dir: string
   standard: string
-  complete: bool
 
 schema refute_apply_output:
   ok: bool
@@ -1285,9 +1303,13 @@ tool prepare:
     const browserFlag = browserPath ? ["--browser-path=" + browserPath] : [];
     let browserOk = false, browserReason = "rendered layer off";
     if (rendered !== "off") {
-      const r = L.engineJSON(["status", "--browser", "--cwd", pkgDir].concat(browserFlag, ["--json"]), { timeoutMs: 120000 });
-      browserOk = !!(r.json.browser && r.json.browser.ok);
-      browserReason = browserOk ? "" : String((r.json.browser && r.json.browser.reason) || "no browser");
+      // A probe that crashes or prints no JSON reads as "no browser" with
+      // its message: the rendered layer degrades (or refuses under
+      // `required`), the static audit still runs.
+      const r = L.engine(["status", "--browser", "--cwd", pkgDir].concat(browserFlag, ["--json"]), { timeoutMs: 120000 });
+      const b = r.json && L.isObj(r.json.browser) ? r.json.browser : null;
+      browserOk = !!(b && b.ok);
+      browserReason = browserOk ? "" : (b ? String(b.reason || "no browser") : "the browser probe printed no JSON (exit " + r.code + "): " + String(r.stderr || "").trim().slice(-400));
     }
     const rcPresent = L.exists(path.join(WS, ".ultra11yrc.json"));
     const ledgerRel = asStr({{input.ledger_path}}) || path.join(".ultra11y", "verdicts", STD + ".json");
@@ -1432,7 +1454,9 @@ tool render:
       L.layer("rendered", { status: "ok", pages_recorded: recorded, pages_refused: refused, refused_pages: refusedPages || [], missing_kinds: missing });
       L.out(L.record("render", { ok: true, fail_code: "", reason: "", status: "ok", pages_recorded: recorded, pages_refused: refused, missing_kinds: missing, audit_sha256: sha }));
     };
-    main().catch((e) => L.die("render: " + (e && e.stack || e)));
+    // Under `auto` an unexpected failure of the layer falls back to the
+    // static audit, named; only `required` makes it the run's death.
+    main().catch((e) => { const msg = "render: " + (e && e.stack || e); if (required) L.die(msg); try { stop(); } catch (x) {} degrade(msg.slice(0, 1500)); });
   language: js
   input: render_input
   output: render_output
@@ -1549,12 +1573,33 @@ tool worklist:
     const contractPath = path.join(path.dirname(w.mdPath), "ADJUDICATE.contract.md");
     if (!L.exists(contractPath)) L.die("verify --manual wrote no verdict contract at " + contractPath + " — the briefs refer to it");
     const itemsDir = path.join(RUN, "items");
-    const ids = [];
-    for (const it of todo.items || []) { ids.push(it.criteriaId); L.writeJSON(path.join(itemsDir, it.criteriaId + ".json"), it); }
+    // Triage before any agent: a criterion the engine says only a rendered
+    // page can decide (its own rule, `unrenderedResidual`: automatability
+    // needs-rendering, or a test the pack automates on the rendered DOM),
+    // on an audit that read no page, with no evidence harvested from the
+    // source, has nothing an agent can read — the brief itself tells the
+    // agent `needs-rendered-dom` is the only honest answer. It is not
+    // dispatched: it stays « à évaluer » in the audit, untouched (no verdict
+    // the bot would have to justify), and the coverage annex lists it among
+    // the points to re-check, at zero tokens.
+    const doc = L.readJSON(L.auditPath());
+    const scope = doc.scope || (doc.core && doc.core.scope) || {};
+    const pageRead = Array.isArray(scope.pagesAudited) ? scope.pagesAudited.length > 0 : (scope.pages || []).length > 0;
+    const renderOnly = (it) => it.automatability === "needs-rendering" || it.needsRenderedEvidence === true;
+    const ids = [], recheck = [];
+    for (const it of todo.items || []) {
+      L.writeJSON(path.join(itemsDir, it.criteriaId + ".json"), it);
+      if (!pageRead && renderOnly(it) && !(Array.isArray(it.evidence) && it.evidence.length)) recheck.push(it.criteriaId);
+      else ids.push(it.criteriaId);
+    }
     L.writeJSON(path.join(RUN, "pending.json"), { round: 0, ids: ids, issues: {} });
-    L.writeJSON(path.join(RUN, "worklist.json"), { count: Number(w.count || 0), ids: ids, items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, contract: skeleton.contract || {} });
-    L.layer("worklist", { status: "ok", count: Number(w.count || 0) });
-    L.out({ ok: true, fail_code: "", reason: "", count: Number(w.count || 0), items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, pending_ids: ids, contract: skeleton.contract || {}, audit_sha256: sha });
+    L.writeJSON(path.join(RUN, "worklist.json"), { count: Number(w.count || 0), ids: ids, recheck: recheck, items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, contract: skeleton.contract || {} });
+    // The adjudication as it stands before any agent answered: what
+    // fold_final folds when nothing is dispatched (every open criterion
+    // triaged), and what merge_verdicts rewrites otherwise.
+    L.writeJSON(path.join(RUN, "adjudication.json"), Object.assign({}, skeleton, { items: [] }));
+    L.layer("worklist", { status: "ok", count: Number(w.count || 0), asked: ids.length, recheck: recheck });
+    L.out({ ok: true, fail_code: "", reason: "", count: Number(w.count || 0), asked: ids.length, recheck_ids: recheck, items_dir: itemsDir, briefs_dir: w.itemsDir, contract_path: contractPath, todo_path: w.todoPath, verdicts_path: w.verdictsPath, pending_ids: ids, contract: skeleton.contract || {}, audit_sha256: sha });
   language: js
   input: worklist_input
   output: worklist_output
@@ -1779,7 +1824,10 @@ tool fold_probe:
     for (const id of rejected) if (!issues[id]) issues[id] = "refused by the fold" + (general.length ? ": " + general.join(" | ") : "");
     for (const id of gaps) if (!issues[id]) issues[id] = "missing from the adjudication (coverage gap)";
     for (const id of flaggedOpen) if (!rejected.includes(id) && !gaps.includes(id) && !unfilled.includes(id)) issues[id] = "the engine found no subject for this criterion and a manual verdict leaves the report inconsistent — decide NA (no subject in the audited scope) or C/NC on the evidence";
-    const openIds = Array.from(new Set([].concat(rejected, gaps, unfilled, flaggedOpen))).sort();
+    // The criteria the worklist triaged out were never dispatched: the engine
+    // names them as gaps, and they stay open — never asked.
+    const triaged = new Set((wl.recheck || []).map(String));
+    const openIds = Array.from(new Set([].concat(rejected, gaps, unfilled, flaggedOpen))).filter((id) => !triaged.has(id)).sort();
     // A criterion no wave has carried yet is pending with no prior issue; one
     // already asked is re-asked while it has asks left (max_reask re-asks
     // after its first ask), and past that it stays open — « à évaluer » in
@@ -1789,9 +1837,22 @@ tool fold_probe:
     const reaskAsked = Number({{input.max_reask}});
     const maxReask = Number.isInteger(reaskAsked) && reaskAsked >= 0 ? reaskAsked : Infinity;
     const timesAsked = (id) => askedCount ? Number(askedCount[id] || 0) : 1;
+    // A re-ask is spent only where it can change the answer: on a criterion
+    // with harvested evidence to cite, one the engine flags without subject
+    // (NA is the answer the report then needs), or one no agent answered at
+    // all. An asked criterion with none of these stays open — a point to
+    // re-check in the annex — instead of buying another round.
+    const hasEvidence = (id) => { try { const ev = L.readJSON(path.join(wl.items_dir, id + ".json")).evidence; return Array.isArray(ev) && ev.length > 0; } catch (e) { return true; } };
+    // Never answered = no fragment of ANY round carries a verdict for it: its
+    // batch died (in this round or an earlier one a wave held it back from),
+    // or the agent skipped it in a partial batch. max_reask still bounds it.
+    const answeredIds = new Set();
+    for (const p of L.listJSON(path.join(RUN, "fragments"))) for (const v of L.readJSON(p).verdicts || []) answeredIds.add(String(v.criteriaId));
+    const worthReask = (id) => flaggedOpen.includes(id) || !answeredIds.has(id) || hasEvidence(id);
     const notAsked = openIds.filter((id) => timesAsked(id) === 0);
     const reaskSpent = openIds.filter((id) => timesAsked(id) > maxReask);
-    const pendingIds = openIds.filter((id) => timesAsked(id) === 0 || timesAsked(id) <= maxReask);
+    const noEvidence = openIds.filter((id) => timesAsked(id) > 0 && timesAsked(id) <= maxReask && !worthReask(id));
+    const pendingIds = openIds.filter((id) => timesAsked(id) === 0 || (timesAsked(id) <= maxReask && worthReask(id)));
     const pendingIssues = {};
     for (const id of pendingIds) if (timesAsked(id) > 0) pendingIssues[id] = issues[id] || "no verdict received";
     L.writeJSON(path.join(RUN, "pending.json"), { round: round + 1, ids: pendingIds, issues: pendingIssues });
@@ -1801,7 +1862,7 @@ tool fold_probe:
     // plan_batches will plan it, from the same pending ids and asked.json:
     // theme chunks vary in size, so a wave's capacity is not its size.
     const nextWave = L.planWave(pendingIds, askedCount || {}, Number({{input.batch_size}}), Number({{input.wave_batches}})).size;
-    L.out({ ok: true, fail_code: "", reason: "", pending: pendingIds.length, pending_ids: pendingIds, next_wave: nextWave, not_asked: notAsked.length, reask_spent: reaskSpent.length, applied: applied, rejected: rejected.length, unfilled: unfilled.length, flagged_open: flaggedOpen.length, round: round });
+    L.out({ ok: true, fail_code: "", reason: "", pending: pendingIds.length, pending_ids: pendingIds, next_wave: nextWave, not_asked: notAsked.length, reask_spent: reaskSpent.length, no_evidence: noEvidence.length, applied: applied, rejected: rejected.length, unfilled: unfilled.length, flagged_open: flaggedOpen.length, round: round });
   language: js
   input: probe_input
   output: probe_output
@@ -2002,7 +2063,11 @@ tool merge_refutations:
 
 ## Applies the trial — refuted conformities go back to « à évaluer » and
 ## leave the ledger, refuted agent findings are pruned, the engine's own
-## static findings are never touched. An incomplete trial is not applied.
+## static findings are never touched. An incomplete trial (a batch lost
+## even after its re-ask) is applied too: the engine prunes what was
+## refuted and reopens every conformity left without a verdict (« jamais
+## mise à l'épreuve »), so a lost batch costs its own claims, never the
+## whole trial; the claims without a verdict are named as the degradation.
 ## What the engine prunes is reported whether or not it accepts the whole
 ## trial: with --prune it rewrites the audit and repairs the ledger whatever
 ## its verdict on coverage and grounding, so a refusal there (a claim without
@@ -2020,11 +2085,6 @@ tool refute_apply:
     if (prior) L.out(prior);
     const draft = L.readJSON(path.join(RUN, "draft", "draft.json"));
     const ledger = path.join(RUN, "ledger", STD + ".json");
-    if (!{{input.complete}}) {
-      const reason = "claims left without a verdict after the re-ask; the trial was not applied";
-      L.layer("refutation", { status: "degraded", reason: reason, applied: false });
-      L.out(L.record("refute_apply", { ok: true, fail_code: "", reason: reason, applied: false, degraded: true, refuted: 0, unsupported: 0, cleared: [], removed_findings: 0, reopened: [], skipped_engine: 0, audit_sha256: sha }));
-    }
     const r = L.engine(["verify", "--apply", draft.todo_path, "--report", draft.draft_path, "--in", L.auditPath(), "--out", RUN, "--prune", "--json"].concat(L.exists(ledger) ? ["--ledger", ledger] : [], L.std(STD)), { cwd: {{input.workspace_dir}} });
     // The trial's exit: 0 = accepted whole, 1 = refused in part (the JSON
     // names what, read below), 2 = usage. Anything but 0/1 with JSON is a crash.
@@ -2037,7 +2097,7 @@ tool refute_apply:
     sha = L.commitAudit();
     const refusals = [];
     if (!L.isObj(j.pruned)) refusals.push("the engine did not prune (" + (r.stderr || "").trim().slice(-800) + ")");
-    if (Number(j.unadjudicated || 0)) refusals.push(Number(j.unadjudicated) + " claim(s) without a verdict");
+    if (Number(j.unadjudicated || 0)) refusals.push(Number(j.unadjudicated) + " claim(s) without a verdict after the re-ask (a lost refutation batch); the conformities among them were reopened, never kept untried");
     if (Number(j.invalid || 0)) refusals.push(Number(j.invalid) + " verdict(s) outside the trial vocabulary");
     if (Number(j.missing || 0)) refusals.push(Number(j.missing) + " claim(s) of the report absent from the trial");
     if (Number(g.failed || 0)) refusals.push(Number(g.failed) + " retained claim(s) whose anchor does not ground in the source: " + (Array.isArray(g.issues) ? g.issues.slice(0, 3).join(" | ") : ""));
@@ -2152,6 +2212,8 @@ tool final_report:
     a.push("| Analyse statique | " + st(layers.static) + " | " + (layers.static ? layers.static.files + " fichier(s), " + layers.static.findings + " constat(s) moteur, " + layers.static.residual + " critère(s) laissés au jugement" + (layers.static.reason ? " — " + layers.static.reason : "") + (layers.static.pages_purged ? " — " + layers.static.pages_purged + " capture(s) de page d'un run précédent écartée(s) avant l'audit" : "") : "") + " |");
     a.push("| Pages rendues | " + st(layers.rendered) + " | " + (layers.rendered ? (layers.rendered.reason || (layers.rendered.pages_recorded + " page(s) capturée(s), " + layers.rendered.pages_refused + " refusée(s)" + (Array.isArray(layers.rendered.refused_pages) && layers.rendered.refused_pages.length ? " (" + layers.rendered.refused_pages.map((r) => r.id + (r.reason ? " : " + r.reason : "")).join(", ") + ")" : "") + (layers.rendered.missing_kinds && layers.rendered.missing_kinds.length ? " ; types de page manquants : " + layers.rendered.missing_kinds.join(", ") : ""))) : "couche désactivée, ou pas de navigateur / d'échantillon de pages") + " |");
     a.push("| Registre de verdicts | " + st(layers.ledger) + " | " + (layers.ledger ? (layers.ledger.reason || (layers.ledger.replayed + " verdict(s) rejoués ; périmés : " + fmt(layers.ledger.stale) + " ; obsolètes : " + fmt(layers.ledger.obsolete) + " ; refusés par le gate moteur : " + fmt(layers.ledger.refused || []) + " ; recommandations non rejouées (non normatives) : " + Number(layers.ledger.recommendations_stripped || 0))) : "") + " |");
+    const triagedOut = layers.worklist && Array.isArray(layers.worklist.recheck) ? layers.worklist.recheck : [];
+    if (triagedOut.length) a.push("| Tri avant agents | ok | " + triagedOut.length + " critère(s) non soumis aux agents — rendu de page requis, aucune page rendue dans ce run, aucune preuve dans la source : " + triagedOut.join(", ") + " (listés dans les points à revérifier) |");
     a.push("| Adjudication par agents | " + st(layers.adjudication) + " | " + (layers.adjudication ? layers.adjudication.filled + " verdict(s) reçus, " + layers.adjudication.unfilled + " sans réponse, lots perdus : " + fmt(layers.adjudication.failed_batches) + ", lots partiels (critères du lot sans réponse) : " + fmtPartial(layers.adjudication.partial_batches) + ", verdicts écartés (hors lot, doublons, malformés) : " + layers.adjudication.foreign_dropped + ", citations renvoyées : " + layers.adjudication.citation_rejected + ", recommandations écartées (pas un objet ancré avec un message, ou hors de l'évidence du critère) : " + Number(layers.adjudication.recommendations_dropped || 0) : "") + " |");
     const restoredIds = layers.fold && Array.isArray(layers.fold.citations_restored_ids) ? layers.fold.citations_restored_ids : [];
     const keptIds = layers.fold && Array.isArray(layers.fold.citations_kept_ids) ? layers.fold.citations_kept_ids : [];
@@ -2169,7 +2231,36 @@ tool final_report:
     const p = dec.provenance || {};
     a.push("- Total : " + (p.total || counts.total) + " critères — moteur : " + (p.engine || 0) + ", pages rendues : " + (p.scan || 0) + ", agents : " + (p.agent || 0) + ", déclarés indécidables : " + (p.declared || 0) + ", encore à évaluer : " + undecided.length + ".");
     a.push("- Taux de conformité " + STD.toUpperCase() + " : " + (rate < 0 ? "non calculable" : rate + " %") + (counts.aEvaluer ? " (provisoire : " + counts.aEvaluer + " critère(s) à évaluer comptés au dénominateur)" : "") + " — " + counts.conformes + " conforme(s), " + counts.nc + " non conforme(s), " + counts.fauteDeSujet + " sans sujet.");
-    if (undecided.length) { a.push(""); a.push("## Critères encore à évaluer"); a.push(""); for (const id of undecided) a.push("- " + id); }
+    // Every criterion still « à évaluer » is a point a human re-checks, with
+    // why the run left it open — what this run could not settle cheaply is
+    // listed, never bought with more rounds.
+    if (undecided.length) {
+      const readOr = (p, d) => { try { return L.readJSON(p); } catch (e) { return d; } };
+      const wlRec = readOr(path.join(RUN, "worklist.json"), {});
+      const triaged = new Set((wlRec.recheck || []).map(String));
+      const verdictOf = {};
+      for (const it of (readOr(path.join(RUN, "adjudication.json"), {}).items || [])) verdictOf[String(it.criteriaId)] = it;
+      const issuesRec = readOr(path.join(RUN, "issues.json"), {});
+      const reopenedByTrial = new Set(((layers.refutation && layers.refutation.reopened) || []).map(String));
+      const titleOf = {};
+      for (const cr of doc.criteria || []) titleOf[String(cr.id)] = String(cr.title || "");
+      const clip = (s) => { const t = String(s).replace(/\s+/g, " ").trim(); return t.length > 220 ? t.slice(0, 217) + "…" : t; };
+      const why = (id) => {
+        if (triaged.has(id)) return "seul un rendu de page peut trancher, aucune page n'a été rendue dans ce run et la source n'a livré aucune preuve — non soumis aux agents";
+        if (reopenedByTrial.has(id)) return "rouvert par la contre-lecture (conformité réfutée, non étayée ou jamais mise à l'épreuve)";
+        const v = verdictOf[id];
+        if (v && v.verdict === "manual") return "l'agent n'a pas pu trancher depuis la source (" + (v.reason || "sans motif") + ")" + (v.justification ? " : " + clip(v.justification) : "");
+        const issue = String(issuesRec[id] || "");
+        if (!v && (!issue || /coverage gap|no verdict|answer EVERY criteriaId/.test(issue))) return "aucune réponse de l'agent (lot perdu ou critère omis)";
+        return "verdict refusé (motif technique : " + clip(issue || "non consigné") + ")";
+      };
+      a.push("");
+      a.push("## Points à revérifier");
+      a.push("");
+      a.push(undecided.length + " critère(s) restent « à évaluer » : à vérifier par un auditeur humain, sur les pages rendues quand le motif le dit.");
+      a.push("");
+      for (const id of undecided) a.push("- **" + id + "**" + (titleOf[id] ? " — " + titleOf[id] : "") + " — " + why(id));
+    }
     if (pageGaps.length) { a.push(""); a.push("## Grille par page incomplète"); a.push(""); a.push("Cellules encore « à évaluer » par page — le document peut décider le critère, la page reste à juger :"); a.push(""); for (const g of pageGaps) a.push("- " + g.page + " : " + g.undecided.join(", ")); }
     if (rep.json.untestedCriteria && rep.json.untestedCriteria.length) { a.push(""); a.push("## Critères WCAG non testés faute de page rendue"); a.push(""); a.push(rep.json.untestedCriteria.join(", ")); }
     if ({{input.scope_notes}}) { a.push(""); a.push("## Périmètre demandé"); a.push(""); a.push(String({{input.scope_notes}})); }
@@ -2457,12 +2548,15 @@ workflow rgaa_audit:
   ## route, which books every tool-loop step's whole prompt (claude_code
   ## books ~30k tokens a batch, claw ~1–3M): 3M stopped a full `src/**` run
   ## of ~100 criteria after two batches (#3746). 80M keeps a
-  ## deepseek-flash-class route under the $30 cap first; past either cap the
+  ## deepseek-flash-class route under the cost cap first; past either cap the
   ## loop budget guard declines the next wave, never a fan-out mid-flight.
+  ## $45 and 6h leave a full `src/**` monthly audit room for the second
+  ## reader: at $30 / 3h a production run ended at 2h40 with its refutation
+  ## re-ask declined by the duration guard, the trial left unapplied.
   budget:
     max_parallel_branches: 4
-    max_duration: "${ITERION_RGAA_MAX_DURATION:-3h}"
-    max_cost_usd: 30
+    max_duration: "${ITERION_RGAA_MAX_DURATION:-6h}"
+    max_cost_usd: 45
     max_tokens: 80000000
     max_iterations: 300
 
@@ -2549,6 +2643,15 @@ workflow rgaa_audit:
     standard: "{{vars.standard}}",
   }
 
+  ## Every open criterion triaged out (render-only, nothing harvested, no
+  ## page read): nothing to dispatch, the fold names what stays open.
+  worklist -> fold_final when "outputs.worklist.ok && outputs.worklist.asked == 0" with {
+    run_dir: "{{outputs.prepare.run_dir}}",
+    workspace_dir: "{{vars.workspace_dir}}",
+    standard: "{{vars.standard}}",
+    require_complete: "{{vars.require_complete}}",
+  }
+
   worklist -> plan_batches when ok with {
     run_dir: "{{outputs.prepare.run_dir}}",
     batch_size: "{{vars.batch_size}}",
@@ -2603,7 +2706,10 @@ workflow rgaa_audit:
   ## bare edge is the exit, taken when nothing is pending, the rounds are
   ## spent, or the loop budget guard declines a wave the budget cannot pay
   ## for (#3746) — priced by the size of the next wave against the last.
-  fold_probe -> plan_batches when "outputs.fold_probe.pending > 0" as reask("vars.max_rounds") sized_by "outputs.fold_probe.next_wave" with {
+  ## The signal reads the dispatched worklist when the loop is entered (no
+  ## probe has run yet), so the first crossing — the re-ask after a single
+  ## full pass — is priced by its own size, not by the whole first pass.
+  fold_probe -> plan_batches when "outputs.fold_probe.pending > 0" as reask("vars.max_rounds") sized_by "if(outputs.fold_probe.next_wave, outputs.fold_probe.next_wave, outputs.worklist.asked)" with {
     run_dir: "{{outputs.prepare.run_dir}}",
     batch_size: "{{vars.batch_size}}",
     wave_batches: "{{vars.wave_batches}}",
@@ -2678,7 +2784,10 @@ workflow rgaa_audit:
     round: "{{outputs.plan_refute.round}}",
   }
 
-  merge_refutations -> plan_refute when "outputs.merge_refutations.unfilled > 0" as rerefute(1) with {
+  ## The re-ask of a lost batch is priced by the claims it carries against
+  ## the whole trial, not by the whole first pass: late in a run, the
+  ## unscaled price declined it and left the trial incomplete.
+  merge_refutations -> plan_refute when "outputs.merge_refutations.unfilled > 0" as rerefute(1) sized_by "if(outputs.merge_refutations.unfilled, outputs.merge_refutations.unfilled, outputs.draft_report.claims)" with {
     run_dir: "{{outputs.prepare.run_dir}}",
     batch_size: "{{vars.refute_batch_size}}",
   }
@@ -2687,7 +2796,6 @@ workflow rgaa_audit:
     run_dir: "{{outputs.prepare.run_dir}}",
     workspace_dir: "{{vars.workspace_dir}}",
     standard: "{{vars.standard}}",
-    complete: "{{outputs.merge_refutations.complete}}",
   }
 
   refute_apply -> review_gate when ok with {
