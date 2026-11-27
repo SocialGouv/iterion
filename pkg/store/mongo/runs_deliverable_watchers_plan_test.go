@@ -193,9 +193,9 @@ func TestListDeliverableWatchers_PlanReadsTheWatchersAlone(t *testing.T) {
 // eight hundred runs with no pr_url input, three runs on the pull request
 // asked for — and another tenant's three hundred runs on that very URL — the
 // query must run as an index scan over tenant_pr_url_created and read the
-// three rows alone. Without the index the planner falls back to
-// tenant_status_created and reads every run of the tenant, plus an in-memory
-// sort, once per webhook launch of a hand-off-consuming bot.
+// three rows alone. Without the index the planner falls back to another
+// tenant-led index and reads every run of the tenant, plus an in-memory sort,
+// once per webhook launch of a hand-off-consuming bot.
 func TestListRunsForPR_PlanReadsThePRsRunsAlone(t *testing.T) {
 	s := watchersTestStore(t)
 	t1 := store.WithIdentity(context.Background(), "tenant-one", "owner-one")

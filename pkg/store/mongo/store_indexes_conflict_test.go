@@ -69,7 +69,7 @@ func TestEnsureSchema_OneStaleIndexDoesNotDropTheOthers(t *testing.T) {
 			names[n] = true
 		}
 	}
-	for _, want := range []string{"status_created", "tenant_status_created", "runner_id_partial", "tenant_source_issue_created", "tenant_parent_run_created"} {
+	for _, want := range []string{"status_created", "tenant_status_created_id_desc", "tenant_workflow_created_id_desc", "runner_id_partial", "tenant_source_issue_created", "tenant_parent_run_created"} {
 		if !names[want] {
 			t.Errorf("index %s is missing after EnsureSchema met one stale index — the batch's conflict dropped it", want)
 		}
