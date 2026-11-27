@@ -6,6 +6,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +103,10 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	if err != nil {
 		return ctx, nil, fmt.Errorf("unseal run_secrets %s: %w", msg.SecretsRef, err)
 	}
+	// The bundle is the LAUNCH's snapshot, and a redelivery opens the same
+	// one hours later: a ref'd secret is re-read from its store record now,
+	// before the clone and every other consumer reads it.
+	r.refreshRefdSecretsAtClaim(ctx, msg, rec.CreatedAt, bundle.GenericSecrets, bundle.GenericSecretRefs)
 
 	// The audit identity of each credential: cleanup zeroes the secrets,
 	// the fingerprints stay — they are what lets the usage-cap meter key
@@ -228,6 +234,66 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 	// operator floor.
 	ctx = compatgw.OverlayFeedTable(ctx, bundle.GatewayPriceFeed)
 	return ctx, cleanup, nil
+}
+
+// refreshRefdSecretsAtClaim replaces, in values, the launch-time snapshot of
+// every generic secret that carries a store ref (refs: name → generic-secret
+// id) with the record's current value.
+//
+// The publisher seals the bundle once, at launch, and the bundle survives a
+// non-terminal outcome so a redelivery can re-fetch it — so a redelivered
+// attempt opens a snapshot as old as the launch. A short-lived credential
+// (a GitHub App installation token lives about one hour) is dead by then,
+// while the server-side refresh worker has kept the STORE record live. The
+// mid-run refreshers only tick after the workspace exists, so without this
+// read the clone itself presents the dead token and the forge answers 401.
+//
+// A record that cannot be read keeps its snapshot, said in the pod log with
+// the snapshot's age: the snapshot may still be valid (a token younger than
+// its lifetime, a static PAT), and the clone's own refusal is typed
+// (ErrForgeCredentialRefused) if it is not.
+func (r *Runner) refreshRefdSecretsAtClaim(ctx context.Context, msg *queue.RunMessage, sealedAt time.Time, values, refs map[string]string) {
+	if len(refs) == 0 || len(values) == 0 {
+		return
+	}
+	age := "of unknown age"
+	if !sealedAt.IsZero() {
+		age = "sealed " + time.Since(sealedAt).Round(time.Second).String() + " ago"
+	}
+	names := make([]string, 0, len(refs))
+	for name, id := range refs {
+		if _, carried := values[name]; carried && id != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	sort.Strings(names)
+	if r.cfg.GenericSecrets == nil || r.cfg.Sealer == nil {
+		r.cfg.Logger.Warn("runner: run %s: secret(s) %s run on the launch-time snapshot (%s): this runner has no generic-secret store or key to re-read their records — a short-lived token older than its lifetime will be refused by its forge",
+			msg.RunID, strings.Join(names, ", "), age)
+		return
+	}
+	for _, name := range names {
+		id := refs[name]
+		val, err := r.readFreshSecret(ctx, msg.TenantID, id)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: run %s: secret %q keeps its launch-time snapshot (%s): re-read of its store record %s failed: %v",
+				msg.RunID, name, age, id, err)
+			continue
+		}
+		if len(val) == 0 {
+			r.cfg.Logger.Warn("runner: run %s: secret %q keeps its launch-time snapshot (%s): its store record %s is empty",
+				msg.RunID, name, age, id)
+			continue
+		}
+		if string(val) == values[name] {
+			continue
+		}
+		values[name] = string(val)
+		r.cfg.Logger.Info("runner: run %s: secret %q re-read from its store record at claim — the launch-time snapshot (%s) had rotated", msg.RunID, name, age)
+	}
 }
 
 // runSecretsDeleteTimeout bounds deleteRunSecrets' single store call.

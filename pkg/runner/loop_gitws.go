@@ -311,7 +311,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 	}
 
 	appBotLogin := ""
-	_, tok := cloneCredentialToken(ctx)
+	credName, tok := cloneCredentialToken(ctx)
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		appBotLogin = creds.ForgeAppBotLogin
 	}
@@ -334,7 +334,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 			// populate DECLARED secrets).
 			return "", "", fmt.Errorf("%w (clone ran credential-less: no forge_token/gitlab_token/github_token in the run's sealed bundle — a private repo needs the workflow to declare a forge_token secret for the launch override to fill)", err)
 		}
-		return "", "", err
+		return "", "", forgeCredentialRefused(err, credName)
 	}
 	// The credential store is wired right after the clone, so every later
 	// git and git-lfs operation reads it: the checkout below and the
@@ -349,7 +349,7 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, wf *ir.Workflow, msg 
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
 		if err := r.runGitAuthEnv(ctx, dir, tok, msg.RepoURL, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
-			return "", "", err
+			return "", "", forgeCredentialRefused(err, credName)
 		}
 		// What arrived is whatever the remote points that NAME at, at fetch
 		// time — and the fetch happens minutes to hours after the launch
