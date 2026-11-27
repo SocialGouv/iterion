@@ -34,7 +34,7 @@ func Families() []Family {
 				"whole-improve-loop",
 			},
 			Variants: []Variant{
-				{"dep-update-guard", "adds §1c, mirror CI's exact strictness in BOTH directions: a bump must not be held for debt it did not create, and the verify sandbox is slower than CI so timeouts are raised, never lowered. No other campaign bounds a verdict that way."},
+				{"dep-update-guard", "adds §1c, mirror CI's exact strictness in BOTH directions: a bump must not be held for debt it did not create, and the verify sandbox is slower than CI so timeouts are raised, never lowered; and §1e, size the verify to the sandbox (never CI's parallelism, enforced by OVERSIZED PARALLELISM) and scope its tests to what the bump reaches. No other campaign bounds a verdict that way."},
 				{"e2e-coverage", "the campaign's deterministic gate replaces the improve-loop's commit gate, and the suite the run's new e2e tests live in is NOT optional — a campaign whose new tests never ran must not converge."},
 				{"test-coverage", "the same campaign gate as e2e-coverage, bounded to the suite the run's new unit tests live in, which drives coverage_complete rather than the matrix rows."},
 			},

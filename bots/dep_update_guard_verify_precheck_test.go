@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -34,31 +35,11 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 	}
 	command := verifyRunCommand(t, "dep-update-guard/main.bot")
 
-	type verifyResult struct {
-		Passed           bool   `json:"passed"`
-		Skipped          bool   `json:"skipped"`
-		ExitCode         int    `json:"exit_code"`
-		PrecheckRejected bool   `json:"precheck_rejected"`
-		PrecheckReason   string `json:"precheck_reason"`
-		LogTail          string `json:"log_tail"`
-	}
-
-	runWithTimeout := func(t *testing.T, ws, scratch, timeoutS string) verifyResult {
+	runWithTimeout := func(t *testing.T, ws, scratch, timeoutS string) dugVerifyResult {
 		t.Helper()
-		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
-		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
-		cmd = strings.ReplaceAll(cmd, "{{vars.verify_timeout_s}}", timeoutS)
-		out, err := exec.Command("sh", "-c", cmd).Output()
-		if err != nil {
-			t.Fatalf("verify_run failed to execute: %v (out %q)", err, out)
-		}
-		var res verifyResult
-		if uerr := json.Unmarshal(out, &res); uerr != nil {
-			t.Fatalf("verify_run output is not verify_result JSON: %v (out %q)", uerr, out)
-		}
-		return res
+		return runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, timeoutS: timeoutS})
 	}
-	run := func(t *testing.T, ws, scratch string) verifyResult {
+	run := func(t *testing.T, ws, scratch string) dugVerifyResult {
 		t.Helper()
 		return runWithTimeout(t, ws, scratch, "1200")
 	}
@@ -386,6 +367,61 @@ func TestDepUpdateGuardVerifyPrechecks(t *testing.T) {
 	})
 }
 
+type dugVerifyResult struct {
+	Passed           bool   `json:"passed"`
+	Skipped          bool   `json:"skipped"`
+	ExitCode         int    `json:"exit_code"`
+	PrecheckRejected bool   `json:"precheck_rejected"`
+	PrecheckReason   string `json:"precheck_reason"`
+	LogTail          string `json:"log_tail"`
+}
+
+// dugVerifyEnv is what the engine substitutes into Vetty's verify_run.
+// cgroupRoot defaults to an empty scratch dir, so the CPU budget is nproc
+// and no test reads the host's own cgroup tree.
+type dugVerifyEnv struct {
+	ws, scratch, timeoutS, cpus, cgroupRoot string
+	env                                     []string
+}
+
+// runDugVerify executes Vetty's REAL compiled verify_run through `sh -c`,
+// the shell the engine's tool nodes use.
+func runDugVerify(t *testing.T, command string, e dugVerifyEnv) dugVerifyResult {
+	t.Helper()
+	if e.timeoutS == "" {
+		e.timeoutS = "1200"
+	}
+	if e.cpus == "" {
+		e.cpus = "0"
+	}
+	if e.cgroupRoot == "" {
+		e.cgroupRoot = t.TempDir()
+	}
+	cmd := command
+	for k, v := range map[string]string{
+		"{{vars.workspace_dir}}": e.ws, "{{vars.scratch_dir}}": e.scratch, "{{vars.verify_timeout_s}}": e.timeoutS,
+		"{{vars.verify_cpus}}": e.cpus, "{{vars.verify_cgroup_root}}": e.cgroupRoot,
+	} {
+		cmd = strings.ReplaceAll(cmd, k, v)
+	}
+	if i := strings.Index(cmd, "{{vars."); i >= 0 {
+		t.Fatalf("a {{vars.…}} placeholder survived substitution near %q", cmd[i:min(i+60, len(cmd))])
+	}
+	c := exec.Command("sh", "-c", cmd)
+	if e.env != nil {
+		c.Env = append(os.Environ(), e.env...)
+	}
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("verify_run failed to execute: %v (out %q)", err, out)
+	}
+	var res dugVerifyResult
+	if uerr := json.Unmarshal(out, &res); uerr != nil {
+		t.Fatalf("verify_run output is not verify_result JSON: %v (out %q)", uerr, out)
+	}
+	return res
+}
+
 // itoa avoids pulling strconv in for one call site in a fixture generator.
 func itoa(i int) string {
 	if i == 0 {
@@ -397,4 +433,190 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(d)
+}
+
+// TestDepUpdateGuardVerifySizing covers the parallelism precheck. Live on
+// iterion#3785 (run 01a21d43, Vetty 2.13.1): verify_build mirrored the
+// repository's CI gate into a verify.sh pinning GOMAXPROCS=16, verify_run ran
+// it in a sandbox pod of 2 CPUs and 8 Gi, the pod was OOM-killed (exit 137),
+// and the run ended failed_resumable with no verdict. A script forcing more
+// parallelism than the sandbox has CPUs is an authorship defect: it loops back
+// to verify_build naming the line and the budget, and is never rewritten.
+func TestDepUpdateGuardVerifySizing(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	command := verifyRunCommand(t, "dep-update-guard/main.bot")
+	nproc := runtime.NumCPU() // sched_getaffinity on Linux, what verify_run reads
+	if nproc < 2 {
+		t.Skipf("the fixtures need a 2-CPU budget below nproc, this host has %d", nproc)
+	}
+
+	// cgroup lays a fake cgroup tree: files maps a path under the root to
+	// its content.
+	cgroup := func(t *testing.T, files map[string]string) string {
+		t.Helper()
+		root := t.TempDir()
+		for rel, body := range files {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(body+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return root
+	}
+	twoCPUv2 := map[string]string{"cgroup.controllers": "cpu memory", "cpu.max": "200000 100000"}
+	write := func(t *testing.T, scratch, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(scratch, "verify.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// fakeGo is an executable named go: a line invoking it is scanned for
+	// -p and -parallel, and it exits 0 when the line is allowed to run.
+	fakeGo := func(t *testing.T, ws string) string {
+		t.Helper()
+		p := filepath.Join(ws, "bin", "go")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// The shape run 01a21d43 wrote, in a 2-CPU sandbox.
+	t.Run("GOMAXPROCS above the cgroup v2 quota is rejected and loops back", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		root := cgroup(t, twoCPUv2)
+		write(t, scratch, "#!/bin/sh\nset -e\nexport GOMAXPROCS=16\necho build\n")
+		res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: root})
+		if res.Passed {
+			t.Error("an oversized script must not run, let alone certify a build")
+		}
+		if !res.PrecheckRejected {
+			t.Fatalf("an oversized script is an authorship defect and must loop back to verify_build, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+		for _, want := range []string{"OVERSIZED PARALLELISM", "line 3: export GOMAXPROCS=16", "[GOMAXPROCS 16 > 2]",
+			"the budget is 2", filepath.Join(root, "cpu.max") + " = 200000 100000"} {
+			if !strings.Contains(res.PrecheckReason, want) {
+				t.Errorf("the rejection must name the line and the quota (%q missing), got:\n%s", want, res.PrecheckReason)
+			}
+		}
+		t.Logf("rejection text:\n%s", res.PrecheckReason)
+		if _, err := os.Stat(filepath.Join(scratch, "verify.sh")); err != nil {
+			t.Errorf("the script is left in place for verify_build to amend: %v", err)
+		}
+	})
+
+	for _, tc := range []struct{ name, line string }{
+		{"at the quota", "export GOMAXPROCS=2"},
+		{"below the quota", "GOMAXPROCS=1 sh -c true"},
+		{"inherited, not forced", "echo GOMAXPROCS=${GOMAXPROCS:-16}"},
+		{"commented out", "# export GOMAXPROCS=16"},
+	} {
+		t.Run("not rejected: "+tc.name, func(t *testing.T) {
+			ws, scratch := t.TempDir(), t.TempDir()
+			write(t, scratch, "#!/bin/sh\nset -e\n"+tc.line+"\necho build\n")
+			res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: cgroup(t, twoCPUv2)})
+			if res.PrecheckRejected || !res.Passed {
+				t.Errorf("%q fits a 2-CPU sandbox and must pass, got exit %d: %s", tc.line, res.ExitCode, res.LogTail)
+			}
+		})
+	}
+
+	// Each form a Go parallelism setting takes, one guard each.
+	for _, tc := range []struct{ name, line, mark string }{
+		{"go -p N", "{go} test -p 16 ./...", "[-p 16 > 2]"},
+		{"go -p=N", "{go} build -p=8 ./...", "[-p 8 > 2]"},
+		{"GOFLAGS -p", "export GOFLAGS=\"-mod=vendor -p=16\"", "[-p 16 > 2]"},
+		{"test -parallel", "{go} test -parallel 16 ./...", "[-parallel 16 > 2]"},
+		{"GOMAXPROCS from nproc", "export GOMAXPROCS=$(nproc)", "[GOMAXPROCS from the host CPU count"},
+		{"go -p from getconf", "{go} test -p \"$(getconf _NPROCESSORS_ONLN)\" ./...", "[-p from the host CPU count"},
+	} {
+		t.Run("rejected: "+tc.name, func(t *testing.T) {
+			ws, scratch := t.TempDir(), t.TempDir()
+			line := strings.ReplaceAll(tc.line, "{go}", fakeGo(t, ws))
+			write(t, scratch, "#!/bin/sh\nset -e\n"+line+"\necho build\n")
+			res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: cgroup(t, twoCPUv2)})
+			if !res.PrecheckRejected || res.Passed {
+				t.Fatalf("%q forces more than 2 CPUs and must be rejected, got exit %d: %s", line, res.ExitCode, res.LogTail)
+			}
+			if !strings.Contains(res.PrecheckReason, "line 3: ") || !strings.Contains(res.PrecheckReason, tc.mark) {
+				t.Errorf("the rejection must name line 3 and %q, got:\n%s", tc.mark, res.PrecheckReason)
+			}
+		})
+	}
+
+	t.Run("go -p within the budget runs", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		write(t, scratch, "#!/bin/sh\nset -e\n"+fakeGo(t, ws)+" test -p 2 -parallel 2 ./...\n")
+		res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: cgroup(t, twoCPUv2)})
+		if res.PrecheckRejected || !res.Passed {
+			t.Errorf("-p 2 -parallel 2 fits a 2-CPU sandbox, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+	})
+
+	// The budget's sources in order. Each case reads the budget back from the
+	// sizing line every run logs, which also names the source.
+	big := itoa(nproc + 7) // a quota above nproc is bounded by nproc
+	for _, tc := range []struct {
+		name    string
+		files   map[string]string
+		cpus    string
+		want    string
+		wantSrc string
+	}{
+		{"operator override first", twoCPUv2, "3", "3", "verify_cpus=3, the operator override"},
+		{"cgroup v2 quota, rounded up", map[string]string{"cgroup.controllers": "cpu", "cpu.max": "150000 100000",
+			"cpu/cpu.cfs_quota_us": "400000", "cpu/cpu.cfs_period_us": "100000"}, "0", "2", "cgroup v2 quota "},
+		{"cgroup v2 quota bounded by nproc", map[string]string{"cgroup.controllers": "cpu", "cpu.max": big + "00000 100000"},
+			"0", itoa(nproc), ", below the cgroup v2 quota "},
+		{"cgroup v2 without a quota falls to nproc, not v1", map[string]string{"cgroup.controllers": "cpu", "cpu.max": "max 100000",
+			"cpu/cpu.cfs_quota_us": "100000", "cpu/cpu.cfs_period_us": "100000"}, "0", itoa(nproc), "sets no CPU quota (cpu.max is max or absent)"},
+		{"cgroup v1 quota", map[string]string{"cpu,cpuacct/cpu.cfs_quota_us": "300000", "cpu,cpuacct/cpu.cfs_period_us": "100000"},
+			"0", "3", "cgroup v1 quota "},
+		{"cgroup v1 without a quota falls to nproc", map[string]string{"cpu/cpu.cfs_quota_us": "-1", "cpu/cpu.cfs_period_us": "100000"},
+			"0", itoa(nproc), "cpu.cfs_quota_us = -1 sets no CPU quota"},
+		{"no cgroup at all falls to nproc", map[string]string{}, "0", itoa(nproc), "no cgroup v2 (cgroup.controllers) nor v1 cpu controller"},
+	} {
+		t.Run("budget source: "+tc.name, func(t *testing.T) {
+			ws, scratch := t.TempDir(), t.TempDir()
+			write(t, scratch, "#!/bin/sh\nset -e\necho build\n")
+			res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: cgroup(t, tc.files), cpus: tc.cpus})
+			if !res.Passed {
+				t.Fatalf("a green script must pass, got exit %d: %s", res.ExitCode, res.LogTail)
+			}
+			head := "VERIFY SIZING: GOMAXPROCS=" + tc.want + " exported to verify.sh as its default, from "
+			i := strings.Index(res.LogTail, head)
+			if i < 0 {
+				t.Fatalf("want the budget %s logged (%q), got:\n%s", tc.want, head, res.LogTail)
+			}
+			if src := res.LogTail[i+len(head):]; !strings.Contains(src, tc.wantSrc) {
+				t.Errorf("the budget must name its source %q, got %q", tc.wantSrc, src)
+			}
+		})
+	}
+
+	// The budget is the script's default: a script that sets nothing inherits
+	// it, whatever GOMAXPROCS the runner process itself carries.
+	t.Run("the default GOMAXPROCS reaches the script and replaces the inherited one", func(t *testing.T) {
+		ws, scratch := t.TempDir(), t.TempDir()
+		write(t, scratch, "#!/bin/sh\nset -e\necho \"seen GOMAXPROCS=$GOMAXPROCS\"\ntest \"$GOMAXPROCS\" = 2\n")
+		res := runDugVerify(t, command, dugVerifyEnv{ws: ws, scratch: scratch, cgroupRoot: cgroup(t, twoCPUv2),
+			env: []string{"GOMAXPROCS=" + big}})
+		if !res.Passed {
+			t.Fatalf("the script must see GOMAXPROCS=2, got exit %d: %s", res.ExitCode, res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "seen GOMAXPROCS=2") {
+			t.Errorf("the script's own view of GOMAXPROCS is missing, got:\n%s", res.LogTail)
+		}
+		if !strings.Contains(res.LogTail, "(replacing the inherited GOMAXPROCS="+big+")") {
+			t.Errorf("the log must say the inherited value was replaced, got:\n%s", res.LogTail)
+		}
+	})
 }

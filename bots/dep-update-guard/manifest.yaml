@@ -1,7 +1,21 @@
 name: dep-update-guard
 display_name: Vetty
 icon: 💂
-version: 2.13.1
+version: 2.13.2
+## 2.13.2 — the verify is sized to the sandbox and scoped to what the bump
+## reaches (#3884). Live on iterion#3785 (run 01a21d43): a verify.sh
+## mirroring CI with GOMAXPROCS=16 was OOM-killed (exit 137) in a 2-CPU /
+## 8 Gi sandbox and the run ended with no verdict, on an echo bump no
+## shipped package imports. verify_run now reads the CPU budget (the new
+## verify_cpus override, else cgroup v2 cpu.max, v1 cfs quota, nproc),
+## exports it as the script's GOMAXPROCS, and refuses a script forcing
+## GOMAXPROCS, go -p, GOFLAGS -p or a test -parallel above it, or reading
+## one from nproc, as the precheck rejection OVERSIZED PARALLELISM (exit 7)
+## that loops back to verify_build naming the line and the budget. The
+## verify-build skill gains §1e: never copy CI's parallelism; a module no
+## shipped package imports owes build + vet + the vendor/tidy check, not
+## the suite, and the verdict says so; otherwise the importing packages'
+## tests only.
 ## 2.13.1 — the audit honours the repository's own scanner exclusions, and
 ## says what it set aside. Live on iterion#3791 (run 01a21953): a base-image
 ## bump that removed 490 HIGH/CRITICAL was held hold_security on two

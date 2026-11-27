@@ -227,6 +227,54 @@ the one you must NOT mirror:
   stayed green. The pipeline's result is the signal; a green sandbox gate says
   nothing about it.)
 
+## 1e. Size the verification to the sandbox, and to what the bump reaches
+
+The verify sandbox is small — the production pod is **2 CPUs and 8 Gi** —
+and CI runners are not. A full suite there costs hours and can be
+OOM-killed, and a killed verify is no verdict at all (live on iterion#3785,
+run 01a21d43: a verify.sh pinning `GOMAXPROCS=16`, copied from the repo's CI
+gate, was killed with exit 137 in a 2-CPU / 8 Gi pod; the sibling x/crypto
+bump spent 66 minutes writing its verify.sh).
+
+- **Never copy CI's parallelism.** Drop `GOMAXPROCS=N`, `go … -p N`,
+  `GOFLAGS=… -p=N`, a test `-parallel N`, `make -jN`, `--workers N` and the
+  like from what you mirror, and never size one from `nproc` or `getconf
+  _NPROCESSORS_ONLN` — they count the node's CPUs, not the pod's. Let the
+  toolchain size itself: Go ≥ 1.25 reads the cgroup CPU quota, and
+  `verify_run` exports `GOMAXPROCS=<budget>` to the script as its default.
+  This is the one place §1c's "mirror CI exactly" does not reach:
+  parallelism decides how fast a check runs, never whether it passes.
+- **Deterministically enforced**: before the script runs, `verify_run` reads
+  the CPU budget — the `verify_cpus` override, else the cgroup v2
+  `cpu.max`, else the v1 `cpu.cfs_quota_us`, else `nproc` — and refuses a
+  script that forces `GOMAXPROCS`, `go -p`, `GOFLAGS -p` or a test
+  `-parallel` above it, or reads one from `nproc`/`getconf`, with
+  **OVERSIZED PARALLELISM** (exit 7), naming each line and the budget. It
+  loops back to you: amend those lines, nothing else.
+- **Scope the tests to what the bump reaches.** The drift, fmt, lint and
+  vendor/tidy gates of §1b stay repo-wide. The test suite does not have to:
+  - **The bumped module is in no shipped package's build graph** — prove it,
+    with the build tags the repository builds with, e.g. for Go
+    `go list -deps ./... | grep -Fx <module path>` and the same for its
+    packages (`grep -F '<module path>/'`), both empty — a proof you run while
+    authoring, not a line of verify.sh. The compiled program
+    cannot change, so build + vet + the vendor/tidy consistency check
+    (`go mod verify`, `go mod tidy` then `git diff --exit-code -- go.mod
+    go.sum`, `go mod vendor` then `git diff --exit-code -- vendor` when the
+    repo vendors) suffice. The full suite is not owed, and the summary MUST
+    say so, with the proof command and its empty output (iterion#3785: echo
+    was imported only by a vendored `//go:build dev` file, so no shipped
+    binary compiled it).
+  - **Otherwise**, run the tests of the packages that import it, not the
+    whole repository: `go list -test -f '{{.ImportPath}} {{join .Deps " "}}' ./...`
+    lists each package with its dependencies, test files included; keep the
+    packages whose list holds the module path, and `go test` those.
+  - **The whole suite** only for a toolchain bump (the `go` directive, the
+    Go image, the compiler) or a module most packages import, where the
+    scoped set would be most of the repository anyway.
+  The same reasoning holds in any stack: the lockfile-only bump of a package
+  nothing imports needs the install and the build, not every test.
+
 ## 2. Write the verify script to the scratch dir
 
 Write an executable POSIX-sh script at the exact `verify.sh` path your task
@@ -302,8 +350,9 @@ gate proves the repo still builds with the new dependency, which is exactly the
 question a base-image digest refresh or a lockfile-only bump raises. A run that
 produces no script proves nothing and cannot commit — it is sent back to write
 one, and after two attempts the PR is held on a verdict that says the build was
-never established. §1b applies here too: what the script covers is decided by
-the repo's CI, never by which files the bump happened to touch.
+never established. §1b applies here too: the gates the script carries are
+decided by the repo's CI, never by which files the bump happened to touch —
+only the test suite is scoped, by what the bump reaches (§1e).
 
 A script that runs **nothing** is rejected the same way. An empty or
 comment-only script exits 0, which the gate reads as a verified build — so

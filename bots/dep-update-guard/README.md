@@ -57,9 +57,13 @@ verify_run     (tool, GATE)           re-runs it; the REAL exit code decides. It
                                       aligned tree, HEAD detached onto it, never
                                       pushed, put back before it answers — so a
                                       CI-mirrored drift gate measures the regen
-                                      against the alignment, not against HEAD. A
+                                      against the alignment, not against HEAD. It
+                                      reads the sandbox CPU budget (verify_cpus,
+                                      else cgroup v2 cpu.max, v1 cfs quota, nproc)
+                                      and exports it as the script's GOMAXPROCS. A
                                       precheck rejection (no script / a script that
-                                      runs nothing / a masked exit status) loops
+                                      runs nothing / a masked exit status / a
+                                      parallelism forced above the budget) loops
                                       back as fix_verify(2)
 validate_gate  (compute, GATE)        green → delivery_probe ; red → hold_unstable
 delivery_probe (tool, GATE)           can the runtime token push what `align` wrote?
@@ -395,6 +399,8 @@ overridable via `VETTY_MODEL_*` / `VETTY_EFFORT_*` env vars.
 | `forge_delivery_preflight_url` | string | `""` | Read-only delivery-permission proof endpoint (server-injected on the same launch); empty → a workflow-touching alignment is refused rather than pushed |
 | `scratch_dir` | string | `"${PROJECT_SCRATCH_DIR}/dep-update-guard"` | Out-of-tree scratch for the gate's `verify.sh` + log — never pollutes the PR branch |
 | `verify_timeout_s` | int | `1200` | Seconds the deterministic verify may run before it is called red (reported as exit 124, never a crashed node) |
+| `verify_cpus` | int | `0` | CPU budget `verify.sh` is held to: a script forcing `GOMAXPROCS`, `go -p`, `GOFLAGS -p` or a test `-parallel` above it is sent back (OVERSIZED PARALLELISM), and it is exported as the script's `GOMAXPROCS`. `0` reads it from the sandbox (cgroup v2 `cpu.max`, v1 `cpu.cfs_quota_us`, `nproc`); set it when the sandbox pod has a CPU request but no limit, where `nproc` is the node's CPU count |
+| `verify_cgroup_root` | string | `"/sys/fs/cgroup"` | Where `verify_run` reads the cgroup CPU quota from |
 
 The studio launch form renders `pr_url` as the primary input and keeps
 `pr_author` hidden (still settable via `--var` / bot_args).

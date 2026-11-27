@@ -546,6 +546,7 @@ func TestVerifyBuildSkillPromiseMatchesItsBot(t *testing.T) {
 			// it may never say more.
 			for promise, marker := range map[string]string{
 				"MASKED EXIT STATUS":              "masked_pipelines",
+				"OVERSIZED PARALLELISM":           "oversized_parallelism",
 				"lifts every `NOT COVERED:` line": "nc_lines",
 				"on one line or many":             "ends_nonzero",
 			} {

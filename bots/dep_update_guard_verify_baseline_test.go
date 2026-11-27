@@ -53,6 +53,8 @@ func TestDepUpdateGuardVerifyBaseline(t *testing.T) {
 		cmd := strings.ReplaceAll(command, "{{vars.workspace_dir}}", ws)
 		cmd = strings.ReplaceAll(cmd, "{{vars.scratch_dir}}", scratch)
 		cmd = strings.ReplaceAll(cmd, "{{vars.verify_timeout_s}}", "120")
+		cmd = strings.ReplaceAll(cmd, "{{vars.verify_cpus}}", "0")
+		cmd = strings.ReplaceAll(cmd, "{{vars.verify_cgroup_root}}", t.TempDir())
 		if strings.Contains(cmd, "{{") {
 			t.Fatalf("an unsubstituted reference is left in the command")
 		}

@@ -182,6 +182,16 @@ vars:
   ## (exit 124) with whatever output the script produced first -- never as a
   ## crashed node.
   verify_timeout_s: int = 1200
+  ## The CPU budget verify.sh is held to: verify_run refuses a script forcing
+  ## GOMAXPROCS, go -p, GOFLAGS -p or a test -parallel above it, and exports
+  ## GOMAXPROCS=<budget> as the script's default. 0 reads it from the sandbox
+  ## (cgroup v2 cpu.max, then v1 cfs quota, then nproc). Set it when the
+  ## sandbox pod carries a CPU request but no limit: no quota is readable
+  ## then, and nproc is the node's CPU count, not what the pod was granted.
+  verify_cpus: int = 0
+  ## Where verify_run reads the cgroup CPU quota from. The kernel's mount
+  ## point; a host mounting cgroupfs elsewhere, or a test, points it there.
+  verify_cgroup_root: string = "/sys/fs/cgroup"
 
 secrets:
   ## Forge API token, mounted read-only as a FILE (path/env only, never
@@ -493,8 +503,14 @@ prompt verify_system:
   2. Write an executable POSIX-sh script to
      `{{vars.scratch_dir}}/verify.sh` (out-of-tree — `mkdir -p` it
      first; NEVER write into the PR checkout) that runs the build plus
-     the test subset touching the bumped surface first, then the fuller
-     fast suite, exiting non-zero on any failure.
+     the tests the bump reaches, exiting non-zero on any failure. Scope
+     and size it per the `verify-build` skill section 1e: no shipped
+     package imports the bumped module (prove it) → build + vet + the
+     vendor/tidy check, and the summary says the suite was not owed;
+     otherwise the tests of the packages importing it; the whole suite
+     only for a toolchain or a widely imported module. Never force a
+     parallelism above the sandbox's CPUs (GOMAXPROCS, -p, -parallel —
+     CI runners are bigger): verify_run refuses it.
   3. PRE-EXISTING failures: scope the script so a red BASE tree cannot
      absorb the verdict — the gate must measure the bump + alignment,
      not historic debt. List anything you scoped out in your summary.
@@ -1938,7 +1954,7 @@ emit(pending, carried, paths, unaccounted, '; '.join(said))
 ## the agent-prepared verify.sh and reports the REAL exit code (v2 —
 ## replaces the v1 `validate` agent whose stable:true was self-reported).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} VERIFY_TIMEOUT_S={{vars.verify_timeout_s}} python3 -I -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} VERIFY_TIMEOUT_S={{vars.verify_timeout_s}} VERIFY_CPUS={{vars.verify_cpus}} CGROUP_ROOT={{vars.verify_cgroup_root}} python3 -I -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
@@ -2320,14 +2336,151 @@ if masked:
     _m = 'MASKED EXIT STATUS: ' + str(len(masked)) + ' line(s) of ' + script + ' pipe a gating command into an output filter, so the pipeline reports the FILTER and a failed check reads as success (pipefail is not POSIX -- this runs under /bin/sh). Capture the status FIRST and filter the log after: <cmd> >step.log 2>&1 || { tail -50 step.log >&2; exit 1; } -- or append  ' + chr(124) + chr(124) + ' true  to a pipeline that is deliberately not a gate. The script was moved to ' + rejected + ': move it back to ' + script + ' and amend only these lines. Offending lines:' + chr(10) + chr(10).join(masked[:20])
     print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 5, 'precheck_rejected': True, 'precheck_reason': _m, 'log_tail': _m}))
     raise SystemExit(0)
+# Deterministic sizing precheck. CI runners are bigger than this sandbox, so a
+# verify.sh mirroring CI's parallelism over-subscribes it: iterion#3785 pinned
+# GOMAXPROCS=16 in a pod of 2 CPUs and 8 Gi, and the verify was OOM-killed
+# (exit 137) with no verdict. A Go toolchain >= 1.25 already sizes GOMAXPROCS
+# to the cgroup CPU quota when nothing overrides it, so the defect is the
+# script FORCING a parallelism above the sandbox: GOMAXPROCS, go -p, GOFLAGS
+# -p, a test -parallel, or any of them read from nproc (the host CPU count,
+# not the quota). Like a masked exit status it is an AUTHORSHIP defect caught
+# before the script runs, and loops back to verify_build naming the line and
+# the budget. The script is never rewritten here: the agent amends it.
+#
+# The budget, first source that answers: the operator override verify_cpus;
+# the cgroup v2 cpu.max of this process cgroup and its ancestors (the lowest
+# quota wins, as in the Go runtime); the cgroup v1 cpu.cfs_quota_us over
+# cpu.cfs_period_us; nproc, the CPUs this process may run on. A quota is
+# rounded up and never exceeds nproc. A pod that sets only a CPU REQUEST has
+# no quota (cpu.max reads max), so nproc bounds it: verify_cpus is the lever
+# there.
+def read_text(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return None
+def host_cpus():
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+def quota_cpus(quota, period):
+    try:
+        q = int(quota)
+        p = int(period)
+    except ValueError:
+        return 0
+    if q <= 0 or p <= 0:
+        return 0
+    return max(1, -(-q // p))
+def cpu_budget(root, override):
+    n_host = host_cpus()
+    if override > 0:
+        return override, 'verify_cpus=' + str(override) + ', the operator override (cgroup not read)'
+    top = os.path.normpath(root)
+    if os.path.isfile(os.path.join(top, 'cgroup.controllers')):
+        rel = '/'
+        for l in (read_text('/proc/self/cgroup') or '').splitlines():
+            if l.startswith('0::'):
+                rel = l[3:].strip() or '/'
+        d = os.path.normpath(os.path.join(top, rel.lstrip('/')))
+        if d != top and not d.startswith(top + os.sep):
+            d = top
+        best = 0
+        where = ''
+        unreadable = []
+        while True:
+            f = os.path.join(d, 'cpu.max')
+            t = read_text(f)
+            if t is not None and t.split() and t.split()[0] != 'max':
+                parts = t.split() + ['100000']
+                n = quota_cpus(parts[0], parts[1])
+                if n == 0:
+                    unreadable.append(f + ' = ' + t)
+                elif best == 0 or n < best:
+                    best = n
+                    where = f + ' = ' + t
+            if d == top:
+                break
+            d = os.path.dirname(d)
+        note = (' (unparseable, ignored: ' + '; '.join(unreadable) + ')') if unreadable else ''
+        if best:
+            if best <= n_host:
+                return best, 'cgroup v2 quota ' + where + note
+            return n_host, 'nproc = ' + str(n_host) + ', below the cgroup v2 quota ' + where + note
+        return n_host, 'nproc = ' + str(n_host) + ': cgroup v2 under ' + top + ' sets no CPU quota (cpu.max is max or absent)' + note
+    for sub in ('cpu', 'cpu,cpuacct', 'cpuacct,cpu'):
+        qf = os.path.join(top, sub, 'cpu.cfs_quota_us')
+        qt = read_text(qf)
+        pt = read_text(os.path.join(top, sub, 'cpu.cfs_period_us'))
+        if qt is None or pt is None:
+            continue
+        n = quota_cpus(qt, pt)
+        if n == 0:
+            return n_host, 'nproc = ' + str(n_host) + ': cgroup v1 ' + qf + ' = ' + qt + ' sets no CPU quota'
+        if n <= n_host:
+            return n, 'cgroup v1 quota ' + qf + ' = ' + qt + ' over cpu.cfs_period_us = ' + pt
+        return n_host, 'nproc = ' + str(n_host) + ', below the cgroup v1 quota ' + qf + ' = ' + qt
+    return n_host, 'nproc = ' + str(n_host) + ': no cgroup v2 (cgroup.controllers) nor v1 cpu controller under ' + top
+def oversized_parallelism(text, budget):
+    # Every setting that forces a parallelism above the budget, with its
+    # 1-based line: GOMAXPROCS=N anywhere (export, assignment, env prefix),
+    # and on a line invoking go or setting GOFLAGS: -p N, -p=N, -parallel N,
+    # -parallel=N, -test.parallel. A value read from nproc or getconf is the
+    # host CPU count and is refused whatever it reads.
+    hits = []
+    strip = chr(39) + chr(34) + ';)('
+    for no, line in enumerate(sh_uncommented(text), 1):
+        toks = [t.strip(strip) for t in line.split()]
+        found = []
+        is_go = 'GOFLAGS=' in line
+        for t in toks:
+            if t == 'go' or t.endswith('/go'):
+                is_go = True
+        for i in range(len(toks)):
+            t = toks[i]
+            after = toks[i + 1] if i + 1 < len(toks) else ''
+            after2 = toks[i + 2] if i + 2 < len(toks) else ''
+            k = t.find('GOMAXPROCS=')
+            if k >= 0 and (k == 0 or not (t[k - 1].isalnum() or t[k - 1] == '_')):
+                found.append(('GOMAXPROCS', t[k + 11:].strip(strip), after))
+            if not is_go:
+                continue
+            tt = t.split('=', 1)[1].strip(strip) if t.startswith('GOFLAGS=') else t
+            for flag in ('-p', '-parallel', '-test.parallel'):
+                if tt == flag and after:
+                    found.append((flag, after, after2))
+                elif tt.startswith(flag + '='):
+                    found.append((flag, tt[len(flag) + 1:].strip(strip), after))
+        for name, val, nxt in found:
+            if val.isdigit():
+                if int(val) > budget:
+                    hits.append('line ' + str(no) + ': ' + line.strip()[:200] + '  [' + name + ' ' + val + ' > ' + str(budget) + ']')
+            elif 'nproc' in val + ' ' + nxt or '_NPROCESSORS' in val + ' ' + nxt:
+                hits.append('line ' + str(no) + ': ' + line.strip()[:200] + '  [' + name + ' from the host CPU count, not the ' + str(budget) + ' CPU budget]')
+    return hits
+cpu_n, cpu_src = cpu_budget(os.environ['CGROUP_ROOT'], int(os.environ['VERIFY_CPUS']))
+oversized = oversized_parallelism(script_src, cpu_n)
+if oversized:
+    _o = 'OVERSIZED PARALLELISM: ' + str(len(oversized)) + ' line(s) of ' + script + ' force more parallelism than this sandbox has CPUs: the budget is ' + str(cpu_n) + ', from ' + cpu_src + '. CI runners are bigger than this sandbox and a parallelism copied from CI over-subscribes it (iterion#3785: GOMAXPROCS=16 in a 2-CPU / 8 Gi pod, OOM-killed with exit 137 and no verdict). A Go toolchain >= 1.25 sizes itself to the cgroup quota, and verify_run exports GOMAXPROCS=' + str(cpu_n) + ' to the script: remove these settings, or lower them to ' + str(cpu_n) + ' or less (verify-build skill section 1e). Amend only these lines of ' + script + ':' + chr(10) + chr(10).join(oversized[:20])
+    print(json.dumps({'passed': False, 'skipped': False, 'exit_code': 7, 'precheck_rejected': True, 'precheck_reason': _o, 'log_tail': _o}))
+    raise SystemExit(0)
 baseline_sha, baseline_err = baseline_build()
 pre = tree_state()
 rc = 0
 out = ''
 reason = ''
 limit = int(os.environ['VERIFY_TIMEOUT_S'])
+# The budget is the script's DEFAULT parallelism: an unset GOMAXPROCS
+# inherits it rather than the host CPU count a pre-1.25 toolchain, or a
+# runtime blind to the quota, would take. Said in the log either way.
+venv = dict(os.environ)
+inherited = venv.get('GOMAXPROCS', '')
+venv['GOMAXPROCS'] = str(cpu_n)
+sizing = 'VERIFY SIZING: GOMAXPROCS=' + str(cpu_n) + ' exported to verify.sh as its default, from ' + cpu_src + ((' (replacing the inherited GOMAXPROCS=' + inherited + ')') if inherited and inherited != str(cpu_n) else '') + '.'
 try:
-    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=limit)
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=limit, env=venv)
     out = p.stdout or ''
     rc = p.returncode
 except subprocess.TimeoutExpired as e:
@@ -2435,6 +2588,7 @@ if rc == 0:
             if fresh:
                 rc = 4
                 out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
+out = out + chr(10) + sizing
 if baseline_sha:
     out = out + chr(10) + 'VERIFY BASELINE: verify.sh ran on ' + baseline_sha[:12] + ', a local commit of the aligned tree (never pushed), so its drift gate measured the regeneration against the alignment.'
 elif baseline_err:

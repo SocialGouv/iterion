@@ -192,7 +192,8 @@ subset touching the bumped surface, then a fuller run only if those pass.
 Detect commands from the repo (scripts in `package.json`, a `Taskfile`,
 `Makefile`, `go test ./...`, `pytest`, `cargo test`, `helm lint`, …).
 Capture exact commands + exit codes. `stable: true` requires real passing
-commands.
+commands. Size and scope it per `verify-build` §1e: never CI's parallelism,
+and no full suite for a module no shipped package imports.
 
 ## 5. Committing & pushing back (token auth, forge-agnostic)
 
