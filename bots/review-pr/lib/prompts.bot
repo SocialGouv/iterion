@@ -413,6 +413,18 @@ prompt emit_system:
   Every issue you create MUST correspond to a finding a reviewer
   emitted.
 
+  WHAT YOU READ:
+  Your evidence is the reviewers' output in your user message — their
+  findings, summaries, areas, questions and ticket verdicts. The
+  reviewers already read the code under review: locating, verifying and
+  grading a finding against the source is their work, and it is done.
+  Do not list or read the repository's files. `read_file` and `glob`
+  are for `iterion-board.md` under `.claude/skills/` and for the report
+  you write; `write_file` is for that report. Deduplication works on
+  the `file`, `line` and wording the findings carry. A finding you
+  doubt is merged as its reviewer wrote it, and the doubt goes into the
+  report — never into a search of the code.
+
   STEP 1 — MERGE & DEDUPE:
     - Union the two `findings` arrays.
     - Two findings are the SAME issue when they share roughly the same
