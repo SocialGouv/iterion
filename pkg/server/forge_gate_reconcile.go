@@ -223,7 +223,8 @@ func isSyntheticGateInterruption(description string) bool {
 	return d == gateInterruptedDescription || d == gateDLQDescription || d == gateDLQDescriptionReplay ||
 		d == gateDeclineDescription ||
 		strings.HasPrefix(d, gateDiedDescriptionPrefix) ||
-		strings.HasPrefix(d, gateRefusedDescriptionPrefix)
+		strings.HasPrefix(d, gateRefusedDescriptionPrefix) ||
+		strings.HasPrefix(d, gatePausedDescriptionPrefix)
 }
 
 // startGateReconciler attaches the reconciler to the event spine. It rides the
@@ -253,8 +254,10 @@ func (s *Server) startGateReconciler() {
 }
 
 // attachGateReconciler subscribes the reconciler to run-terminal events.
-// Paused is deliberately absent: a paused run is expected to resume and post
-// its own verdict.
+// Paused is absent: a pause is not an outcome to answer at once. A run paused
+// for a human reaches the reconciler through the sweep, which lists every such
+// run on each pass, and its claim is answered once the pause outlasts
+// gatePauseAnswerAfter (forge_gate_paused.go).
 func (s *Server) attachGateReconciler(bus eventbus.Bus) (func(context.Context), error) {
 	if s == nil || bus == nil {
 		return func(context.Context) {}, nil
@@ -296,8 +299,19 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		recordGateRunUnreadable(ctx, err)
 		return nil
 	}
-	// A paused run is expected to resume and post its own verdict.
-	if run.Status == store.RunStatusPausedWaitingHuman || run.Status == store.RunStatusPausedOperator {
+	// An operator's own pause is left alone: the operator who paused the run
+	// knows, and the sweep does not list paused_operator runs at all.
+	if run.Status == store.RunStatusPausedOperator {
+		return nil
+	}
+	// A run paused for a human resumes only when a human acts, and until then
+	// its in-flight claim holds the required check pending. Once the pause has
+	// lasted gatePauseAnswerAfter the claim is answered below with a synthetic
+	// failure that names the pause and its cure, plus one notice on the pull
+	// request — and NOTHING is relaunched: the run is alive and a second one
+	// would duplicate it. Before the bound, nothing happens (forge_gate_paused.go).
+	paused := run.Status == store.RunStatusPausedWaitingHuman
+	if paused && !s.gatePauseIsDue(run) {
 		return nil
 	}
 	// A DLQ park is FINAL for automation whatever RetryState still says:
@@ -310,7 +324,9 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// same run every minute for an hour), then fall through to the
 	// dead-review repair below, which is what actually happens next — the
 	// synthetic failure on the head and one relaunch per head.
-	if run.Status == store.RunStatusFailedResumable && run.FailureCode == store.FailureDLQParked {
+	if paused {
+		// Neither a DLQ park nor a retry: the bound above decided.
+	} else if run.Status == store.RunStatusFailedResumable && run.FailureCode == store.FailureDLQParked {
 		if via == gateTriggerEvent {
 			s.noticeGateDLQParked(ctx, run)
 		}
@@ -377,6 +393,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 			s.logger.Debug(msg, args...)
 		case via != gateTriggerSweep:
 			s.logger.Warn(msg, args...)
+		case paused && s.gatePauseFirstOffers(run):
+			// A paused run is offered on every pass for as long as it stays
+			// paused, so only the first offers past the bound speak.
+			s.logger.Warn(msg+" — the run has been paused for a human for over "+s.gatePauseAnswerAfter().String()+
+				", and while this lasts the check it claimed stays pending", args...)
+		case paused:
+			s.logger.Debug(msg, args...)
 		case s.gateSweepIsLastPass(run):
 			s.logger.Warn(msg+" — this was the last sweep pass inside the "+
 				gateSweepHorizon.String()+" horizon: nothing will offer this run again, so the check it owes stays unanswered until a human acts", args...)
@@ -503,6 +526,12 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// would read "review died" of a review that completed (#1632). The record
 	// is what lets the flow below tell both apart.
 	refusal := refusalAnswersRun(run, grant, gateCtx)
+	if paused {
+		// The refusal belongs to a publish the run makes again when it
+		// resumes; answering for it now would speak for a head the paused run
+		// has not reviewed. The pause is what the check reports.
+		refusal = nil
+	}
 	// A refusal is honored at most once, by the episode that produced it:
 	// every settle below retires the record with the episode (the settle
 	// marks are episode-scoped; the refusal must not outlive them — see
@@ -682,6 +711,13 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// or a relaunch that was refused keeps this the cheap exit it has to
 		// be at one offer per minute per dead run.
 		if runTarget.speaksFor(gate) {
+			if paused {
+				// This pause's answer is already on the head, and its notice
+				// went with it. Settled for the episode: a resume moves
+				// updated_at, and the next pause is a new one.
+				s.settleGateRun(run, gateSettledPaused, pr.HeadSHA)
+				return nil
+			}
 			d := deadGateRun{
 				run: run, grant: grant, conn: conn, gc: gc,
 				repo: repo, number: number, pr: pr, gateCtx: gateCtx, prURL: prURL,
@@ -700,6 +736,16 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		if runTarget.unset() {
 			return abstain("a synthetic failure is already on %s@%s and PublicURL is unset, so it cannot be told from this run's own — set PublicURL to enable second-death escalation",
 				repo, shortSHA(pr.HeadSHA))
+		}
+		if paused {
+			// Another run's synthetic failure already marks the check failed,
+			// and a paused run starts no recovery.
+			s.settleGateRun(run, gateSettledPaused, pr.HeadSHA)
+			if s.logger != nil {
+				s.logger.Debug("forge gate: run %s is paused on %s@%s but another run's synthetic failure already answers the check",
+					runID, repo, shortSHA(pr.HeadSHA))
+			}
+			return nil
 		}
 		// ANOTHER dead run's synthetic failure already marks this head. One
 		// marker is enough: re-posting would only re-point the status's target
@@ -738,7 +784,10 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	// every resume of a failed_resumable run, …), and an anchor reading
 	// bookkeeping as the death would refuse — as "superseded" — verdicts
 	// decided in the shadow between the true death and the stamp. UpdatedAt
-	// stays the fallback for runs written before FinishedAt existed.
+	// stays the fallback for runs written before FinishedAt existed. A paused
+	// run carries no FinishedAt (a resume clears it), and its anchor is the
+	// instant it paused: the verdict it publishes after resuming is decided
+	// later, and supersedes the synthetic failure.
 	anchorAt := run.UpdatedAt
 	if run.FinishedAt != nil {
 		anchorAt = *run.FinishedAt
@@ -755,6 +804,9 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 	}
 	decision := gateDecisionAt(anchorAt)
 	description := gateInterruptedDescriptionFor(run)
+	if paused {
+		description = gatePausedDescription(run)
+	}
 	if refusal != nil {
 		// The review did not die — the gate declined its verdict. Say so:
 		// the remedy (a fresh review of the head) is not the died one's
@@ -795,7 +847,7 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		// mirror abstain's: Warn on the event path (it fires once per run),
 		// Debug on mid-horizon sweep passes (a stuck tie is otherwise ~60
 		// lines an hour), Warn on the last offer.
-		lastOffer := via == gateTriggerSweep && s.gateSweepIsLastPass(run)
+		lastOffer := via == gateTriggerSweep && !paused && s.gateSweepIsLastPass(run)
 		logOffer := func(format string, args ...any) {
 			if s.logger == nil {
 				return
@@ -846,6 +898,17 @@ func (s *Server) reconcileGateForRunID(ctx context.Context, runID, via string) e
 		return nil
 	}
 	s.reassertNewerVerdict(ctx, gc, markKey, repo, pr.HeadSHA, gateCtx, decision)
+	if paused {
+		// The answer, the one notice, and no relaunch: the run waits for a
+		// human, and its own verdict replaces this failure when it resumes.
+		s.settleGateRun(run, gateSettledPaused, pr.HeadSHA)
+		if s.logger != nil {
+			s.logger.Info("forge gate: run %s has been paused for a human since %s; posted %s=failure on %s naming the pause so the PR is not stuck pending",
+				runID, run.UpdatedAt.UTC().Format(time.RFC3339), gateCtx, prURL)
+		}
+		s.noticeGatePausedForHuman(ctx, run, gateCtx)
+		return nil
+	}
 	// The answer is posted; if it carried the refusal's diagnosis, the record
 	// is consumed — retire it with the episode (see clearGateRefusal).
 	clearRefusal()

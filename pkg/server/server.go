@@ -476,6 +476,10 @@ type Server struct {
 	// gateSweep is the operator-configured sweep cadence
 	// (gateSweepSettingsFromEnv), resolved once in New.
 	gateSweep gateSweepSettings
+	// gatePauseAnswer is the operator's bound on how long a paused gating
+	// run may hold its claim unanswered (gatePauseAnswerFromEnv), resolved
+	// once in New. Unset → defaultGatePauseAnswerAfter.
+	gatePauseAnswer gatePauseAnswerSetting
 	// leaseHandoverOff and leaseHandoverPasses are the operator's override
 	// over every leased net's handover (leaseHandoverFromEnv), resolved once
 	// in New so one warning is logged per process rather than one per net.
@@ -1422,6 +1426,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	}
 	s.replicaID = newReplicaID()
 	s.gateSweep = gateSweepSettingsFromEnv(envOperator, s.warnf)
+	s.gatePauseAnswer = gatePauseAnswerFromEnv(envOperator, s.warnf)
 	s.leaseHandoverOff, s.leaseHandoverPasses = leaseHandoverFromEnv(envOperator, s.warnf)
 	// Wire the same Origin allowlist used for HTTP CORS into the WebSocket
 	// upgrader so cross-origin browser tabs can't subscribe to file events.

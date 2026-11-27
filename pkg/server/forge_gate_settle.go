@@ -50,6 +50,12 @@ const (
 	// Not a verdict: the auto-fix lane must not read findings into it, so it
 	// is never offered there (the sweep offers only gateSettledVerdictFailure).
 	gateSettledRefused = "refused"
+	// gateSettledPaused: the run is paused for a human and its claim is
+	// answered with the pause's synthetic failure (forge_gate_paused.go).
+	// Bound to the pause's episode like every mark: a resume moves updated_at,
+	// so the next pause is offered afresh. Not a verdict: never offered to the
+	// auto-fix lane.
+	gateSettledPaused = "paused"
 )
 
 // gateSettleRecheck is how long a reversible settlement holds before the sweep

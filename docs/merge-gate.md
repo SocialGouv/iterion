@@ -45,6 +45,8 @@ PR opened / pushed ──▶ launch claims the head:  revi/review = pending
                                                (event + 1-min sweep)
        run PARKS on a provider quota ──▶ check stays claimed, pause notice
                                           comments when it resumes
+     run PAUSES for a human > 1 h ──▶ reconciler posts failure naming the
+                                          pause + one notice; no relaunch
               pull request closed/merged ──▶ its runs stop, retries disarmed
 ```
 
@@ -308,6 +310,50 @@ the review's ("the verdict lands here … a new push restarts it sooner"), so
 a parked fixer reads as a parked review, and the advice is the one thing not
 to do while a fixer works. Known gap, tracked as SocialGouv/iterion#650: the
 notice should name the parked run's role.
+
+### A run paused for a human answers its check within a bound
+
+A gating run that pauses for a human — a `human` node, an `await`, or the
+recovery dispatcher's pause for a failed node (`recovery_pause`, e.g. after
+`AUTH_FAILED` on an expired credential) — is `paused_waiting_human`, and the
+in-flight claim it posted at launch would read "review in progress" for as
+long as the pause lasts. Nothing resumes such a run but a person, and nothing
+told anyone: from 2026-10-12 to 2026-11-26, 25 Vetty runs on this repository
+paused (23 on `AUTH_FAILED`, 2 at `escalate`) and each held `revi/review`
+pending until its pull request closed; the operator read it as "the reviewer
+does not review" and admin-merged (#3768).
+
+So once the pause has lasted **`ITERION_GATE_PAUSE_ANSWER_AFTER`** (default
+`1h`; see [environment-variables.md](environment-variables.md#merge-gate-server)),
+the reconciler answers the claim like a dead run's — a synthetic `failure`
+through the same verdict-order authority, never over a real verdict or
+another run's live claim, only on the revision the run reviewed — with a
+description that names the pause and its cure: *"review paused (AUTH_FAILED
+at audit) — fix the cause, then answer the run's recovery prompt to resume
+it"*, or *"review paused (waiting for a human at escalate) — answer the run's
+question to resume it"*. The status links the run. The pull request gets
+**one** comment saying the same, with the run link: it is posted only by the
+pass that wrote the failure, and every later pass finds that failure on the
+head (or the run's settle mark) and stops.
+
+Unlike a dead run's repair, **nothing is relaunched and nothing is
+cancelled**: the run is alive, it waits for its human, and a second run would
+duplicate it. The failure is decided at the instant the run paused, so the
+verdict it publishes after resuming is the newer decision and replaces it.
+The setting is read at server start: a Go duration, and `0`, a negative
+duration or `off` turns the answer off (a paused run then holds its claim for
+as long as it is paused, the behaviour before #3768).
+
+Paused runs reach the sweep on every deep pass (every 30 passes at the
+default cadence) and on every fast pass whose page is not full, so the answer
+lands between the bound and about half an hour after it. Two limits: the
+answer needs the run's publish grant, which lives
+`forgePublishDefaultTTL` (9 days) from the launch, so a pause longer than
+that is answered by nobody; and an operator's own pause (`paused_operator`)
+is left alone — the operator who paused it knows, and the sweep's enumeration
+(the query the notification and ops-alert sweeps share) does not list it.
+A run that resumes and pauses again before publishing finds the first
+pause's failure still on the head and posts nothing more.
 
 Symmetrically, a pull request that **closes or merges** ends every run bound
 to it and **disarms** their retries: an in-flight review would keep spending
@@ -1063,7 +1109,11 @@ that from doing harm of its own:
   starts a fresh review. A newer head is a newer review's responsibility, so
   the run must name the revision it read (`head_sha`, stamped at launch) and
   the reconciler abstains when it does not.
-- **It leaves paused runs and ARMED retries alone — and nothing else.** A
+- **It leaves ARMED retries alone, and a paused run until its bound.** A run
+  paused for a human is answered once the pause outlasts
+  `ITERION_GATE_PAUSE_ANSWER_AFTER`, and never relaunched ([the
+  bound](#a-run-paused-for-a-human-answers-its-check-within-a-bound)); an
+  operator's pause is left alone. A
   `failed_resumable` run whose usage-window retry is armed (persisted before
   the outcome event fires) will resume and post its own verdict. One with no
   retry armed — budget exceeded, retries exhausted, a plain execution failure —
@@ -1129,8 +1179,11 @@ that from doing harm of its own:
     the record's clock, pin and check — the rule the identity replaced — so
     a refusal is still retired exactly once, never zero times.
 
-A paused run is not reconciled: it is expected to resume and post its own
-verdict.
+A run paused for a human is reconciled only once its pause outlasts the
+bound, and then without a relaunch ([the
+bound](#a-run-paused-for-a-human-answers-its-check-within-a-bound)): it is
+expected to resume and post its own verdict, which replaces the synthetic
+failure.
 
 ### No verdict on a pull request that already ended
 
