@@ -107,6 +107,36 @@ func TestRgaaAuditTriagesWhatNoAgentCanDecide(t *testing.T) {
 		t.Fatalf("probe re-asks %d of %d asked (%d with evidence), no_evidence %v: only the criteria with evidence (or flagged without subject) earn a re-ask", len(reasked), len(pending), withEvidence, probe["no_evidence"])
 	}
 
+	// A batch lost whole (no fragment) never answered: its criteria are
+	// re-asked even without evidence.
+	var noEv []string
+	for _, id := range pending {
+		var item struct {
+			Evidence []map[string]any `json:"evidence"`
+		}
+		rgaaReadJSON(t, filepath.Join(fmt.Sprint(wl["items_dir"]), id+".json"), &item)
+		if len(item.Evidence) == 0 && len(noEv) < 3 {
+			noEv = append(noEv, id)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(run, "batches"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rgaaWriteJSON(t, filepath.Join(run, "batches", "r0-b01.json"), map[string]any{"id": "r0-b01", "round": 0, "ids": noEv})
+	lostProbe := rgaaOK(t, "fold_probe", rgaaRunNode(t, scripts, "fold_probe", site, env, in(map[string]any{"input.round": 0})))
+	again := map[string]bool{}
+	for _, id := range rgaaStrings(lostProbe["pending_ids"]) {
+		again[id] = true
+	}
+	for _, id := range noEv {
+		if !again[id] {
+			t.Fatalf("criterion %s of a lost batch is not re-asked: %v", id, lostProbe["pending_ids"])
+		}
+	}
+	if err := os.Remove(filepath.Join(run, "batches", "r0-b01.json")); err != nil {
+		t.Fatal(err)
+	}
+
 	// The fold names them open; the annex lists every open criterion as a
 	// point to re-check, the triaged ones with their reason.
 	fold := rgaaOK(t, "fold_final", rgaaRunNode(t, scripts, "fold_final", site, env, in(map[string]any{"input.require_complete": false})))

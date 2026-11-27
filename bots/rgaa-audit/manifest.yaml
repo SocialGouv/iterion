@@ -9,7 +9,8 @@ version: 3.4.0
 ## « à évaluer », untouched, and the coverage annex lists it. The first pass
 ## is ONE fan-out (wave_batches 0, from 4: seven rounds for 92 criteria on
 ## the production route), and a re-ask is spent only on a criterion with
-## evidence to cite or one the engine flags without subject. The annex's
+## evidence to cite, one the engine flags without subject, or one whose
+## batch was lost whole (never answered). The annex's
 ## « Points à revérifier » names every open criterion with its title and why
 ## it stayed open. An incomplete trial (a refutation batch lost after its
 ## re-ask) is applied: the engine prunes what was refuted and reopens the

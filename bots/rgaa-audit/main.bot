@@ -1838,12 +1838,16 @@ tool fold_probe:
     const maxReask = Number.isInteger(reaskAsked) && reaskAsked >= 0 ? reaskAsked : Infinity;
     const timesAsked = (id) => askedCount ? Number(askedCount[id] || 0) : 1;
     // A re-ask is spent only where it can change the answer: on a criterion
-    // with harvested evidence to cite, or one the engine flags without
-    // subject (NA is the answer the report then needs). An asked criterion
-    // with neither stays open — a point to re-check in the annex — instead
-    // of buying another round.
+    // with harvested evidence to cite, one the engine flags without subject
+    // (NA is the answer the report then needs), or one whose batch was lost.
+    // A lost batch (no fragment: a timeout, a dead branch) never answered at
+    // all. An asked criterion with none of these stays open — a point to
+    // re-check in the annex — instead of buying another round.
     const hasEvidence = (id) => { try { const ev = L.readJSON(path.join(wl.items_dir, id + ".json")).evidence; return Array.isArray(ev) && ev.length > 0; } catch (e) { return true; } };
-    const worthReask = (id) => flaggedOpen.includes(id) || hasEvidence(id);
+    const answered = new Set(L.listJSON(path.join(RUN, "fragments")).map((p) => L.readJSON(p).batch_id));
+    const lost = new Set();
+    for (const p of L.listJSON(path.join(RUN, "batches"), "r" + round + "-")) { const b = L.readJSON(p); if (!answered.has(b.id)) for (const id of b.ids || []) lost.add(String(id)); }
+    const worthReask = (id) => flaggedOpen.includes(id) || lost.has(id) || hasEvidence(id);
     const notAsked = openIds.filter((id) => timesAsked(id) === 0);
     const reaskSpent = openIds.filter((id) => timesAsked(id) > maxReask);
     const noEvidence = openIds.filter((id) => timesAsked(id) > 0 && timesAsked(id) <= maxReask && !worthReask(id));
@@ -2245,8 +2249,9 @@ tool final_report:
         if (reopenedByTrial.has(id)) return "rouvert par la contre-lecture (conformité réfutée, non étayée ou jamais mise à l'épreuve)";
         const v = verdictOf[id];
         if (v && v.verdict === "manual") return "l'agent n'a pas pu trancher depuis la source (" + (v.reason || "sans motif") + ")" + (v.justification ? " : " + clip(v.justification) : "");
-        if (issuesRec[id]) return "aucun verdict accepté par le moteur : " + clip(issuesRec[id]);
-        return "aucun verdict reçu";
+        const issue = String(issuesRec[id] || "");
+        if (!v && (!issue || /coverage gap|no verdict|answer EVERY criteriaId/.test(issue))) return "aucune réponse de l'agent (lot perdu ou critère omis)";
+        return "verdict refusé (motif technique : " + clip(issue || "non consigné") + ")";
       };
       a.push("");
       a.push("## Points à revérifier");

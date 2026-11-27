@@ -82,8 +82,8 @@ prepare ─► static_audit ─► bank_static ─► render_gate ─► [render
   criterion's own anchors — the others dropped and counted; a batch that
   answered only part of its criteria is named apart from a dead one) →
   `fold_probe` (the fold on a copy, refusals named and re-asked once —
-  only where the criterion carries evidence to cite, or the engine flags it
-  without subject) →
+  only where the criterion carries evidence to cite, the engine flags it
+  without subject, or its whole batch was lost) →
   `fold_final` (the real audit folded exactly once, ledger merged; a retyped
   citation folded with its anchor's text where the engine accepts both).
 - `draft_report` renders the draft and the trial worklist; `budget_gate`
