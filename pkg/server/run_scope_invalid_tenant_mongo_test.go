@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,13 +83,19 @@ func TestRunScopeInvalidTenantAnswersNotFoundNativeMongo(t *testing.T) {
 	if code, body := llmDo(t, hs, "GET", "/api/runs/ok", adminTok, ""); code != 200 {
 		t.Fatalf("fixture: super-admin on the well-formed run: %d %s, want 200", code, body)
 	}
-	for _, id := range []string{"ok", "nope", "alias", "dup", "both"} {
+	// The invisible well-formed run answers a non-member the body every
+	// refused run must answer: the id, nothing about the document.
+	if code, body := llmDo(t, hs, "GET", "/api/runs/ok", userTok, ""); code != 404 || strings.TrimSpace(string(body)) != `{"error":"run not found: ok"}` {
+		t.Fatalf("fixture: non-member on another team's run: %d %s, want the 404 naming only the id", code, body)
+	}
+	if code, body := llmDo(t, hs, "GET", "/api/runs/nope", userTok, ""); code != 404 {
+		t.Errorf("GET /api/runs/nope: %d %s, want 404", code, body)
+	}
+	for _, id := range []string{"alias", "dup", "both"} {
+		want := `{"error":"run not found: ` + id + `"}`
 		for name, tok := range map[string]string{"non-member": userTok, "super-admin": adminTok} {
-			if id == "ok" && name == "super-admin" {
-				continue
-			}
-			if code, body := llmDo(t, hs, "GET", "/api/runs/"+id, tok, ""); code != 404 {
-				t.Errorf("GET /api/runs/%s as %s: %d %s, want the 404 of a missing run", id, name, code, body)
+			if code, body := llmDo(t, hs, "GET", "/api/runs/"+id, tok, ""); code != 404 || strings.TrimSpace(string(body)) != want {
+				t.Errorf("GET /api/runs/%s as %s: %d %s, want 404 %s — the answer another team's run gives", id, name, code, body, want)
 			}
 		}
 	}

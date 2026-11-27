@@ -365,9 +365,12 @@ func TestAdminRuns_CrossOrgReadsAreAudited(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("opening a foreign-org run answered %d (%s), want 200 without an active-org error", code, body)
 	}
-	waitForAuditEvent(t, auditStore, func(e audit.Event) bool {
+	read := waitForAuditEvent(t, auditStore, func(e audit.Event) bool {
 		return e.Action == "run.cross_team_read" && e.TargetID == "run-b1x"
 	})
+	if read.TenantID != "team-b1" || read.Meta["team_id"] != "team-b1" || read.Meta["via"] != "super-admin" {
+		t.Fatalf("cross-team read row tenant %q meta %v, want the run's team team-b1 in tenant and meta.team_id", read.TenantID, read.Meta)
+	}
 }
 
 // TestAdminRuns_OrgAndTeamNarrowToTheTeam: an org plus a team inside it
