@@ -2674,15 +2674,18 @@ var ErrInvitationNeedsEmail = errors.New("auth: this instance sends no email, so
 
 // ErrInvitationCredentialGone refuses the accept of an invitation whose
 // minting personal access token no longer stands (Invitation.MintedWith):
-// revoked, expired, its row gone, or its account disabled, erased or pending
-// a password change. What a token sent ends with it.
-var ErrInvitationCredentialGone = errors.New("auth: the personal access token that sent this invitation does not stand (revoked or expired, or its owner's account is not active right now): ask the person who invited you for a new invitation, or to put their account back in order")
+// revoked, disabled, expired, its row gone, or its account disabled, erased
+// or pending a password change. What a token sent ends with it — or, while
+// the token is only disabled, is refused until it is enabled again. The
+// message names no account state (it says "suspended" for a disabled token):
+// whoever holds the link learns that it does not stand, nothing more.
+var ErrInvitationCredentialGone = errors.New("auth: the personal access token that sent this invitation does not stand (revoked, suspended or expired, or its owner's account is not active right now): ask the person who invited you for a new invitation, or to put their token or account back in order")
 
 // mintingCredentialStands answers whether the personal access token that
 // minted inv (Invitation.MintedWith) still stands, by the reading every
 // request it presents is held to (standing): nil for an invitation a session
 // minted, ErrInvitationCredentialGone for a token that does not stand — its
-// row revoked, expired or gone (ErrTokenRevoked), its account gone
+// row revoked, disabled, expired or gone (ErrTokenRevoked), its account gone
 // (ErrSessionNotFound), disabled or erased (ErrAccountDisabled, which an
 // erased account answers too) or pending a password change
 // (ErrSessionRevoked) — and the read's own error when its standing could not

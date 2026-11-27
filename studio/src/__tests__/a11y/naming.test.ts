@@ -298,7 +298,6 @@ const ROW_ACTION_LEDGER: RowActionRow[] = [
   { path: "/src/views/account/ApiKeys.tsx", sites: 1 },
   { path: "/src/views/account/OAuthConnections.tsx", sites: 10 },
   { path: "/src/views/account/SettingsPage.tsx", sites: 1 },
-  { path: "/src/views/account/TokensPanel.tsx", sites: 1 },
   { path: "/src/views/admin/PlatformBotsPage.tsx", sites: 1 },
   { path: "/src/views/admin/PlatformForgeAppsPage.tsx", sites: 1 },
   { path: "/src/views/admin/settings/BotRolesPage.tsx", sites: 1 },

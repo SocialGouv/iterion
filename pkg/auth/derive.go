@@ -41,7 +41,10 @@ const (
 	// MintAccessToken is the team and org switches: an access token
 	// re-scoped from the presented one.
 	MintAccessToken Mint = "an access token"
-	// MintPAT is POST /api/me/tokens.
+	// MintPAT is POST /api/me/tokens, and the two acts that put a personal
+	// access token back in its owner's hands: POST
+	// /api/me/tokens/{id}/regenerate (a replacement minted) and POST
+	// /api/me/tokens/{id}/enable (a disabled token re-armed).
 	MintPAT Mint = "a personal access token"
 	// MintWSTicket is POST /api/ws/ticket, and the redemption of the ticket
 	// it minted, which re-asks the question for the credential that minted
@@ -98,7 +101,8 @@ const (
 	MintEmailedInvitation Mint = "an invitation delivered by email only"
 	// ChangeCredential is a route that changes or removes a credential of
 	// the presented credential's account: POST /api/me/password, POST
-	// /api/me/sessions/revoke-all, DELETE /api/me/tokens/{id}, DELETE
+	// /api/me/sessions/revoke-all, DELETE /api/me/tokens/{id}, POST
+	// /api/me/tokens/{id}/disable, POST /api/me/tokens/{id}/purge, DELETE
 	// /api/me/sso/links/{provider}/{subject}.
 	ChangeCredential Mint = "a change of the account's credentials"
 	// ChangeSignIn is a route that changes how an org's accounts sign in:
@@ -142,7 +146,8 @@ type Derivation struct {
 }
 
 // PATState answers whether the personal access token id still authenticates
-// at now: its row exists, is not revoked and has not expired. An error is a
+// at now: its row exists, is not revoked nor disabled and has not expired
+// (pat.Token.Usable). An error is a
 // read that did not complete.
 type PATState func(ctx context.Context, id string, now time.Time) (usable bool, err error)
 
@@ -160,7 +165,7 @@ func (s *Service) SetPATState(fn PATState) { s.patState = fn }
 // password change (sessionRefusal), a session a revocation covers: its
 // lineage signed out or reuse-revoked, its account signed out everywhere or
 // its password changed (SessionStore.SessionRevoked) — a personal access
-// token whose row is revoked, expired or gone, and a presented credential
+// token whose row is revoked, disabled, expired or gone, and a presented credential
 // past its own expiry; and it refuses, whatever the account's state, what the
 // presented kind may never do (ErrNotDerivable): a personal access token
 // mints no credential of its own account but a WS ticket, nor a team token
@@ -307,7 +312,7 @@ func (s *Service) standing(ctx context.Context, presented Identity) (identity.Us
 			return identity.User{}, fmt.Errorf("auth: read the personal access token %s: %w", presented.CredentialID, err)
 		}
 		if !usable {
-			return identity.User{}, fmt.Errorf("%w: the personal access token is revoked or expired", ErrTokenRevoked)
+			return identity.User{}, fmt.Errorf("%w: the personal access token is revoked, disabled or expired", ErrTokenRevoked)
 		}
 	}
 	return u, nil

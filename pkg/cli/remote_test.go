@@ -929,7 +929,17 @@ func TestRemoteTeamsSwitch_TheReplacedTokenRevokesItself(t *testing.T) {
 				fmt.Fprint(w, `{"pat":{"id":"p-new"},"token":"iap_new","org_id":"o1"}`)
 			})
 			mux.HandleFunc("GET /api/me/tokens", func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q}]}`, oldFP)
+				if tc.oldAccepted {
+					fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q}]}`, oldFP)
+					return
+				}
+				// The instance lists an expired token only on
+				// include_revoked, as handleListPATs does.
+				if r.URL.Query().Get("include_revoked") != "1" {
+					fmt.Fprint(w, `{"tokens":[]}`)
+					return
+				}
+				fmt.Fprintf(w, `{"tokens":[{"id":"p-old","name":"cli","fingerprint":%q,"expires_at":"2020-01-01T00:00:00Z"}]}`, oldFP)
 			})
 			mux.HandleFunc("DELETE /api/me/tokens/{id}", func(w http.ResponseWriter, r *http.Request) {
 				bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

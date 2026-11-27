@@ -210,11 +210,49 @@ func routeSchemas() map[string]routeOp {
 			response: struct {
 				Tokens []pat.Token `json:"tokens"`
 			}{},
+			description: "List the caller's tokens, never their plaintext. Live and disabled tokens by default; revoked and expired ones — which never authenticate again — only with include_revoked.",
+			query: []queryParam{{
+				name:        includeRevokedParam,
+				description: "List the revoked and expired tokens too (1/true). A value that is not a boolean is refused with 400.",
+				schemaType:  "boolean",
+			}},
 		},
 		"DELETE /api/me/tokens/{token_id}": {
 			response:    patRevokedView{},
 			description: "Revoke a token. 204 when the revoke ended nothing; 200 naming the pending invitations the token had emailed (ADR-174), now revoked, with invitations_error when the sweep could not take every one out — re-issuing the revoke finishes it.",
 			errors:      map[int]string{http.StatusNoContent: "The revoke ended no invitation: no body"},
+		},
+		"POST /api/me/tokens/{token_id}/regenerate": {
+			response: patRegeneratedView{}, responseStatus: http.StatusCreated,
+			description: "Replace a token by a new one with the same name, team pin and expiry instant (clamped to ITERION_PAT_MAX_TTL), its plaintext shown once, then revoke the replaced token as DELETE does: the pending invitations it emailed end and are named. Owner only, from a session (a personal access token is refused 403). The replacement is minted first: when the revoke then fails, the answer still carries the replacement, with revoke_error saying the replaced token still authenticates.",
+			errors: map[int]string{
+				http.StatusNotFound: "No such token",
+				http.StatusConflict: "The token is revoked (pat_revoked — also when another call retired it during this regenerate: the replacement is then revoked and nothing is handed over) or expired (pat_expired), pins no team while the caller is not a super-admin (pat_unpinned), or is pinned to a team its owner holds no membership in (pat_pin_unreachable)",
+			},
+		},
+		"POST /api/me/tokens/{token_id}/disable": {
+			response:    pat.Token{},
+			description: "Suspend a token: it authenticates nothing and the invitations it emailed are refused at accept until it is enabled — they are not swept. Idempotent: a disabled token keeps its first instant. Owner or super-admin.",
+			errors: map[int]string{
+				http.StatusNotFound: "No such token",
+				http.StatusConflict: "The token is revoked (pat_revoked)",
+			},
+		},
+		"POST /api/me/tokens/{token_id}/enable": {
+			response:    pat.Token{},
+			description: "Lift a disable: the token authenticates again and the invitations it emailed stand again. Owner only, from a session (a personal access token is refused 403). Idempotent.",
+			errors: map[int]string{
+				http.StatusNotFound: "No such token",
+				http.StatusConflict: "The token is revoked (pat_revoked): a revocation is final",
+			},
+		},
+		"POST /api/me/tokens/{token_id}/purge": {
+			response:    patRevokedView{},
+			description: "Remove the row of a REVOKED token; its audit lines stay (pat.purged is written). It finishes the revoke's invitation sweep first: 204 when that ended nothing, 200 naming what it ended, 409 pat_sweep_unfinished keeping the row when the sweep could not finish — its body names what it did end (invitations_revoked, invitations_error), and re-issuing the purge finishes it. 204 for a token already gone. Owner or super-admin.",
+			errors: map[int]string{
+				http.StatusNoContent: "Purged, and the sweep ended no invitation: no body",
+				http.StatusConflict:  "The token is not revoked (pat_not_revoked): revoke it first; or the invitation sweep could not finish (pat_sweep_unfinished): the row is kept, the body names what ended",
+			},
 		},
 
 		// Org administration (super-admin).

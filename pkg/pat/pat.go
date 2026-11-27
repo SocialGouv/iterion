@@ -10,7 +10,9 @@
 // authenticates with — the optional expiry, ITERION_PAT_MAX_TTL,
 // instant revocation — of one token, or of every token of the account
 // by "sign out everywhere" and an admin disable — and audit rows on
-// create/revoke/use. A PAT mints no credential of its own account but a
+// create/revoke/use. A token can also be disabled — suspended, reversibly —
+// and regenerated (a new plaintext replacing a revoked one, same name, pin
+// and expiry). A PAT mints no credential of its own account but a
 // WebSocket ticket: it never switches team or org, never mints another PAT,
 // links no SSO identity and resets no password of its own account
 // (auth.Service.CheckDerivation, which also reads its row at every route it
@@ -58,11 +60,19 @@ type Token struct {
 	ExpiresAt  *time.Time `bson:"expires_at,omitempty" json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `bson:"last_used_at,omitempty" json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `bson:"revoked_at,omitempty" json:"revoked_at,omitempty"`
+	// DisabledAt suspends the token while it is set: it authenticates
+	// nothing, derives nothing, and what it minted (an emailed invitation)
+	// does not stand — exactly as when revoked — until Enable clears it. A
+	// revoked token is never enabled again.
+	DisabledAt *time.Time `bson:"disabled_at,omitempty" json:"disabled_at,omitempty"`
 }
 
-// Usable reports whether the token can authenticate right now.
+// Usable reports whether the token can authenticate right now: not revoked,
+// not disabled, not past its expiry. It is the one predicate every reader of
+// a token's standing asks — the bearer resolution and the chokepoint's
+// reader (auth.PATState) alike.
 func (t Token) Usable(now time.Time) bool {
-	if t.RevokedAt != nil {
+	if t.RevokedAt != nil || t.DisabledAt != nil {
 		return false
 	}
 	if t.ExpiresAt != nil && now.After(*t.ExpiresAt) {
@@ -74,6 +84,12 @@ func (t Token) Usable(now time.Time) bool {
 // Sentinel errors.
 var (
 	ErrNotFound = errors.New("pat: not found")
+	// ErrRevoked refuses a change a revoked token does not take back:
+	// disabling or enabling it.
+	ErrRevoked = errors.New("pat: the token is revoked")
+	// ErrNotRevoked refuses the purge of a token that is not revoked: a
+	// live or disabled token's row is removed only once it is revoked.
+	ErrNotRevoked = errors.New("pat: the token is not revoked")
 )
 
 // Store persists tokens. Implementations: MongoStore (production)
@@ -89,10 +105,28 @@ type Store interface {
 	// already revoked it changes nothing and succeeds: the first instant
 	// stands. ErrNotFound for a token that does not exist.
 	Revoke(ctx context.Context, id string, at time.Time) error
+	// RevokeIfLive is Revoke as a compare-and-set: it reports whether THIS
+	// call revoked the token — false, with no error, for a token already
+	// revoked (by a concurrent call or before) — so two acts racing to retire
+	// one token can tell which of them did. ErrNotFound for a token that does
+	// not exist (never minted, or purged).
+	RevokeIfLive(ctx context.Context, id string, at time.Time) (revoked bool, err error)
 	// RevokeAllByUser revokes every token of userID not revoked yet — "sign
 	// out everywhere" and an admin disable — and returns how many it
 	// revoked. A token already revoked keeps its first revocation instant.
 	RevokeAllByUser(ctx context.Context, userID string, at time.Time) (int64, error)
+	// Disable suspends the token (DisabledAt). On a token already disabled
+	// it changes nothing and succeeds: the first instant stands. ErrRevoked
+	// for a revoked token, ErrNotFound for one that does not exist.
+	Disable(ctx context.Context, id string, at time.Time) error
+	// Enable clears DisabledAt. On a token not disabled it changes nothing
+	// and succeeds. ErrRevoked for a revoked token, ErrNotFound for one that
+	// does not exist.
+	Enable(ctx context.Context, id string) error
+	// Purge removes the row of a REVOKED token. ErrNotRevoked for a token
+	// that is not revoked (live, disabled or expired), ErrNotFound for one
+	// that does not exist.
+	Purge(ctx context.Context, id string) error
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 }
 

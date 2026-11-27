@@ -36,9 +36,13 @@ only** (`auth.MintEmailedInvitation`).
   PAT with no expiry leaves the invitation's own TTL). The row also names the
   PAT (`Invitation.MintedWith`). The lookup and the accept refuse it with a
   410 (`ErrInvitationCredentialGone`) once that PAT does not stand: revoked,
-  expired, or its owner's account disabled, erased or pending a password
-  change (temporarily, in that last case: the invitation is accepted again
-  once the account is active). The 410 does not say which.
+  disabled, expired, or its owner's account disabled, erased or pending a
+  password change (temporarily, for a disabled PAT and in that last case: the
+  invitation is accepted again once the PAT is enabled or the account is
+  active — a disable sweeps nothing — except an accept already in flight
+  when the PAT stopped standing: the accept claims the invitation before it
+  reads the PAT again, the re-read refuses it, and that link is spent). The
+  410 does not say which.
 - **Revoking a PAT ends its invitations, and the revoke names them.**
   - `DELETE /api/me/tokens/{id}` takes the PAT's pending invitations out of
     the lists and answers 200 `invitations_revoked`, naming who to invite
@@ -49,6 +53,10 @@ only** (`auth.MintEmailedInvitation`).
     so the list names what that token sent, and prints it; `iterion remote
     tokens revoke` prints it, and the studio's access-token panel shows it
     once the revoke has landed.
+  - A regenerate (`POST /api/me/tokens/{id}/regenerate`) revokes the token
+    it replaces through that same path, so its answer names them too; a purge
+    of a revoked token finishes that sweep before the row goes, and one that
+    cannot finish keeps the row and names what it did end.
   - A bulk revocation (sign out everywhere, an admin disable) leaves the rows
     listed, and the lookup refuses them before any registration form.
   - Revoking a leaked token ends what it sent.

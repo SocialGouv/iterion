@@ -48,6 +48,16 @@ func (s *MemoryStore) Revoke(_ context.Context, id string, at time.Time) error {
 	return err
 }
 
+func (s *MemoryStore) RevokeIfLive(_ context.Context, id string, at time.Time) (bool, error) {
+	return s.kit.Mutate(id, func(t *Token) bool {
+		if t.RevokedAt != nil {
+			return false
+		}
+		t.RevokedAt = &at
+		return true
+	})
+}
+
 func (s *MemoryStore) RevokeAllByUser(_ context.Context, userID string, at time.Time) (int64, error) {
 	var n int64
 	for _, t := range s.kit.List(func(t Token) bool { return t.UserID == userID && t.RevokedAt == nil }) {
@@ -66,6 +76,62 @@ func (s *MemoryStore) RevokeAllByUser(_ context.Context, userID string, at time.
 		}
 	}
 	return n, nil
+}
+
+func (s *MemoryStore) Disable(_ context.Context, id string, at time.Time) error {
+	revoked := false
+	_, err := s.kit.Mutate(id, func(t *Token) bool {
+		if t.RevokedAt != nil {
+			revoked = true
+			return false
+		}
+		if t.DisabledAt != nil {
+			return false // the first instant stands
+		}
+		t.DisabledAt = &at
+		return true
+	})
+	if err == nil && revoked {
+		return ErrRevoked
+	}
+	return err
+}
+
+func (s *MemoryStore) Enable(_ context.Context, id string) error {
+	revoked := false
+	_, err := s.kit.Mutate(id, func(t *Token) bool {
+		if t.RevokedAt != nil {
+			revoked = true
+			return false
+		}
+		if t.DisabledAt == nil {
+			return false
+		}
+		t.DisabledAt = nil
+		return true
+	})
+	if err == nil && revoked {
+		return ErrRevoked
+	}
+	return err
+}
+
+func (s *MemoryStore) Purge(_ context.Context, id string) error {
+	purged := false
+	s.kit.DeleteWhere(func(t Token) bool {
+		if t.ID == id && t.RevokedAt != nil {
+			purged = true
+			return true
+		}
+		return false
+	})
+	if purged {
+		return nil
+	}
+	if _, err := s.kit.Get(id); err != nil {
+		return err
+	}
+	return ErrNotRevoked
 }
 
 func (s *MemoryStore) MarkUsed(_ context.Context, id string, at time.Time) error {

@@ -223,7 +223,7 @@ call sites for the full list):
 > · `secret.created` · `secret.updated` · `secret.deleted`
 > · `binding.created` · `binding.updated` · `binding.deleted`
 > · `webhook.created` · `webhook.updated` · `webhook.rotated` · `webhook.deleted`
-> · `pat.created` · `pat.revoked`
+> · `pat.created` · `pat.revoked` · `pat.disabled` · `pat.enabled` · `pat.purged`
 > · `dlq.replayed` · `dlq.discarded`
 > · `auth.login.succeeded` · `auth.login.failed`
 > · `run.launched` · `run.forked` · `run.deleted` · `run.retry.*`
