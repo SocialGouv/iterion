@@ -115,12 +115,14 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 }
 
 // TestALoneClimbIsAFragmentADeeperOneIsARead holds the line between the two:
-// "../" outside a Join names no file (a table's malicious input, the head of a
-// concatenation, a prefix to test or trim), so it reads nothing, at any depth;
-// "../.." is how a test names the root before joining onto it. The top-level
-// package is where the two would blur — there "../" is the root itself — and
-// it stays a fragment: counting it would anchor the package on the root and
-// fail the guard on every traversal test it holds.
+// "../" outside a Join names no file by itself (a table's malicious input,
+// the head of a concatenation, a prefix to test or trim), so the scan takes
+// it as a fragment at any depth; "../.." is how a test names the root before
+// joining onto it. The top-level package is where the two would blur — there
+// "../" is the root itself — and it stays a fragment: counting it would
+// anchor the package on the root, and a single "../" row in a traversal
+// table would then fail the guard. What the fragment reading leaves unseen is
+// pinned by the test that follows.
 func TestALoneClimbIsAFragmentADeeperOneIsARead(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":    "module example.com/m\n",
@@ -144,7 +146,7 @@ func TestC(t *testing.T) { os.ReadFile("../../" + "docs/x.md") }
 import ("strings"; "testing")
 func TestTop(t *testing.T) {
 	for _, tc := range []struct{ name, runID string }{
-		{"double-dot-slash", "../"}, {"dotdot-dot", "../."}, {"double-slash", "..//"}, {"dot-slash-dot", ".././"}, {"docs", "docs/x.md"},
+		{"double-dot-slash", "../"}, {"dotdot-dot", "../."}, {"double-slash", "..//"}, {"dot-slash-dot", ".././"}, {"dot-slash-dot-dot", ".././."}, {"docs", "docs/x.md"},
 	} { _ = tc }
 	rel := t.Name()
 	_ = strings.HasPrefix(rel, "../")
@@ -179,8 +181,10 @@ func TestTop(t *testing.T) {
 
 // TestALoneClimbHidesAReadBuiltOnItWithoutAJoin pins the trade the
 // fragment rule makes, so that widening the rule is a decision and not an
-// accident: a read whose path is the lone climb, or is concatenated onto
-// it, is unseen at any depth, while the same climb as a Join head is read.
+// accident: a read whose path is a lone climb (".." or "../"), or is
+// concatenated onto it, is unseen at any depth, while either climb as a
+// Join head is read. The Join head is the shape the tree holds, so it is
+// pinned in the shape the tree writes it: a bare ".." and a name.
 func TestALoneClimbHidesAReadBuiltOnItWithoutAJoin(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":        "module example.com/m\n",
@@ -194,6 +198,7 @@ func TestA(t *testing.T) {
 	_, _ = os.ReadFile("../" + name)
 	_, _ = os.ReadFile("../" + "sib/f.txt")
 	_, _ = os.ReadFile(filepath.Join("../", "sib", "f.txt"))
+	_, _ = os.ReadFile(filepath.Join("..", name))
 }
 `,
 	})
@@ -205,8 +210,9 @@ func TestA(t *testing.T) {
 	for _, e := range ev {
 		got = append(got, e.Kind+" "+e.Path)
 	}
-	if want := []string{"relative pkg/sib/f.txt"}; !slices.Equal(got, want) {
-		t.Fatalf("scan = %q, want %q: of these reads only the Join head is seen", got, want)
+	slices.Sort(got)
+	if want := []string{"anchored pkg/sib/f.txt", "relative pkg", "relative pkg/sib/f.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("scan = %q, want %q: of these reads only what a Join head names is seen", got, want)
 	}
 }
 

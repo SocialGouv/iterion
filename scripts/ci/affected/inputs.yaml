@@ -434,8 +434,7 @@ legs:
       - pkg/store/mongo/...
       - pkg/runview/...
       - pkg/runner/...
-    paths: ["pkg/runner/**"]
-    why: the Mongo-gated go test lines of the job, each package pattern verbatim (guard_test.go holds the two lists equal); pkg/runner/** is the runner's capacity line, whose -run leaves the rest of the package to `test`
+    why: the Mongo-gated go test lines of the job, each package pattern the job names, pkg/server and pkg/store/mongo through their .../ form (guard_test.go holds every job pattern named)
   nats-conformance:
     packages: [pkg/runner/..., pkg/queue/...]
     why: the NATS-gated go test line of the job

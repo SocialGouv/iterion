@@ -333,7 +333,7 @@ func TestEachLegCoversItsStepsInputs(t *testing.T) {
 		t.Fatalf("read %d run steps from tests.yml; the workflow holds many more — is the parse still right?", steps)
 	}
 	if t.Failed() {
-		t.Log("add the inputs to the leg's `paths:` in " + inputsFile)
+		t.Log("name the step's package in the leg's `packages:`, or the input in its `paths:`, in " + inputsFile)
 	}
 }
 
