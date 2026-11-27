@@ -116,8 +116,9 @@ func TestALegacyStagedUploadRecordIsStillRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the legacy staged upload: %v", err)
 	}
-	defer rc.Close()
 	data, _ := io.ReadAll(rc)
+	// Closed before the reap: Windows refuses to delete a file still open.
+	_ = rc.Close()
 	if rec.OriginalFilename != "old.txt" || string(data) != "old" {
 		t.Fatalf("read back %q / %q through the fallback", rec.OriginalFilename, data)
 	}
