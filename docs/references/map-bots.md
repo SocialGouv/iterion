@@ -18,7 +18,7 @@ The bundles under `bots/`, then the skills they carry.
 | `branch-improve-loop` | 🌿 Billy | Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural flow, minimal framing. | 1.10.0 |
 | `campaign` | 🧭 Campy | Supervises a WHOLE modernisation programme, lot after lot, by running the modernize bot as a subbot in a bounded loop — and holding the… | 0.1.4 |
 | `copilot` | 💬 Copi | Conversational iterion assistant. | 0.2.14 |
-| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.13.0 |
+| `dep-update-guard` | 💂 Vetty | Reactive security + alignment guard for automated dependency-update PRs (Dependabot / Renovate). | 2.13.1 |
 | `devbox-setup` | 🥊 Devboxing | Bootstraps a reproducible dev environment for a repository. | 0.1.4 |
 | `docs-refresh` | 📚 Doki | Documentation alignment bot — one capable agent + a mission + truth gates only. | 3.8.0 |
 | `e2e-coverage` | 🕸️ Endy | Autonomous end-to-end coverage completion — one capable agent, its natural flow, minimal framing. | 0.6.0 |
