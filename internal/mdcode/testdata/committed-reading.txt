@@ -560,7 +560,7 @@ fcec3748fceff346d4e242e3ad0dd030f6b617de58643ace62f1106b7c40bcfd cba2f371b420ba4
 8ad700113cf835b757ba0318e34b5fb91e4f1ba3b42a964f0dc8e885858c4717 09719c55365a950c92a06122b6ce2634e3ce9b6dbcde1827171941658c7eedab ../../docs/adr/164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md
 c18e8747175326d39969548dc23c04477f21032e080e44088e2e6639ed88906c 128c49926438d99cfca15197048ab65d39e847c139dc5b15ba799428ae84f8b7 ../../docs/adr/165-codemode-runs-the-models-code-in-a-child-process-behind-the-tool-door.md
 effb26cf663e47f5ae5053a1c6aba644f881f303137e6d9f3fae3cc6222e2b48 229c311fe725db46f2aff708146a8aed3764486635f4140931264c4724b0dc52 ../../docs/adr/166-model-capabilities-ride-the-price-feed.md
-a7bbc63360b13ab131aeaaad209e56a2c56c71901fc2c491acea55bc40c804de 948810e2f59579054cdd138e35ff45728787c50c6f4f5fdf5a5dce8044de8d09 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
+59ee9e33e87664fa8e877a75db172caa6bce04fc59be1d8d4c173e22b768c98b 6e47dc4bfc7fe81cf19ec7dd8e8d8a7d67df7d489280e7746a0b49e9d4ac5ed5 ../../docs/adr/167-a-shared-gateway-bounds-its-alive-runs-through-the-run-admission-ledger.md
 67198641e7af0376b8f6b61e674f547d8754a42207e9277f78e3ecdd96f55aea 7ca26d4f66076f4fe3c9bf0bcbff0f5fbb0dea823de80ea610b38c3bd018a3a2 ../../docs/adr/168-an-event-source-is-a-connector-package.md
 5a9be5936b949ccc3416fbe0b8e658b399966cdc9270a08563c9b5006254a326 beab3966389f2ad495c7db4f9dc029f16aae31c76af3ebefd9754faf0e6ddcb4 ../../docs/adr/169-a-run-reads-no-environment-and-the-catalogue-names-roles-not-vendors.md
 a176fcd9f281ea9e1001f2eb8dfeb08cbabe2efafdbafbc4e347e59d3d367e19 2f54fce319405f13c2be9b7e3d70c6de9455efaec6e6afd23966bdeab486e410 ../../docs/adr/170-an-issue-trigger-is-a-re-armable-lane.md
@@ -568,9 +568,10 @@ a176fcd9f281ea9e1001f2eb8dfeb08cbabe2efafdbafbc4e347e59d3d367e19 2f54fce319405f1
 af2db37a7b0374a33c3a6c8e9ce1d464e7d9663efae6810a9be143f3e53076e0 71f8075f630dba7e14be33fbaacd41907f70d5f19d0f166214d6ac8dfe67d4ad ../../docs/adr/172-a-forge-delivery-is-routed-by-the-subscriptions-its-integration-projects.md
 3a3437c0528ef5021cf77a0b267f9c79ebe752852709f89a8b60465ef18adde7 6463e32c378722ec0e6c12d0d7701551f6eb11c01565ef090696231d140f32d2 ../../docs/adr/173-experimental-delivery-mode.md
 870068aee58df567dcad104007dd6b0af7a28e62f1b408e03602f5b7ef072627 c457b5d250f15feb26034567b42fb3b1d54fb074ca2598cacbba97e4bba73847 ../../docs/adr/174-a-personal-access-token-invites-by-email-only.md
-de3acb692b2b750c6fb2ad56d15d12e064664ed259102922a837c0795f671a30 6ee936d68d9683c600f9c3b68dce32064369eb36f089f8f0fea29b3b05a65287 ../../docs/adr/175-the-org-is-the-envelope-of-budget-and-capacity.md
+e684b5eb8d791e91084239b6eeb285ddce3edea7dc7fe5e343e318fccab65ace 2b8201a6bf5bac797439d97db819978741fb96037f50b1d8769bf780a9f0d2ae ../../docs/adr/175-the-org-is-the-envelope-of-budget-and-capacity.md
+9d1b915273480fa7846add31e2a7e7e80eb5794cb38e659d7fbf46def9dde60f ab3405b1995af052eb017af193e454a7648b642551bffc7f12cc2dda6dab3b7e ../../docs/adr/176-a-launch-past-capacity-waits-as-a-run.md
 6400828d9101b49d67fd9fda35677fd8a7febabff592244463e22b688e2dac7d 007dd838c6880e75354f18a24b5d071a106cbaf034edc9f325131eaf689b6be6 ../../docs/adr/177-security-posture-is-a-dedicated-bot-that-consumes-the-forges-alerts.md
-ba226fd7321b2757be9b733a56545db4ad4c0e90f759a2cef00246a20541d784 461db79c4e4a1d740d910616736511e2b54c01ef4d4eb176205dd046bff94641 ../../docs/adr/README.md
+02b0ac2c3fadcdbc02f7d306e81371c92d87b4313af8dae63929ac0a8cf6661a 51040c93c864067ee559f6b48e7f87176b1ef3fc37bf6041375447dd9cf8718d ../../docs/adr/README.md
 fbbbc44294a4c36f378d8eead10e4005362b9a0d50fc9fc7d1b004508fbd31cb 84e0c0eafaa95a34c293f278ac52e45ce537bab5e752a00e6959a13ae103b65a ../../docs/agents/README.md
 8c43381de95e6364148bcff2815d7a2610f8cff71cd6e02b008144d88677cb70 1aaa7999292f3795cc857ea24de1f4b299ba64b767338f5c8cbe6e93604cc5a5 ../../docs/agents/backends/README.md
 bde1c54fc3ecf62a9ccb753119774ed4d730c04e2f6f8cc4339ef09091952779 2616b5d75f586c05356c554952405ade4621f9e72891a9c9677129bb96ef1a85 ../../docs/agents/backends/backend-selection.md

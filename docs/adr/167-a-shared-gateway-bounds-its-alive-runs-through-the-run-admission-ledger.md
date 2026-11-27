@@ -5,6 +5,7 @@
 - **Deciders**: jo (the arbitrations), Claude (three designs, two code maps, the plan, the store slice), codex gpt-6-astra (the adversarial review of the plan, 14 findings)
 - **Extends**: the per-key hard cap's ledger, `store.CredSlotStore` ([`pkg/store/credslot.go`](../../pkg/store/credslot.go), [`pkg/store/mongo/cred_slots.go`](../../pkg/store/mongo/cred_slots.go), #2643) — nothing of it is reversed; its rows gain a second kind of key.
 - **Relates to**: [ADR-131](131-tenant-gateway-credential.md) (the team's gateway key, whose host is the subject) · [ADR-164](164-configurable-key-pools-attach-per-scope-with-a-fallback-strategy.md) (key pools route spend; they bound no shared host) · [ADR-155](155-reserved-capacity-is-a-durable-allocation.md) (the durable capacity ledger, designed and not built, which left the parking semantics of #2643 to that ticket; this record takes them up for a subject that is not a key)
+- **Amended by**: [ADR-176](176-a-launch-past-capacity-waits-as-a-run.md) (Proposed) — a run refused for capacity waits as `waiting_capacity` instead of a `GATEWAY_SLOT_WAIT` park (§3, T4b/T5), and a launch-side ledger error waits on `ledger_error` instead of a refusal (§7); C2's runner-side ledger error is amended only at ADR-176's S5.
 - **Serves**: [#3254](https://github.com/SocialGouv/iterion/issues/3254)
 
 ## Context
