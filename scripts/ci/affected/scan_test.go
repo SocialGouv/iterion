@@ -115,9 +115,10 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 }
 
 // TestASingleClimbIsAFragmentADeeperOneIsTheRoot holds the line between the
-// two: "../" outside a Join names no file (a table's malicious input, the head
-// of a concatenation, a prefix to trim), so it reads nothing; "../.." is how a
-// test names the root before joining onto it.
+// two: below the top level, "../" outside a Join names no file (a table's
+// malicious input, the head of a concatenation, a prefix to trim), so it reads
+// nothing; a climb that reaches the root is how a test names it before joining
+// onto it — "../.." two levels down, and "../" itself in a top-level package.
 func TestASingleClimbIsAFragmentADeeperOneIsTheRoot(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"go.mod":    "module example.com/m\n",
@@ -132,6 +133,11 @@ func TestA(t *testing.T) {
 		"pkg/b/b_test.go": `package b
 import ("os"; "path/filepath"; "testing")
 func TestB(t *testing.T) { root := "../.."; os.ReadFile(filepath.Join(root, "docs", "x.md")) }
+`,
+		"top/top_test.go": `package top
+import ("os"; "testing")
+const page = "docs/x.md"
+func TestTop(t *testing.T) { os.ReadFile("../" + page) }
 `,
 	})
 	ev, err := scanTree(root, "example.com/m")
@@ -149,6 +155,11 @@ func TestB(t *testing.T) { root := "../.."; os.ReadFile(filepath.Join(root, "doc
 	slices.Sort(b)
 	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(b, want) {
 		t.Errorf(`pkg/b: scan = %v, want %v: "../.." names the root`, b, want)
+	}
+	top := got["top"]
+	slices.Sort(top)
+	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(top, want) {
+		t.Errorf(`top: scan = %v, want %v: in a top-level package "../" names the root`, top, want)
 	}
 }
 
