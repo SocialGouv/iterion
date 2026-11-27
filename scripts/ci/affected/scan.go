@@ -38,7 +38,10 @@ import (
 //     reads runtime.Caller in a test file, or climbs relatively out of its
 //     own directory — and any root signal in a test file itself, in a
 //     finder called or not, whatever its parameters (a Test function that
-//     anchors itself is never called by name). A root-anchored test can
+//     anchors itself is never called by name). In a test file, a working
+//     directory from os.Getwd (the package's own) climbed with filepath.Dir
+//     or a ".." Join is a root signal too: how far it climbs is computed at
+//     run time as often as it is written. A root-anchored test can
 //     read anything; the package needs a declaration, whose globs the scan
 //     cannot check in full.
 //   - anchored: a literal (or a Join tail of literals) that names an
@@ -89,6 +92,8 @@ type scanFile struct {
 	src  []byte
 	ast  *ast.File
 	fset *token.FileSet
+	// getwd caches getwdIdents once the file is parsed.
+	getwd map[string]bool
 }
 
 // scanTree runs the read scan over every package directory under root.
@@ -293,7 +298,7 @@ func (f *scanFile) line(n ast.Node) int { return f.fset.Position(n.Pos()).Line }
 func mayDefineFinder(src []byte) bool {
 	return bytes.Contains(src, []byte(`go.mod"`)) || bytes.Contains(src, []byte("show-toplevel")) ||
 		bytes.Contains(src, []byte("GOMOD")) || bytes.Contains(src, []byte("{{.Dir}}")) ||
-		bytes.Contains(src, []byte(".Caller(")) || mayClimb(src)
+		bytes.Contains(src, []byte(".Caller(")) || bytes.Contains(src, []byte("Getwd")) || mayClimb(src)
 }
 
 func mayClimb(src []byte) bool {
@@ -513,7 +518,8 @@ var gomodWord = regexp.MustCompile(`(^|[^A-Za-z0-9_])GOMOD([^A-Za-z0-9_]|$)`)
 // rootSignals returns the sites under n that find the repository root
 // without naming a path: a go.mod literal, git's --show-toplevel, go's own
 // answer (`go env GOMOD`; `go list -m` with a {{.Dir}} template), and, in a
-// test file, runtime.Caller (the test file's compile-time path).
+// test file, runtime.Caller (the test file's compile-time path) and a climb
+// out of the os.Getwd directory (getwdClimb).
 //
 // probesOnly keeps a go.mod literal only where it is probed — inside a
 // stat, read, open or exists call (`os.Stat(filepath.Join(dir, "go.mod"))`)
@@ -525,6 +531,7 @@ func rootSignals(f *scanFile, n ast.Node, probesOnly bool) []ast.Node {
 	var sites []ast.Node
 	var listM, dirTmpl ast.Node
 	rt := importName(f, "runtime")
+	wd := getwdIdents(f)
 	var stack []ast.Node
 	ast.Inspect(n, func(n ast.Node) bool {
 		if n == nil {
@@ -550,6 +557,10 @@ func rootSignals(f *scanFile, n ast.Node, probesOnly bool) []ast.Node {
 			}
 		case *ast.SelectorExpr:
 			if id, ok := n.X.(*ast.Ident); ok && rt != "" && id.Name == rt && n.Sel.Name == "Caller" && f.test {
+				sites = append(sites, n)
+			}
+		case *ast.CallExpr:
+			if getwdClimb(wd, n) {
 				sites = append(sites, n)
 			}
 		}
@@ -599,6 +610,105 @@ func rootSignalReads(f *scanFile) []evidence {
 		}
 	}
 	return out
+}
+
+// getwdIdents is the set of identifiers of a test file bound to the working
+// directory os.Getwd returns — the package's directory when a test runs —
+// or to a directory derived from it by filepath.Dir or path.Dir:
+// `wd, _ := os.Getwd()` binds wd, `parent := filepath.Dir(wd)` binds parent.
+// Names are taken file-wide, not per scope: the scan leans toward reporting.
+func getwdIdents(f *scanFile) map[string]bool {
+	if f.getwd != nil {
+		return f.getwd
+	}
+	out := map[string]bool{}
+	f.getwd = out
+	osName := importName(f, "os")
+	if !f.test || osName == "" {
+		return out
+	}
+	isGetwd := func(e ast.Expr) bool {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Getwd" {
+			return false
+		}
+		id, ok := sel.X.(*ast.Ident)
+		return ok && id.Name == osName
+	}
+	bind := func(lhs, rhs []ast.Expr) {
+		if len(rhs) != 1 || len(lhs) == 0 {
+			return
+		}
+		name, ok := lhs[0].(*ast.Ident)
+		if !ok || name.Name == "_" {
+			return
+		}
+		if (len(lhs) == 2 && isGetwd(rhs[0])) || (len(lhs) == 1 && dirOfGetwd(out, rhs[0])) {
+			out[name.Name] = true
+		}
+	}
+	// Bindings chain (wd, then parent := filepath.Dir(wd)): repeat until no
+	// new name binds, whatever the order of the declarations.
+	for n := -1; n != len(out); {
+		n = len(out)
+		ast.Inspect(f.ast, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.AssignStmt:
+				bind(n.Lhs, n.Rhs)
+			case *ast.ValueSpec:
+				lhs := make([]ast.Expr, len(n.Names))
+				for i, id := range n.Names {
+					lhs[i] = id
+				}
+				bind(lhs, n.Values)
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// dirOfGetwd reports whether e is a Getwd identifier or filepath.Dir /
+// path.Dir over one, nested.
+func dirOfGetwd(idents map[string]bool, e ast.Expr) bool {
+	switch e := e.(type) {
+	case *ast.Ident:
+		return idents[e.Name]
+	case *ast.CallExpr:
+		return isDirCall(e) && dirOfGetwd(idents, e.Args[0])
+	}
+	return false
+}
+
+// isDirCall reports a one-argument call to filepath.Dir or path.Dir.
+func isDirCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Dir" || len(call.Args) != 1 {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && (id.Name == "filepath" || id.Name == "path")
+}
+
+// getwdClimb reports a call climbing out of the os.Getwd directory:
+// filepath.Dir over it (`filepath.Dir(filepath.Dir(wd))`), or a Join on it
+// whose literal tail starts by leaving it (`filepath.Join(wd, "..", "..")`).
+func getwdClimb(idents map[string]bool, call *ast.CallExpr) bool {
+	if len(idents) == 0 {
+		return false
+	}
+	if isDirCall(call) {
+		return dirOfGetwd(idents, call.Args[0])
+	}
+	if isJoin(call) && len(call.Args) > 1 && dirOfGetwd(idents, call.Args[0]) {
+		tail, k := literalPrefix(call.Args[1:])
+		return k > 0 && climbs(tail)
+	}
+	return false
 }
 
 // importName is the name f refers to the package at importPath by, or ""

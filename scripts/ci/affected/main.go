@@ -1,8 +1,14 @@
 // Command affected selects the tests a diff can reach: the Go packages whose
 // test binaries link a changed package, read a changed file, or own it, and
-// the non-Go CI legs of .github/workflows/tests.yml whose inputs changed. It
-// serves on-demand pull-request CI and the local train gate; the nightly
-// keeps running everything.
+// the non-Go CI legs of .github/workflows/tests.yml whose inputs changed.
+//
+// It is an ADVISORY local tool: it picks which tests to run first, before
+// the full gate (`task check`), never in its place. Its static read scan
+// cannot see every way a test finds the repository root, so a selection is
+// not proof that the tests it leaves out are unaffected. CI does not use it:
+// a pull request's run is the whole light layer, the nightly everything.
+// Wiring it into CI needs a dynamic read audit first — every test binary
+// traced against inputs.yaml — see #3739.
 //
 //	affected                                  # origin/main...HEAD
 //	affected -base origin/main -head HEAD     # the same, explicit

@@ -23,7 +23,10 @@
 #             manifests, the scripts it runs and what they name).
 #
 # Globs: `**` is any number of whole segments, `*` stays within one.
-# Under-selection is a false green: when in doubt, declare more.
+# Under-selection is a false green: when in doubt, declare more. The scan is
+# static and cannot see every way a test finds the repository root, so these
+# declarations are not proven complete: the selector is an advisory local
+# tool CI does not call (main.go, #3739).
 
 global:
   - pattern: go.mod
@@ -333,6 +336,10 @@ packages:
   pkg/sandbox/netproxy:
     reads: ["docs/sandbox.md"]
     why: "tests read paths named literally in preset_docs_test.go"
+  pkg/scripthost:
+    reads: ["cmd/iterion/**"]
+    reach: [cmd/iterion]
+    why: "TestMain finds the root by climbing two directories from os.Getwd (repoRoot in main_test.go), builds ./cmd/iterion there and the confinement tests run the binary's __script-host; socketdeny_linux_test reads the vendored x/sys/unix (global)"
   pkg/secrets:
     reads: ["**/*.go", "docs/getting-started.md"]
     why: "TestOnlyBaseURLNamesZAISpellsTheZAIHosts parses every tracked .go file; getting_started_wire_ids reads docs/getting-started.md"
@@ -437,9 +444,9 @@ legs:
     packages: [pkg/runner/..., pkg/queue/...]
     why: the NATS-gated go test line of the job
   cloud-e2e:
-    paths: [Dockerfile, .dockerignore, package.json, pnpm-lock.yaml, pnpm-workspace.yaml, "studio/**", "bots/**", "connectors/**", "native/**", scripts/build-execenv-capsule.sh, "docker/llm-clis/**", "charts/**", scripts/chart-kind-wait.sh]
+    paths: [Dockerfile, .dockerignore, package.json, pnpm-lock.yaml, pnpm-workspace.yaml, "studio/**", "bots/**", "connectors/**", "native/**", scripts/build-execenv-capsule.sh, "docker/llm-clis/**", "charts/**", scripts/chart-kind-wait.sh, "sandbox/finalize/**"]
     reach: [cmd/iterion, cmd/iterion-execenv-guest]
-    why: builds the image from the Dockerfile's COPY set, loads it into kind and installs the chart
+    why: "builds the image from the Dockerfile's COPY set and its bind mounts (a RUN step executes sandbox/finalize/execenv-smoke.sh), loads it into kind and installs the chart"
   vendor-check:
     paths: ["**/*.go"]
     why: go mod tidy + vendor must leave go.mod, go.sum and vendor/ unchanged, and any import added or dropped can move them

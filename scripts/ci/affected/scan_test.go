@@ -180,6 +180,28 @@ func TestC(t *testing.T) {
 	os.ReadFile(filepath.Join(dir, "..", "..", "docs", "x.md"))
 }
 `,
+		// The working directory climbed with filepath.Dir, in a helper the
+		// test calls: the package's grandparent is the root.
+		"pkg/getwd/getwd_test.go": `package getwd
+import ("os"; "path/filepath"; "testing")
+func repoRoot() string { wd, err := os.Getwd(); if err != nil { return "." }; return filepath.Dir(filepath.Dir(wd)) }
+func TestW(t *testing.T) { os.ReadFile(filepath.Join(repoRoot(), "docs", "x.md")) }
+`,
+		// The working directory climbed by a ".." Join, through a second name.
+		"pkg/getwdjoin/getwdjoin_test.go": `package getwdjoin
+import ("os"; "path/filepath"; "testing")
+func TestJ(t *testing.T) {
+	cwd, _ := os.Getwd()
+	here := cwd
+	_ = here
+	os.ReadFile(filepath.Join(cwd, "..", "..", "docs", "y.md"))
+}
+`,
+		// The working directory used in place reads the package's own files.
+		"pkg/getwdhere/getwdhere_test.go": `package getwdhere
+import ("os"; "path/filepath"; "testing")
+func TestH(t *testing.T) { wd, _ := os.Getwd(); os.ReadFile(filepath.Join(wd, "testdata", "x")); _ = filepath.Dir(t.TempDir()) }
+`,
 		// A go.mod a test writes into a fixture finds nothing.
 		"pkg/fixture/fixture_test.go": `package fixture
 import ("os"; "path/filepath"; "testing")
@@ -199,16 +221,21 @@ func TestF(t *testing.T) {
 		got[e.Pkg] = append(got[e.Pkg], e.Kind+" "+e.Path)
 	}
 	for pkg, want := range map[string][]string{
-		"pkg/gomod":  {"anchored docs/x.md", "root ."},
-		"pkg/listm":  {"anchored docs/y.md", "root ."},
-		"pkg/self":   {"anchored docs/z.md", "root ."},
-		"pkg/caller": {"relative docs/adr/1.md", "relative docs/x.md", "root ."},
+		"pkg/gomod":     {"anchored docs/x.md", "root ."},
+		"pkg/listm":     {"anchored docs/y.md", "root ."},
+		"pkg/self":      {"anchored docs/z.md", "root ."},
+		"pkg/caller":    {"relative docs/adr/1.md", "relative docs/x.md", "root ."},
+		"pkg/getwd":     {"anchored docs/x.md", "root ."},
+		"pkg/getwdjoin": {"root ."},
 	} {
 		g := got[pkg]
 		slices.Sort(g)
 		if !slices.Equal(g, want) {
 			t.Errorf("%s: scan = %v, want %v", pkg, g, want)
 		}
+	}
+	if len(got["pkg/getwdhere"]) > 0 {
+		t.Errorf("pkg/getwdhere: scan = %v, want nothing (the working directory itself is the package's)", got["pkg/getwdhere"])
 	}
 	if len(got["pkg/fixture"]) > 0 {
 		t.Errorf("pkg/fixture: scan = %v, want nothing (a go.mod written into a temp dir finds no root)", got["pkg/fixture"])
