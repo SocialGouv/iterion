@@ -136,10 +136,16 @@ func TestA(t *testing.T) {
 import ("os"; "path/filepath"; "testing")
 func TestB(t *testing.T) { root := "../.."; os.ReadFile(filepath.Join(root, "docs", "x.md")) }
 `,
+		"pkg/c/c_test.go": `package c
+import ("os"; "testing")
+func TestC(t *testing.T) { os.ReadFile("../../" + "docs/x.md") }
+`,
 		"top/top_test.go": `package top
 import ("strings"; "testing")
 func TestTop(t *testing.T) {
-	for _, tc := range []struct{ name, runID string }{{"double-dot-slash", "../"}, {"docs", "docs/x.md"}} { _ = tc }
+	for _, tc := range []struct{ name, runID string }{
+		{"double-dot-slash", "../"}, {"dotdot-dot", "../."}, {"double-slash", "..//"}, {"dot-slash-dot", ".././"}, {"docs", "docs/x.md"},
+	} { _ = tc }
 	rel := t.Name()
 	_ = strings.HasPrefix(rel, "../")
 }
@@ -161,8 +167,46 @@ func TestTop(t *testing.T) {
 	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(b, want) {
 		t.Errorf(`pkg/b: scan = %v, want %v: "../.." names the root`, b, want)
 	}
+	c := got["pkg/c"]
+	slices.Sort(c)
+	if want := []string{"anchored docs/x.md", "root ."}; !slices.Equal(c, want) {
+		t.Errorf(`pkg/c: scan = %v, want %v: a deeper climb is a read, trailing slash or not`, c, want)
+	}
 	if len(got["top"]) > 0 {
 		t.Errorf(`top: scan = %v, want nothing: a lone "../" in a top-level package is a traversal input or a prefix, not the root`, got["top"])
+	}
+}
+
+// TestALoneClimbHidesAReadBuiltOnItWithoutAJoin pins the trade the
+// fragment rule makes, so that widening the rule is a decision and not an
+// accident: a read whose path is the lone climb, or is concatenated onto
+// it, is unseen at any depth, while the same climb as a Join head is read.
+func TestALoneClimbHidesAReadBuiltOnItWithoutAJoin(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":        "module example.com/m\n",
+		"pkg/f.txt":     "f",
+		"pkg/sib/f.txt": "f",
+		"pkg/a/a_test.go": `package a
+import ("os"; "path/filepath"; "testing")
+func TestA(t *testing.T) {
+	_, _ = os.ReadDir("../")
+	name := "f.txt"
+	_, _ = os.ReadFile("../" + name)
+	_, _ = os.ReadFile("../" + "sib/f.txt")
+	_, _ = os.ReadFile(filepath.Join("../", "sib", "f.txt"))
+}
+`,
+	})
+	ev, err := scanTree(root, "example.com/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range ev {
+		got = append(got, e.Kind+" "+e.Path)
+	}
+	if want := []string{"relative pkg/sib/f.txt"}; !slices.Equal(got, want) {
+		t.Fatalf("scan = %q, want %q: of these reads only the Join head is seen", got, want)
 	}
 }
 

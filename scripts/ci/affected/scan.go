@@ -476,16 +476,19 @@ func relativeReads(root string, f *scanFile) []evidence {
 			}
 			// Outside a Join, a bare ".." or a lone "../" is a traversal
 			// fragment, not a path: a table's malicious input, the head of a
-			// concatenation ("../" + name), a prefix to test or trim. A
-			// deeper climb ("../..") stays a read: tests name the root that
-			// way before joining onto it. In a top-level package the lone
-			// climb is the root itself, and it still counts as a fragment:
-			// bots/ and e2e/ tests use it as text, and reading it as the root
-			// would anchor all of the package's literals on the root and fail
-			// the guard. A read written that way goes unseen: the one the
-			// tree holds, a bots/ test's filepath.Abs(".."), reads only under
-			// bots/.
-			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && s != "../" && !strings.ContainsAny(s, " \t\n") {
+			// concatenation ("../" + name), a prefix to test or trim. The
+			// lone climb is a fragment at every depth and in every spelling
+			// ("../.", "..//"). A deeper climb ("../..") stays a read: tests
+			// name the root that way before joining onto it.
+			// At the top level the lone climb is the root itself, and it is
+			// a fragment there too: counting it anchors the package's
+			// literals on the root, and one "../" row in a traversal table
+			// then fails the guard on all of them. What this hides is a read
+			// whose path is that lone climb outside a Join, or is
+			// concatenated onto it (`os.ReadDir("../")`, `"../" + name`).
+			// That is the lighter error: the guard blocks every pull
+			// request, a missed read only narrows an advisory selection.
+			if s, ok := stringLit(n); ok && strings.HasPrefix(s, "../") && path.Clean(s) != ".." && !strings.ContainsAny(s, " \t\n") {
 				add(n, s)
 			}
 		}
