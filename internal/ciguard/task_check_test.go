@@ -26,7 +26,7 @@ var beyondTaskCheck = map[string]string{
 	"ci:gofmt": "redundant after `check`: `lint` runs `fmt`, which rewrites whatever ci:gofmt would report",
 	// `check` runs `lint`, whose command is the same golangci-lint analysis
 	// (the pinned config; its 5m timeout comes from .golangci.yml where
-	// ci:golangci restates the job's --timeout 10m verbatim).
+	// ci:golangci restates the job's --timeout 15m verbatim).
 	"ci:golangci": "redundant: `check` runs `lint`, the same golangci-lint analysis with the same config",
 	// `test` is `go test ./...`, and ./e2e is inside it.
 	"test:e2e": "redundant: `test` is `go test ./...`, which includes ./e2e",
