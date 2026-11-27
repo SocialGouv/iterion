@@ -53,10 +53,11 @@ type RunStore interface {
 	SaveRun(ctx context.Context, r *Run) error
 	// ListRuns returns every run id in the store, oldest first. It is a
 	// FULL SCAN on every backend — its cost follows the size of the store,
-	// not the size of the answer (on Mongo: a collection scan and an
-	// in-memory sort, seconds of mongod CPU at ten thousand runs) — so it
-	// serves operator-driven one-offs (inspect, migrate, bench), boot-time
-	// rebuilds, and the rare request path that has no indexed question yet.
+	// not the size of the answer (on Mongo: every run document read, seconds
+	// of mongod CPU at ten thousand runs) — so it serves operator-driven
+	// one-offs (inspect, migrate, bench), boot-time rebuilds, and the rare
+	// request path that has no indexed question yet. The run listings have
+	// one: they ask RunWindowListingStore where the store implements it.
 	// A periodic worker does not run it on its tick: it asks the store the
 	// question it has (ListRunsBySourceIssue, ListDeliverableWatchers, …),
 	// which an index answers; the two workers that still reach it do so on

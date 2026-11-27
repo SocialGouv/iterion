@@ -93,9 +93,60 @@ func DecodeRunCursor(s string) (RunCursor, error) {
 // honoured — only the tenant stamp is replaced.
 func (s *Service) ListAcrossTenants(ctx context.Context, f AdminListFilter) ([]RunSummary, string, error) {
 	blind := store.TeamBlind(ctx)
-	ids, err := s.store.ListRuns(blind)
+	var matched []*store.Run
+	var err error
+	if lister := store.AsRunWindowListingStore(s.store); lister != nil {
+		matched, err = s.adminWindow(blind, lister, f)
+	} else {
+		matched, err = s.adminScan(blind, f)
+	}
 	if err != nil {
 		return nil, "", err
+	}
+	next := ""
+	if f.Limit > 0 && len(matched) > f.Limit {
+		last := matched[f.Limit-1]
+		next = EncodeRunCursor(RunCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		matched = matched[:f.Limit]
+	}
+	out := make([]RunSummary, 0, len(matched))
+	for _, r := range matched {
+		out = append(out, s.summarize(r))
+	}
+	return out, next, nil
+}
+
+// adminWindow asks the store for the page in one indexed read: every filter
+// of the cross-tenant view is one the store evaluates, so the limit goes
+// down with them — one row past it, which is how the caller knows a next
+// page exists.
+func (s *Service) adminWindow(blind context.Context, lister store.RunWindowListingStore, f AdminListFilter) ([]*store.Run, error) {
+	w := store.RunWindow{
+		Status:    f.Status,
+		Since:     f.Since,
+		TenantIDs: f.TeamIDs,
+		Before:    store.RunKey(f.After),
+	}
+	if f.Limit > 0 {
+		w.Limit = f.Limit + 1
+	}
+	runs, skipped, err := lister.ListRunWindow(blind, w)
+	if err != nil {
+		return nil, err
+	}
+	for _, sk := range skipped {
+		s.logSkippedRun(sk.ID, sk.Err)
+	}
+	return runs, nil
+}
+
+// adminScan is the listing of a store with no indexed window (the
+// filesystem store): every id, each loaded, filtered, sorted and cut at the
+// cursor here.
+func (s *Service) adminScan(blind context.Context, f AdminListFilter) ([]*store.Run, error) {
+	ids, err := s.store.ListRuns(blind)
+	if err != nil {
+		return nil, err
 	}
 	// The records a listing returns are LIGHT: LoadRunForListing never
 	// loads the recorded workflow source (see ListRunRecordsCtx — the
@@ -113,7 +164,7 @@ func (s *Service) ListAcrossTenants(ctx context.Context, f AdminListFilter) ([]R
 			s.logSkippedRun(id, err)
 			continue
 		}
-		if !matchesFilter(r, ListFilter{Status: f.Status, Since: f.Since}) {
+		if !matchesStoreFilter(r, ListFilter{Status: f.Status, Since: f.Since}) {
 			continue
 		}
 		if !teamAllowed(r.TenantID, f.TeamIDs) {
@@ -121,17 +172,7 @@ func (s *Service) ListAcrossTenants(ctx context.Context, f AdminListFilter) ([]R
 		}
 		matched = append(matched, r)
 	}
-	// (CreatedAt, ID) descending. The ID tie-break makes the order
-	// TOTAL, which is what lets one keyset token page deterministically
-	// across tenants whose runs share a wall-clock instant — the sort
-	// the per-team lists use is by CreatedAt alone, where ties are
-	// reordered freely.
-	sort.Slice(matched, func(i, j int) bool {
-		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
-			return matched[i].CreatedAt.After(matched[j].CreatedAt)
-		}
-		return matched[i].ID > matched[j].ID
-	})
+	sortNewestFirst(matched)
 	if !f.After.CreatedAt.IsZero() {
 		kept := matched[:0]
 		for _, r := range matched {
@@ -145,17 +186,21 @@ func (s *Service) ListAcrossTenants(ctx context.Context, f AdminListFilter) ([]R
 		}
 		matched = kept
 	}
-	next := ""
-	if f.Limit > 0 && len(matched) > f.Limit {
-		last := matched[f.Limit-1]
-		next = EncodeRunCursor(RunCursor{CreatedAt: last.CreatedAt, ID: last.ID})
-		matched = matched[:f.Limit]
-	}
-	out := make([]RunSummary, 0, len(matched))
-	for _, r := range matched {
-		out = append(out, s.summarize(r))
-	}
-	return out, next, nil
+	return matched, nil
+}
+
+// sortNewestFirst orders runs (CreatedAt, ID) descending — the order the
+// indexed window answers in. The ID tie-break makes the order TOTAL, which
+// is what lets one keyset token page deterministically across tenants whose
+// runs share a wall-clock instant, and what makes a truncated page the same
+// page on every store.
+func sortNewestFirst(runs []*store.Run) {
+	sort.Slice(runs, func(i, j int) bool {
+		if !runs[i].CreatedAt.Equal(runs[j].CreatedAt) {
+			return runs[i].CreatedAt.After(runs[j].CreatedAt)
+		}
+		return runs[i].ID > runs[j].ID
+	})
 }
 
 // teamAllowed reports whether a run's tenant is in the filter's team
