@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botlock"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
@@ -741,7 +742,7 @@ func TestAssistantDependencyOriginDelegation(t *testing.T) {
 	if os.Getenv("ITERION_DEPENDENCY_ORIGIN_TEST_CHILD") == "" {
 		privateConfig := t.TempDir()
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAssistantDependencyOriginDelegation$")
-		cmd.Env = append(os.Environ(), "ITERION_DEPENDENCY_ORIGIN_TEST_CHILD=1", "XDG_CONFIG_HOME="+privateConfig, "HOME="+privateConfig, "APPDATA="+privateConfig)
+		cmd.Env = append(os.Environ(), hometest.ChildHomeEnv(t), "ITERION_DEPENDENCY_ORIGIN_TEST_CHILD=1", "XDG_CONFIG_HOME="+privateConfig, "HOME="+privateConfig, "APPDATA="+privateConfig)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("isolated provenance test: %v\n%s", err, output)
 		}

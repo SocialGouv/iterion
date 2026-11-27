@@ -378,3 +378,32 @@ func TestRequireNoOperatorProfile_RefusesEachWayAProfileGetsSourced(t *testing.T
 		t.Errorf("an empty home of the binary's own: RequireNoOperatorProfile reported %q, want it to pass", got)
 	}
 }
+
+// A re-executed test binary gets a home of its own, never the isolated one
+// its parent runs under: the child's Isolate scans the home it inherits as
+// the operator's, and a parallel test of the parent writes into the parent's.
+func TestChildHomeEnv_TheChildGetsItsOwnHomeNotTheParents(t *testing.T) {
+	parentHome := t.TempDir()
+	t.Setenv("ITERION_HOME", parentHome)
+	entry := ChildHomeEnv(t)
+	name, dir, ok := strings.Cut(entry, "=")
+	if !ok || name != "ITERION_HOME" {
+		t.Fatalf("ChildHomeEnv = %q, want an ITERION_HOME=<dir> entry", entry)
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("the child's home %q is not absolute", dir)
+	}
+	if rel, err := filepath.Rel(parentHome, dir); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("the child's home %s is the parent's isolated home %s or sits inside it", dir, parentHome)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("the child's home %s: %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the child's home %s is not empty: %d entries", dir, len(entries))
+	}
+	if again := ChildHomeEnv(t); again == entry {
+		t.Fatalf("two children share the home %s", dir)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/internal/gittest"
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -397,7 +398,7 @@ func TestAuthoringLocalCrossProcessLock(t *testing.T) {
 	runChild := func(expect string) {
 		t.Helper()
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAuthoringLocalCrossProcessLock$")
-		cmd.Env = append(os.Environ(), "ITERION_AUTHORING_LOCK_CHILD="+path, "ITERION_AUTHORING_LOCK_EXPECT="+expect)
+		cmd.Env = append(os.Environ(), hometest.ChildHomeEnv(t), "ITERION_AUTHORING_LOCK_CHILD="+path, "ITERION_AUTHORING_LOCK_EXPECT="+expect)
 		pipe, err := cmd.StdoutPipe()
 		if err != nil {
 			t.Fatal(err)

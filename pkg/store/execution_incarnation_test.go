@@ -53,7 +53,7 @@ func TestRunWriteLockAcrossProcess(t *testing.T) {
 	probe := func(mode string) {
 		t.Helper()
 		cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestRunWriteLockAcrossProcess$")
-		cmd.Env = append(os.Environ(), envRoot+"="+s.root, envMode+"="+mode)
+		cmd.Env = append(os.Environ(), childHomeEnv(t), envRoot+"="+s.root, envMode+"="+mode)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("child %s: %v\n%s", mode, err, out)
 		}

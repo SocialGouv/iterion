@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/hometest"
 	"github.com/SocialGouv/iterion/pkg/backend/compatgw"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
@@ -50,7 +51,7 @@ func TestTheRunProxyPinsTheGatewayNameAgainstARebindingAnswer(t *testing.T) {
 		return
 	}
 	child := exec.Command(os.Args[0], "-test.run=^TestTheRunProxyPinsTheGatewayNameAgainstARebindingAnswer$", "-test.count=1", "-test.v")
-	child.Env = append(os.Environ(), gatewayPinChildEnv+"=1")
+	child.Env = append(os.Environ(), hometest.ChildHomeEnv(t), gatewayPinChildEnv+"=1")
 	out, err := child.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the rebinding child: %v\n%s", err, out)
