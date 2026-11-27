@@ -7,14 +7,22 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import {
   type PersonalAccessToken,
   type TokenRevocation,
+  type TokenStatus,
   FeatureUnavailableError,
   createMyToken,
+  disableMyToken,
+  enableMyToken,
   listMyTokens,
+  purgeMyToken,
+  regenerateMyToken,
   revokeMyToken,
+  tokenStatus,
 } from "@/api/pats";
 import { useAuth } from "@/auth/AuthContext";
 
+import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -24,12 +32,48 @@ import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
+const statusBadge: Record<TokenStatus, BadgeVariant> = {
+  active: "success",
+  disabled: "warning",
+  expired: "neutral",
+  revoked: "danger",
+};
+
+// The acts that end a token (or its row) ask first; each names what it ends.
+type Confirm = { kind: "revoke" | "regenerate" | "purge"; token: PersonalAccessToken };
+
+const confirmCopy: Record<
+  Confirm["kind"],
+  { title: string; message: string; label: string }
+> = {
+  revoke: {
+    title: "Revoke",
+    message:
+      "Every connection that uses this token will fail immediately, and the pending invitations it sent by email end with it.",
+    label: "Revoke",
+  },
+  regenerate: {
+    title: "Regenerate",
+    message:
+      "A new token with the same name, team and expiry replaces this one, shown once. This token stops working immediately, and the pending invitations it sent by email end with it.",
+    label: "Regenerate",
+  },
+  purge: {
+    title: "Delete",
+    message: "The revoked token leaves this list for good. Its audit trail stays.",
+    label: "Delete",
+  },
+};
+
 export default function TokensPanel() {
   const { teams } = useAuth();
   const queryClient = useQueryClient();
+  // Revoked and expired tokens never authenticate again: the server lists
+  // them on request only.
+  const [showRevoked, setShowRevoked] = useState(false);
   const query = useQuery<PersonalAccessToken[]>({
-    queryKey: ["my-pats"],
-    queryFn: () => listMyTokens(),
+    queryKey: ["my-pats", showRevoked],
+    queryFn: () => listMyTokens({ includeRevoked: showRevoked }),
   });
   const tokens = query.data ?? [];
   // The manual reload skeletoned on every pass (create/revoke included) —
@@ -44,11 +88,25 @@ export default function TokensPanel() {
     mutErr ??
     (query.error && !unavailable && !loading ? errorMessage(query.error) : null);
   const [creating, setCreating] = useState(false);
-  const [issued, setIssued] = useState<{ pat: PersonalAccessToken; token: string } | null>(null);
-  const [deleting, setDeleting] = useState<PersonalAccessToken | null>(null);
-  // The last revoke that ended invitations, so the operator sees who to
-  // invite again: a revoke is never a silent end of them.
-  const [ended, setEnded] = useState<{ name: string; revocation: TokenRevocation } | null>(null);
+  // A freshly minted plaintext — from a create or a regenerate — shown once.
+  // revokeError is set when a regenerate could not revoke the token it
+  // replaced: that one still authenticates.
+  const [issued, setIssued] = useState<{
+    pat: PersonalAccessToken;
+    token: string;
+    revokeError?: string;
+  } | null>(null);
+  const [confirming, setConfirming] = useState<Confirm | null>(null);
+  // The confirmed act is in flight: the confirm button takes no second click
+  // (a second regenerate would be refused, a second revoke is wasted).
+  const [acting, setActing] = useState(false);
+  // The last act that ended invitations, so the operator sees who to invite
+  // again: a revoke, a regenerate or a delete is never a silent end of them.
+  const [ended, setEnded] = useState<{
+    verb: string;
+    name: string;
+    revocation: TokenRevocation;
+  } | null>(null);
 
   // Post-mutation refresh: clear the shared error slot and refetch the list.
   const reload = () => {
@@ -61,16 +119,50 @@ export default function TokensPanel() {
   // no longer sees.
   const teamNameByID = new Map(teams.map((t) => [t.team_id, t.team_name]));
 
-  const doDelete = async () => {
-    if (!deleting) return;
+  // A sweep that ended nothing leaves an earlier list up until it is
+  // dismissed: the operator may not have noted who to invite again yet.
+  const noteEnded = (verb: string, name: string, revocation: TokenRevocation) => {
+    if (
+      revocation.invitations_revoked.length > 0 ||
+      (revocation.invitations_revoked_elsewhere ?? 0) > 0 ||
+      revocation.invitations_error
+    ) {
+      setEnded({ verb, name, revocation });
+    }
+  };
+
+  const doConfirmed = async () => {
+    if (!confirming) return;
+    const { kind, token } = confirming;
+    setActing(true);
     try {
-      const revocation = await revokeMyToken(deleting.id);
-      // A revoke that ended nothing leaves an earlier list up until it is
-      // dismissed: the operator may not have noted who to invite again yet.
-      if (revocation.invitations_revoked.length > 0 || revocation.invitations_error) {
-        setEnded({ name: deleting.name, revocation });
+      if (kind === "revoke") {
+        noteEnded("Revoking", token.name, await revokeMyToken(token.id));
+      } else if (kind === "purge") {
+        noteEnded("Deleting", token.name, await purgeMyToken(token.id));
+      } else {
+        const r = await regenerateMyToken(token.id);
+        setIssued({ pat: r.pat, token: r.token, revokeError: r.revoke_error });
+        noteEnded("Regenerating", token.name, {
+          invitations_revoked: r.invitations_revoked,
+          invitations_revoked_elsewhere: r.invitations_revoked_elsewhere,
+          invitations_error: r.invitations_error,
+        });
       }
-      setDeleting(null);
+      setConfirming(null);
+      reload();
+    } catch (e) {
+      setConfirming(null);
+      setMutErr(errorMessage(e));
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const toggleDisabled = async (t: PersonalAccessToken) => {
+    try {
+      if (t.disabled_at) await enableMyToken(t.id);
+      else await disableMyToken(t.id);
       reload();
     } catch (e) {
       setMutErr(errorMessage(e));
@@ -86,6 +178,9 @@ export default function TokensPanel() {
     );
   }
 
+  const copy = confirming ? confirmCopy[confirming.kind] : null;
+  const endedElsewhere = ended?.revocation.invitations_revoked_elsewhere ?? 0;
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -95,9 +190,16 @@ export default function TokensPanel() {
             Long-lived tokens for the iterion CLI / SDK. Inherits your role at the active team.
           </p>
         </div>
-        <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-          New token
-        </Button>
+        <div className="flex items-center gap-3">
+          <Checkbox
+            label="Show revoked"
+            checked={showRevoked}
+            onChange={(e) => setShowRevoked(e.target.checked)}
+          />
+          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+            New token
+          </Button>
+        </div>
       </div>
 
       {err && (
@@ -111,9 +213,9 @@ export default function TokensPanel() {
           tone="warning"
           layout="inline"
           title={
-            ended.revocation.invitations_revoked.length > 0
-              ? `Revoking ${ended.name} ended the invitations it sent`
-              : `Revoking ${ended.name} could not end every invitation it sent`
+            ended.revocation.invitations_revoked.length > 0 || endedElsewhere > 0
+              ? `${ended.verb} ${ended.name} ended the invitations it sent`
+              : `${ended.verb} ${ended.name} could not end every invitation it sent`
           }
           onDismiss={() => setEnded(null)}
         >
@@ -129,12 +231,18 @@ export default function TokensPanel() {
               </ul>
             </>
           )}
+          {endedElsewhere > 0 && (
+            <p>
+              {endedElsewhere} more in teams this session does not reach: their team&apos;s audit
+              log names them.
+            </p>
+          )}
           {ended.revocation.invitations_error && <p>{ended.revocation.invitations_error}</p>}
         </InlineBanner>
       )}
 
       {loading ? (
-        <TableSkeleton rows={4} cols={7} />
+        <TableSkeleton rows={4} cols={8} />
       ) : tokens.length === 0 ? (
         <EmptyState message="No tokens yet." />
       ) : (
@@ -143,44 +251,82 @@ export default function TokensPanel() {
             <Th>Name</Th>
             <Th>Team</Th>
             <Th>Last4</Th>
+            <Th>Status</Th>
             <Th>Created</Th>
             <Th>Expires</Th>
             <Th>Last used</Th>
             <Th align="right">Actions</Th>
           </THead>
           <TBody>
-            {tokens.map((t) => (
-              <Tr key={t.id}>
-                <Td>{t.name}</Td>
-                <Td className="text-xs text-fg-muted">
-                  {t.team_id ? (teamNameByID.get(t.team_id) ?? t.team_id) : "(default)"}
-                </Td>
-                <Td className="font-mono text-xs text-fg-muted">…{t.token_last4}</Td>
-                <Td className="text-xs text-fg-muted">
-                  {formatDateTime(t.created_at)}
-                </Td>
-                <Td className="text-xs text-fg-muted">
-                  {t.expires_at ? formatDateTime(t.expires_at) : "never"}
-                </Td>
-                <Td className="text-xs text-fg-muted">
-                  {formatDateTime(t.last_used_at)}
-                </Td>
-                <Td align="right">
-                  {t.revoked_at ? (
-                    <span className="text-xs text-danger">revoked</span>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-danger"
-                      onClick={() => setDeleting(t)}
-                    >
-                      Revoke
-                    </Button>
-                  )}
-                </Td>
-              </Tr>
-            ))}
+            {tokens.map((t) => {
+              const status = tokenStatus(t);
+              return (
+                <Tr key={t.id}>
+                  <Td>{t.name}</Td>
+                  <Td className="text-xs text-fg-muted">
+                    {t.team_id ? (teamNameByID.get(t.team_id) ?? t.team_id) : "(default)"}
+                  </Td>
+                  <Td className="font-mono text-xs text-fg-muted">…{t.token_last4}</Td>
+                  <Td>
+                    <Badge variant={statusBadge[status]}>{status}</Badge>
+                  </Td>
+                  <Td className="text-xs text-fg-muted">
+                    {formatDateTime(t.created_at)}
+                  </Td>
+                  <Td className="text-xs text-fg-muted">
+                    {t.expires_at ? formatDateTime(t.expires_at) : "never"}
+                  </Td>
+                  <Td className="text-xs text-fg-muted">
+                    {formatDateTime(t.last_used_at)}
+                  </Td>
+                  <Td align="right">
+                    <div className="flex justify-end gap-1">
+                      {(status === "active" || status === "disabled") && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Regenerate ${t.name}`}
+                            onClick={() => setConfirming({ kind: "regenerate", token: t })}
+                          >
+                            Regenerate
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`${status === "disabled" ? "Enable" : "Disable"} ${t.name}`}
+                            onClick={() => void toggleDisabled(t)}
+                          >
+                            {status === "disabled" ? "Enable" : "Disable"}
+                          </Button>
+                        </>
+                      )}
+                      {status === "revoked" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-danger"
+                          aria-label={`Delete ${t.name}`}
+                          onClick={() => setConfirming({ kind: "purge", token: t })}
+                        >
+                          Delete
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-danger"
+                          aria-label={`Revoke ${t.name}`}
+                          onClick={() => setConfirming({ kind: "revoke", token: t })}
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                    </div>
+                  </Td>
+                </Tr>
+              );
+            })}
           </TBody>
         </Table>
       )}
@@ -211,6 +357,11 @@ export default function TokensPanel() {
             </Button>
           }
         >
+          {issued.revokeError && (
+            <InlineBanner tone="danger" layout="inline" className="mb-3">
+              {issued.revokeError}
+            </InlineBanner>
+          )}
           <div className="flex items-center gap-2 bg-surface-0 border border-border-subtle rounded p-2 font-mono text-xs break-all">
             <span className="flex-1">{issued.token}</span>
             <CopyButton value={issued.token} variant="icon" />
@@ -219,13 +370,14 @@ export default function TokensPanel() {
       )}
 
       <ConfirmDialog
-        open={deleting !== null}
-        title={`Revoke ${deleting?.name ?? ""}?`}
-        message="Every connection that uses this token will fail immediately, and the pending invitations it sent by email end with it."
-        confirmLabel="Revoke"
+        open={confirming !== null}
+        title={`${copy?.title ?? ""} ${confirming?.token.name ?? ""}?`}
+        message={copy?.message ?? ""}
+        confirmLabel={copy?.label ?? "Confirm"}
         confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
+        busy={acting}
+        onConfirm={() => void doConfirmed()}
+        onCancel={() => setConfirming(null)}
       />
     </div>
   );

@@ -224,7 +224,7 @@ func TestRequireAuth_APATTheServerRefusesKeepsIts401(t *testing.T) {
 				t.Fatalf("revoke: %v", err)
 			}
 			return f.token
-		}, "token revoked or expired"},
+		}, "token revoked, disabled or expired"},
 		{"an owner no longer active", func(t *testing.T, f *patRouteFixture) string {
 			disabled := identity.UserStatusDisabled
 			if _, err := f.s.authStore().PatchUser(ctx, "u1", identity.UserPatch{Status: &disabled}); err != nil {

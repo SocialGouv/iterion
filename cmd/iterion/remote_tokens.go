@@ -14,12 +14,14 @@ var remoteTokensCmd = &cobra.Command{
 	Short: "Manage personal access tokens on the remote instance",
 }
 
+var remoteTokensListAll bool
+
 var remoteTokensListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List your tokens",
+	Short: "List your tokens (live and disabled; --all adds the revoked and expired ones)",
 	Args:  cobra.NoArgs,
 	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
-		return cli.RemoteTokensList(cmd.Context(), c, p)
+		return cli.RemoteTokensList(cmd.Context(), c, p, remoteTokensListAll)
 	}),
 }
 
@@ -56,9 +58,11 @@ var remoteTokensRevokeCmd = &cobra.Command{
 }
 
 func init() {
+	remoteTokensListCmd.Flags().BoolVar(&remoteTokensListAll, "all", false, "List the revoked and expired tokens too")
 	remoteTokensCreateCmd.Flags().StringVar(&remoteTokenName, "name", "", "Token name (required)")
 	remoteTokensCreateCmd.Flags().StringVar(&remoteTokenTeam, "team", "", "Pin the token to a team id")
 	remoteTokensCreateCmd.Flags().IntVar(&remoteTokenExpires, "expires-days", 0, "Expiry in days (0 = platform default)")
-	remoteTokensCmd.AddCommand(remoteTokensListCmd, remoteTokensCreateCmd, remoteTokensRevokeCmd)
+	remoteTokensCmd.AddCommand(remoteTokensListCmd, remoteTokensCreateCmd, remoteTokensRevokeCmd,
+		newRemoteTokensRegenerateCmd(), newRemoteTokensDisableCmd(), newRemoteTokensEnableCmd(), newRemoteTokensPurgeCmd())
 	remoteCmd.AddCommand(remoteTokensCmd)
 }

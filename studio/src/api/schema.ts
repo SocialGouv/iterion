@@ -1910,7 +1910,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /api/me/tokens */
+        /**
+         * GET /api/me/tokens
+         * @description List the caller's tokens, never their plaintext. Live and disabled tokens by default; revoked and expired ones — which never authenticate again — only with include_revoked.
+         */
         get: operations["getMeTokens"];
         put?: never;
         /** POST /api/me/tokens */
@@ -1938,6 +1941,94 @@ export interface paths {
          * @description Revoke a token. 204 when the revoke ended nothing; 200 naming the pending invitations the token had emailed (ADR-174), now revoked, with invitations_error when the sweep could not take every one out — re-issuing the revoke finishes it.
          */
         delete: operations["deleteMeTokensByTokenId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/tokens/{token_id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/me/tokens/{token_id}/disable
+         * @description Suspend a token: it authenticates nothing and the invitations it emailed are refused at accept until it is enabled — they are not swept. Idempotent: a disabled token keeps its first instant. Owner or super-admin.
+         */
+        post: operations["postMeTokensByTokenIdDisable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/tokens/{token_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/me/tokens/{token_id}/enable
+         * @description Lift a disable: the token authenticates again and the invitations it emailed stand again. Owner only, from a session (a personal access token is refused 403). Idempotent.
+         */
+        post: operations["postMeTokensByTokenIdEnable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/tokens/{token_id}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/me/tokens/{token_id}/purge
+         * @description Remove the row of a REVOKED token; its audit lines stay (pat.purged is written). It finishes the revoke's invitation sweep first: 204 when that ended nothing, 200 naming what it ended, 409 pat_sweep_unfinished keeping the row when the sweep could not finish — its body names what it did end (invitations_revoked, invitations_error), and re-issuing the purge finishes it. 204 for a token already gone. Owner or super-admin.
+         */
+        post: operations["postMeTokensByTokenIdPurge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/tokens/{token_id}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /api/me/tokens/{token_id}/regenerate
+         * @description Replace a token by a new one with the same name, team pin and expiry instant (clamped to ITERION_PAT_MAX_TTL), its plaintext shown once, then revoke the replaced token as DELETE does: the pending invitations it emailed end and are named. Owner only, from a session (a personal access token is refused 403). The replacement is minted first: when the revoke then fails, the answer still carries the replacement, with revoke_error saying the replaced token still authenticates.
+         */
+        post: operations["postMeTokensByTokenIdRegenerate"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -8778,6 +8869,8 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
+            disabled_at?: string;
+            /** Format: date-time */
             expires_at?: string;
             fingerprint?: string;
             id: string;
@@ -9491,6 +9584,16 @@ export interface components {
         };
         passwordResetConfirmReq: {
             password: string;
+            token: string;
+        };
+        patRegeneratedView: {
+            invitations_error?: string;
+            invitations_revoked: components["schemas"]["revokedInvitationView"][];
+            invitations_revoked_elsewhere?: number;
+            org_id?: string;
+            pat: components["schemas"]["Token"];
+            replaced: string;
+            revoke_error?: string;
             token: string;
         };
         patRevokedView: {
@@ -13731,7 +13834,10 @@ export interface operations {
     };
     getMeTokens: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description List the revoked and expired tokens too (1/true). A value that is not a boolean is refused with 400. */
+                include_revoked?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -13828,6 +13934,206 @@ export interface operations {
             };
             /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postMeTokensByTokenIdDisable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such token */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token is revoked (pat_revoked) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postMeTokensByTokenIdEnable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Token"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such token */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token is revoked (pat_revoked): a revocation is final */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postMeTokensByTokenIdPurge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["patRevokedView"];
+                };
+            };
+            /** @description Purged, and the sweep ended no invitation: no body */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token is not revoked (pat_not_revoked): revoke it first; or the invitation sweep could not finish (pat_sweep_unfinished): the row is kept, the body names what ended */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postMeTokensByTokenIdRegenerate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["patRegeneratedView"];
+                };
+            };
+            /** @description The credential presented is refused: the access token's session is revoked (signed out everywhere, refresh reuse, a password change), the account is disabled or pending a password change, the token is expired, or a personal access token's row is revoked, expired or gone. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The credential presented may not do this: a personal access token asked for a credential of its own account (a switch, a token, an SSO link, a password) or for a team token that would outlive it (a webhook, share-link or invitation token), an access token naming no session asked for an SSO link, or the account is not a platform super-admin on a platform-admin route. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such token */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token is revoked (pat_revoked — also when another call retired it during this regenerate: the replacement is then revoked and nothing is handed over) or expired (pat_expired), pins no team while the caller is not a super-admin (pat_unpinned), or is pinned to a team its owner holds no membership in (pat_pin_unreachable) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

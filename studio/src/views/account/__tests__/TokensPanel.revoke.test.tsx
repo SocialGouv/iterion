@@ -51,7 +51,7 @@ function renderPanel(): void {
 
 async function revokeTheToken(): Promise<void> {
   const row = (await screen.findByText("cli", {}, { timeout: 8000 })).closest("tr")!;
-  fireEvent.click(within(row).getByRole("button", { name: "Revoke" }));
+  fireEvent.click(within(row).getByRole("button", { name: "Revoke cli" }));
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText(/pending invitations it sent by email end with it/)).toBeTruthy();
   fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));

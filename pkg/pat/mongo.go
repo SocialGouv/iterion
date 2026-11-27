@@ -67,6 +67,24 @@ func (s *MongoStore) Revoke(ctx context.Context, id string, at time.Time) error 
 	return err
 }
 
+func (s *MongoStore) RevokeIfLive(ctx context.Context, id string, at time.Time) (bool, error) {
+	res, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"revoked_at": at}})
+	if err != nil {
+		return false, fmt.Errorf("pat: revoke %s: %w", id, err)
+	}
+	if res.ModifiedCount == 1 {
+		return true, nil
+	}
+	// Nothing modified: a revoked token was retired by another call (or
+	// before), a token that does not exist answers ErrNotFound.
+	if _, err := s.kit.GetByID(ctx, id, "revoke"); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
 func (s *MongoStore) RevokeAllByUser(ctx context.Context, userID string, at time.Time) (int64, error) {
 	res, err := s.kit.Coll().UpdateMany(ctx,
 		bson.M{"user_id": userID, "revoked_at": bson.M{"$exists": false}},
@@ -75,6 +93,64 @@ func (s *MongoStore) RevokeAllByUser(ctx context.Context, userID string, at time
 		return 0, fmt.Errorf("pat: revoke the tokens of user %s: %w", userID, err)
 	}
 	return res.ModifiedCount, nil
+}
+
+func (s *MongoStore) Disable(ctx context.Context, id string, at time.Time) error {
+	res, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "revoked_at": bson.M{"$exists": false}, "disabled_at": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"disabled_at": at}})
+	if err != nil {
+		return fmt.Errorf("pat: disable %s: %w", id, err)
+	}
+	if res.MatchedCount == 1 {
+		return nil
+	}
+	// Nothing matched: a token already disabled keeps its first instant, a
+	// revoked one is refused, one that does not exist answers ErrNotFound.
+	t, err := s.kit.GetByID(ctx, id, "disable")
+	if err != nil {
+		return err
+	}
+	if t.RevokedAt != nil {
+		return ErrRevoked
+	}
+	return nil
+}
+
+func (s *MongoStore) Enable(ctx context.Context, id string) error {
+	res, err := s.kit.Coll().UpdateOne(ctx,
+		bson.M{"_id": id, "revoked_at": bson.M{"$exists": false}},
+		bson.M{"$unset": bson.M{"disabled_at": ""}})
+	if err != nil {
+		return fmt.Errorf("pat: enable %s: %w", id, err)
+	}
+	if res.MatchedCount == 1 {
+		return nil
+	}
+	t, err := s.kit.GetByID(ctx, id, "enable")
+	if err != nil {
+		return err
+	}
+	if t.RevokedAt != nil {
+		return ErrRevoked
+	}
+	// Matched nothing yet neither gone nor revoked: the row changed between
+	// the two reads, which this call does not decide for the caller.
+	return fmt.Errorf("pat: enable %s: the row changed during the call, re-issue it", id)
+}
+
+func (s *MongoStore) Purge(ctx context.Context, id string) error {
+	res, err := s.kit.Coll().DeleteOne(ctx, bson.M{"_id": id, "revoked_at": bson.M{"$exists": true}})
+	if err != nil {
+		return fmt.Errorf("pat: purge %s: %w", id, err)
+	}
+	if res.DeletedCount == 1 {
+		return nil
+	}
+	if _, err := s.kit.GetByID(ctx, id, "purge"); err != nil {
+		return err
+	}
+	return ErrNotRevoked
 }
 
 // MarkUsed is a best-effort stamp: a token revoked-and-purged mid-request

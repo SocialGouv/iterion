@@ -325,6 +325,10 @@ registered by `board_forge.go`, `local_secrets_routes.go`, `notifications_routes
 | `GET` | `/api/me/tokens` | session | yes |
 | `POST` | `/api/me/tokens` | session | yes |
 | `DELETE` | `/api/me/tokens/{token_id}` | session | yes |
+| `POST` | `/api/me/tokens/{token_id}/disable` | session | yes |
+| `POST` | `/api/me/tokens/{token_id}/enable` | session | yes |
+| `POST` | `/api/me/tokens/{token_id}/purge` | session | yes |
+| `POST` | `/api/me/tokens/{token_id}/regenerate` | session | yes |
 
 ## `/api/memory` family
 

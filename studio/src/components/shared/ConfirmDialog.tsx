@@ -22,6 +22,9 @@ interface Props {
   // confirm-or-cancel split. Sits between Cancel and the primary
   // action so the visual reading order is left→right destructive.
   secondaryAction?: SecondaryAction;
+  // The confirmed act is in flight: the confirm button shows a spinner and
+  // takes no second click, so one confirmation is one act.
+  busy?: boolean;
 }
 
 // Thin wrapper over ui/Dialog (Radix): focus trap, focus restore, Escape
@@ -37,6 +40,7 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
   secondaryAction,
+  busy = false,
 }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -85,6 +89,7 @@ export default function ConfirmDialog({
           <Button
             variant={confirmVariant === "danger" ? "danger" : "primary"}
             size="sm"
+            loading={busy}
             onClick={onConfirm}
           >
             {confirmLabel}

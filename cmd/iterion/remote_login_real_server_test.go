@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,16 +21,26 @@ import (
 
 // membershipUnreadable is an identity store whose membership read fails —
 // one of the four rows the server's PAT middleware resolves on every
-// authenticated request. It is armed only once the account exists, so the
-// login and the mint go through and the failure lands exactly where
-// `iterion remote login --email` checks the token it just minted.
+// authenticated request. It is armed only once the account exists, and once
+// armed it still serves the FIRST membership read — the mint's own check of
+// the pin it writes (pinMembershipStands) — so the login and the mint go
+// through and the failure lands exactly where `iterion remote login --email`
+// checks the token it just minted.
 type membershipUnreadable struct {
 	identity.Store
-	armed bool
+	mu     sync.Mutex
+	armed  bool
+	served int
 }
 
 func (s *membershipUnreadable) GetMembership(ctx context.Context, userID, teamID string) (identity.Membership, error) {
+	s.mu.Lock()
+	fail := s.armed && s.served >= 1
 	if s.armed {
+		s.served++
+	}
+	s.mu.Unlock()
+	if fail {
 		return identity.Membership{}, fmt.Errorf("identity: GetMembership: %w",
 			fmt.Errorf("server selection error: context deadline exceeded, current topology: { Type: Unknown, Servers: [{ Addr: iterion-mongo-0.iterion-mongo-headless.iterion-prod.svc.cluster.local:27017 }] }"))
 	}
@@ -89,7 +100,9 @@ func TestRemoteLogin_AgainstARealServerWhoseIdentityStoreFails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base, store := realIterionServer(t, email, password)
+			store.mu.Lock()
 			store.armed = tc.armed
+			store.mu.Unlock()
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("ITERION_TOKEN", "")
 			t.Setenv("ITERION_PASSWORD", "")
@@ -120,6 +133,12 @@ func TestRemoteLogin_AgainstARealServerWhoseIdentityStoreFails(t *testing.T) {
 			// terminal: a store failure's text names the identity cluster.
 			if strings.Contains(out, "iterion-mongo-0") {
 				t.Fatalf("the CLI printed the store's internal hosts: %q", out)
+			}
+			store.mu.Lock()
+			served := store.served
+			store.mu.Unlock()
+			if tc.armed && served < 2 {
+				t.Fatalf("the armed store answered %d membership read(s): the failure never reached the token's check", served)
 			}
 		})
 	}

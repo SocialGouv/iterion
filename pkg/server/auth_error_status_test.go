@@ -113,6 +113,8 @@ var sentinelAnsweredElsewhere = map[string]struct {
 	"auth.ErrLastSignInMethod":          {auth.ErrLastSignInMethod, "handleUnlinkMySSO: 409 last_sign_in_method"},
 	"auth/orgsso.ErrDomainInvalid":      {orgsso.ErrDomainInvalid, "the domain stores' Create, behind handleCreateOrgSSODomain's own 400 for an empty domain"},
 	"pat.ErrNotFound":                   {pat.ErrNotFound, "identityFromPAT (patReadFailure: a 401 refusal) and handleRevokePAT (204)"},
+	"pat.ErrRevoked":                    {pat.ErrRevoked, "patStateError, behind handleDisablePAT and handleEnablePAT: 409 pat_revoked"},
+	"pat.ErrNotRevoked":                 {pat.ErrNotRevoked, "patStateError, behind handlePurgePAT: 409 pat_not_revoked"},
 	"auth.ErrPasswordChangedSignIn":     {auth.ErrPasswordChangedSignIn, "credentialChangeError: 409 password_changed_sign_in, the cookies cleared"},
 	"auth.ErrCredentialChangeBusy":      {auth.ErrCredentialChangeBusy, "credentialChangeError and handleAdminResetUserPassword: 409 credential_change_busy"},
 	"identity.ErrUserPasswordChanged":   {identity.ErrUserPasswordChanged, "the password sign-in's stamp and the credential flows' commits: auth.ErrInvalidCredentials"},

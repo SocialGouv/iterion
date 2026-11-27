@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -187,6 +188,14 @@ func tokenCreateAdvice(base string) string {
 
 // --- Personal access tokens (/api/me/tokens) ---
 
+// tokensListAllPath lists every token of the account, the revoked and
+// expired ones included: the instance lists only live and disabled ones by
+// default, and a reader matching a token by fingerprint — the switch looking
+// for the token it replaces (which may have expired during a browser
+// approval), the take-back of an approved token — decides on RevokedAt
+// itself, so it must see every row.
+const tokensListAllPath = "/api/me/tokens?include_revoked=1"
+
 type remotePAT struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
@@ -196,26 +205,44 @@ type remotePAT struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	DisabledAt  *time.Time `json:"disabled_at,omitempty"`
 }
 
-func RemoteTokensList(ctx context.Context, c *RemoteClient, p *Printer) error {
+// state names what a token can do now, revocation first: a revoked token is
+// dead whatever else its row says.
+func (t remotePAT) state(now time.Time) string {
+	switch {
+	case t.RevokedAt != nil:
+		return "revoked"
+	case t.ExpiresAt != nil && t.ExpiresAt.Before(now):
+		return "expired"
+	case t.DisabledAt != nil:
+		return "disabled"
+	}
+	return "active"
+}
+
+// RemoteTokensList lists the account's tokens. The instance lists live and
+// disabled ones; all asks for the revoked and expired ones too
+// (?include_revoked=1).
+func RemoteTokensList(ctx context.Context, c *RemoteClient, p *Printer, all bool) error {
+	path := "/api/me/tokens"
+	if all {
+		path = tokensListAllPath
+	}
 	if p.Format == OutputJSON {
-		return RemoteGetPrint(ctx, c, p, "/api/me/tokens")
+		return RemoteGetPrint(ctx, c, p, path)
 	}
 	var out struct {
 		Tokens []remotePAT `json:"tokens"`
 	}
-	if _, err := c.Call(ctx, "GET", "/api/me/tokens", nil, &out); err != nil {
+	if _, err := c.Call(ctx, "GET", path, nil, &out); err != nil {
 		return err
 	}
 	rows := make([][]string, 0, len(out.Tokens))
+	now := time.Now()
 	for _, t := range out.Tokens {
-		state := "active"
-		if t.RevokedAt != nil {
-			state = "revoked"
-		} else if t.ExpiresAt != nil && t.ExpiresAt.Before(time.Now()) {
-			state = "expired"
-		}
+		state := t.state(now)
 		expires := "—"
 		if t.ExpiresAt != nil {
 			expires = FormatTime(*t.ExpiresAt)
@@ -526,7 +553,7 @@ func RemoteTeamsSwitch(ctx context.Context, c *RemoteClient, p *Printer, teamID,
 	var toks struct {
 		Tokens []remotePAT `json:"tokens"`
 	}
-	if _, err := newClient.Call(ctx, "GET", "/api/me/tokens", nil, &toks); err != nil {
+	if _, err := newClient.Call(ctx, "GET", tokensListAllPath, nil, &toks); err != nil {
 		return fmt.Errorf("switched, but could not list tokens to revoke the previous one: %w", err)
 	}
 	for _, t := range toks.Tokens {
@@ -598,7 +625,7 @@ func revokeApprovedToken(ctx context.Context, c *RemoteClient, plaintext string)
 	var toks struct {
 		Tokens []remotePAT `json:"tokens"`
 	}
-	if _, err := client.Call(ctx, "GET", "/api/me/tokens", nil, &toks); err != nil {
+	if _, err := client.Call(ctx, "GET", tokensListAllPath, nil, &toks); err != nil {
 		return fmt.Errorf("list the tokens of the approving account: %w", err)
 	}
 	fingerprint := secrets.FingerprintSHA256(plaintext)
@@ -747,20 +774,27 @@ func (r patRevocation) view(tokenID string) map[string]any {
 // revoke — a caller told "revoke failed" would retry, or keep a token it
 // believes live.
 func revokeRemotePAT(ctx context.Context, c *RemoteClient, tokenID string) (patRevocation, error) {
-	path := "/api/me/tokens/" + tokenID
-	code, resp, err := c.API(ctx, "DELETE", path, nil)
+	return sendTokenSweep(ctx, c, "DELETE", "/api/me/tokens/"+url.PathEscape(tokenID))
+}
+
+// sendTokenSweep sends a request that ends a token's invitations — a revoke,
+// a purge — and reads what it ended: nothing on a 204, the named and counted
+// invitations otherwise, and a body it cannot read reported on the result
+// rather than as a failure of the act the server confirmed.
+func sendTokenSweep(ctx context.Context, c *RemoteClient, method, path string) (patRevocation, error) {
+	code, resp, err := c.API(ctx, method, path, nil)
 	if err != nil {
 		return patRevocation{}, err
 	}
 	if code/100 != 2 {
-		return patRevocation{}, c.refuseAPI(code, "DELETE", path, resp)
+		return patRevocation{}, c.refuseAPI(code, method, path, resp)
 	}
 	var r patRevocation
 	if len(bytes.TrimSpace(resp)) == 0 {
 		return r, nil
 	}
 	if err := json.Unmarshal(resp, &r); err != nil {
-		return patRevocation{unreadable: fmt.Errorf("decode DELETE %s response: %w", path, err)}, nil
+		return patRevocation{unreadable: fmt.Errorf("decode %s %s response: %w", method, path, err)}, nil
 	}
 	return r, nil
 }

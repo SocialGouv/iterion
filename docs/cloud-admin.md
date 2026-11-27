@@ -599,7 +599,8 @@ Also wired and admin-readable:
   `/api/teams/{id}/audit` (tenant), 400-day retention. Action token
   list and filter params in
   [Iterion Cloud admin guide §1.5](cloud-admin-guide.md#15-audit-log).
-- **Personal access tokens** — `/api/me/tokens` (mint / revoke);
+- **Personal access tokens** — `/api/me/tokens` (mint / list / revoke /
+  regenerate / disable / enable / purge);
   platform ceiling via `ITERION_PAT_MAX_TTL`. See
   [Iterion Cloud admin guide §2.6](cloud-admin-guide.md#26-personal-access-tokens-for-ci).
 - **SMTP** — `ITERION_SMTP_*` env (or the chart's `config.smtp` +

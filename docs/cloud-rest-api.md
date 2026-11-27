@@ -60,7 +60,7 @@ Authentication. Most routes accept any of:
   the owner's membership of the token's team, and that team (a
   super-admin's token with no team scope reads the first two). A refusal
   answers `401` with its reason: no such token or one that does not verify,
-  a revoked or expired token, an owner gone or not active, no team scope, a
+  a revoked, disabled or expired token, an owner gone or not active, no team scope, a
   membership or team gone; a row the store could not read answers
   `500 {"error":"identity unavailable"}` with the cause logged, so a
   client never throws away a live credential over a store outage.
@@ -115,7 +115,7 @@ JWT layer.
 | `GET` | `/api/auth/providers` | public | List configured OIDC connectors + `signup_mode` |
 | `GET` | `/api/auth/oidc/{provider}/start` | public | Start OIDC dance |
 | `GET` | `/api/auth/oidc/{provider}/callback` | public | OIDC redirect target |
-| `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email, team role, team, and the `org_role` accepting writes (none for a team with no org), plus `org_name` and `invited_by` (the inviter's address) — what the invitation's email shows, and what an inviter sharing the link themselves hands over with it; display only, each left out when that org or account cannot be read (the lookup never fails on them). **409** once accepted, **410** once expired, or when the personal access token that emailed it does not stand (revoked or expired, or its owner's account is not active — ADR-174); the 410 does not say which |
+| `GET` | `/api/auth/invitations/lookup` | public | Resolve invitation token → email, team role, team, and the `org_role` accepting writes (none for a team with no org), plus `org_name` and `invited_by` (the inviter's address) — what the invitation's email shows, and what an inviter sharing the link themselves hands over with it; display only, each left out when that org or account cannot be read (the lookup never fails on them). **409** once accepted, **410** once expired, or when the personal access token that emailed it does not stand (revoked, disabled or expired, or its owner's account is not active — ADR-174); the 410 does not say which |
 | `POST` | `/api/auth/invitations/accept` | session JWT (never a PAT) | Accept an invitation while logged in. The path is public to the middleware, so the handler verifies the cookie or `Bearer` JWT itself — an `iap_…` PAT never resolves here. An invitation already accepted answers **409**; when the caller is the account that accepted it and still holds the grant, the body adds `error_code: "invitation_accepted_by_you"` and the `team_id` it joined, so the client lands there — any other caller reads the plain 409 |
 | `GET` | `/api/auth/me` | authenticated (no role) | Current user, org→teams tree and active context, and `session_lineage` — the session the access token belongs to (absent for a PAT) — with `expires_at`, that session's own bound (a pending sign-out's record expires at it; absent when the session is gone). `/api/auth/*` is tenant-free, so an account with no team at all reads it |
 | `POST` | `/api/auth/me/team/{team_id}` | member, session access token (a PAT answers `403`) | Switch active team |
@@ -783,9 +783,13 @@ Source: [pkg/server/triggers_routes.go](../pkg/server/triggers_routes.go).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/me/tokens` | member | List own PATs (no plaintext) |
+| `GET` | `/api/me/tokens` | member | List own PATs (no plaintext): live and disabled ones; `?include_revoked=1` adds the revoked and expired ones (a value that is not a boolean answers `400`) |
 | `POST` | `/api/me/tokens` | member | Mint a PAT (`iap_…` shown once) |
 | `DELETE` | `/api/me/tokens/{token_id}` | member (owner) or super-admin | Revoke |
+| `POST` | `/api/me/tokens/{token_id}/regenerate` | owner, session (a PAT answers `403`) | Replace by a new PAT — same name, team pin and expiry instant — shown once, then revoke the old one (`201`) |
+| `POST` | `/api/me/tokens/{token_id}/disable` | member (owner) or super-admin | Suspend (reversible) |
+| `POST` | `/api/me/tokens/{token_id}/enable` | owner, session (a PAT answers `403`) | Lift a disable; `409 pat_revoked` on a revoked token |
+| `POST` | `/api/me/tokens/{token_id}/purge` | member (owner) or super-admin | Remove a REVOKED token's row; `409 pat_not_revoked` otherwise |
 
 A token carrying a `team_id` is **bound** to that team, not merely served
 with it active: every team-addressed route answers `403` for another team,
@@ -1176,3 +1180,53 @@ itself, so the answer names what it sent — print that list, and the studio's
 token panel shows it; a
 `200` whose body the CLI cannot read is reported as a revoke whose ended
 invitations are unknown, never as a failed revoke.
+
+Beyond the revoke, a token has three more acts. **Disable** suspends it
+(`disabled_at`, read by the one predicate `pat.Token.Usable`): it
+authenticates nothing, derives nothing, and the invitations it emailed are
+refused at lookup and accept (**410**, "the personal access token that sent
+this invitation does not stand (revoked, suspended or expired, or its owner's
+account is not active right now)") — but not swept, so **enable** gives them
+back with the token, except an accept already in flight when the disable
+lands: the accept claims its invitation before it reads the token's standing
+again, and the re-read refuses it, so that link is spent — the invitee asks
+for a new one (the same price an inviter's pending password change costs). A disable is idempotent (the first
+instant stands); a revoked token is neither disabled nor enabled again
+(**409** `pat_revoked`): a revocation is final. The owner or a super-admin
+disables, as they revoke; only the owner enables, from a session — it re-arms
+a credential, which a PAT may not do. **Regenerate** mints a replacement with
+the same name, team pin and expiry INSTANT (clamped to `ITERION_PAT_MAX_TTL`
+from now): re-applying the original duration from now would let a regenerate
+renew a token indefinitely, a life its owner never chose — so an expired token
+answers **409** `pat_expired`, as do a revoked one (`pat_revoked`), an
+unpinned one for an account that is not a super-admin (`pat_unpinned`) and
+one pinned to a team its owner no longer reaches (`pat_pin_unreachable`).
+Only the owner regenerates, from a session (a PAT answers `403`, like the
+mint). The pin is judged on the owner's membership as the store reads it —
+not on the session's team claim, which may be stale — here and at `POST
+/api/me/tokens` alike (a membership gone answers `409 pat_pin_unreachable`
+here, `403` there). The replacement is minted first, then the old token is revoked by the
+revoke's own path, so the `201`
+`{"pat","token","replaced","invitations_revoked",…}` names the invitations
+that ended exactly as a revoke does; a disabled token regenerates into a live
+replacement — the owner's own act from a session. Minting first is the safer order: a
+revoke-first that then failed to mint would leave the owner with no credential
+and nothing to retry on; a revoke that fails after the mint still answers
+`201` with the replacement's plaintext — it exists nowhere else — and
+`revoke_error` saying the old token still authenticates, to be revoked by
+hand. The revoke of the replaced token is a compare-and-set: a regenerate that
+finds it already retired by a concurrent call — a second regenerate, a revoke,
+a purge — revokes its own replacement and answers **409** `pat_revoked`, so
+two regenerates of one token hand over one replacement. **Purge** removes the row of a REVOKED token (**409** `pat_not_revoked`
+on a live, disabled or merely expired one: revoke it first); its audit lines
+(`pat.created`, `pat.revoked`, the `pat.purged` it writes) stay. It finishes
+the revoke's invitation sweep before the row goes — `204` when that ended
+nothing, `200` naming what it did, **409** `pat_sweep_unfinished` keeping the
+row when the sweep could not finish, its body naming what it did end
+(`invitations_revoked`, `invitations_error`) so a re-issued purge finishes —
+and answers `204` for a token already gone. A revoke whose row a purge took
+between its read and its write answers `204` too. `DELETE` keeps
+meaning revoke: idempotent, and a re-issue finishes an unfinished sweep. The
+CLI's `tokens regenerate · disable · enable · purge` and `tokens list --all`,
+and the studio's access-token panel (status column, "Show revoked"), cover the
+same acts.
