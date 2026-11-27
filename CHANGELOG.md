@@ -3,6 +3,49 @@
 Generated from Conventional Commits at each release. Older majors are archived
 under [docs/changelog/](https://github.com/SocialGouv/iterion/tree/main/docs/changelog).
 
+## [7.41.1](https://github.com/SocialGouv/iterion/compare/v7.41.0...v7.41.1) (2026-11-27)
+
+### Features
+
+* **rgaa-audit:** triage render-only criteria, one adjudication pass, reliable refute (3.4.0) ([#3872](https://github.com/SocialGouv/iterion/issues/3872)) ([a93c00f](https://github.com/SocialGouv/iterion/commit/a93c00fb426280ef685cf03f686c4a8a057db188))
+
+    <details><summary>why</summary>
+
+    Runs on the production route took 2h40 of a 3h cap, seven adjudication rounds for 92 criteria that almost all arrived with no harvested evidence, and ended with the refutation trial unapplied.
+
+    </details>
+
+### Bug Fixes
+
+* **runner:** an offloaded IR lives under its own unguessable key and is digest-checked, so a redelivery never runs a later publication's program ([#3835](https://github.com/SocialGouv/iterion/issues/3835)) ([#3868](https://github.com/SocialGouv/iterion/issues/3868)) ([a0e84c4](https://github.com/SocialGouv/iterion/commit/a0e84c4b04397e6c775c7eadf1138a767fd86a30))
+
+    <details><summary>why</summary>
+
+    An oversized compiled IR was offloaded under ir/<runID>.json, keyed by the run id alone. Any later publication of the run (a resume, a re-publish after a reverted queued flip) overwrote it, and the runner compiled whatever the key held: a redelivery of an older message could execute another publication's program.
+
+    </details>
+* **server,store:** admin runs narrowing and audit, strict tenant decode, 404 for malformed runs ([#3830](https://github.com/SocialGouv/iterion/issues/3830)) ([#3875](https://github.com/SocialGouv/iterion/issues/3875)) ([e6da65d](https://github.com/SocialGouv/iterion/commit/e6da65d35533755b4f0f2850426df6208ae54027))
+
+    <details><summary>why</summary>
+
+    GET /api/admin/runs: - an org plus a team inside it now answers that team alone; the handler filled TeamIDs with every team of the org and never narrowed it, so the page reached past the team its audit row named. - the super-admin predicate and its run.cross_org_list audit row now run before any answer: the empty page (org + foreign team, org without teams), the 404 for an unknown org and a 400 each leave exactly one row naming the requested ids (scope: team if named, else org). A…
+
+    </details>
+* **store/mongo:** a run born through SaveRun keeps its failure code and gets an execution epoch, as on FS ([#3836](https://github.com/SocialGouv/iterion/issues/3836)) ([#3862](https://github.com/SocialGouv/iterion/issues/3862)) ([8d9a832](https://github.com/SocialGouv/iterion/commit/8d9a832410b2a26586385681342d5d71f6e66834))
+
+    <details><summary>why</summary>
+
+    On Mongo, a SaveRun that creates a run (no stored row, version 0) dropped the document's failure_code and wrote an empty execution_epoch. The FS twin keeps the code and mints an epoch. statusChanged defaults a missing $status to the run's own status, so that a birth counts no outcome episode, and the code and epoch branches read that same predicate.
+
+    </details>
+* **store/mongo:** run-window follow-ups — filtered team windows read their matches, batching only where no index serves the order ([#3831](https://github.com/SocialGouv/iterion/issues/3831)) ([#3874](https://github.com/SocialGouv/iterion/issues/3874)) ([7394d24](https://github.com/SocialGouv/iterion/commit/7394d2411942adfe4f7027204f37f2e9a3025101)), references [#3833](https://github.com/SocialGouv/iterion/issues/3833) [#3863](https://github.com/SocialGouv/iterion/issues/3863)
+
+    <details><summary>why</summary>
+
+    Follow-ups to #3833 from its closing review, measured on Mongo 8.0.29 over 30k runs (team-big 15000, team-mid 3000, team-oldmid 1500, team-newmid 800, team-fresh 300, sixty teams of 150, 400 with no tenant); documents examined summed by the profiler over every find and getMore, cold = plan cache cleared, warm = the same shape run twice for another tenant first.
+
+    </details>
+
 ## [7.41.0](https://github.com/SocialGouv/iterion/compare/v7.40.4...v7.41.0) (2026-11-27)
 
 ### Features
