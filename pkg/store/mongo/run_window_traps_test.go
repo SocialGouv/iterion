@@ -198,8 +198,9 @@ func TestListRunWindow_ExecutionReadsThePageNotTheCollection(t *testing.T) {
 // three hundred failed_resumable runs, and the batches of an admin team-set
 // window ran the newest-first plan another set left. The indexes that hold a
 // team's runs per status and per workflow in the listing order serve these
-// windows whichever call left the cache, and only `since` windows read in
-// batches.
+// windows whichever call left the cache, and these windows send their limit
+// in one Find: only the windows no index serves in the listing order read in
+// batches (batchedWindow).
 func TestListRunWindow_FilteredWindowsReadTheirMatchesColdAndWarm(t *testing.T) {
 	s := watchersTestStore(t)
 	ctx := context.Background()

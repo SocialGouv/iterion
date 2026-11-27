@@ -372,12 +372,6 @@ func indexModelName(m mongo.IndexModel) string {
 	return "(unnamed)"
 }
 
-// supersededRunsIndexes are runs indexes EnsureSchema drops: each is a key
-// prefix of an index it creates, so it only adds write cost and one more
-// candidate to every planner trial. tenant_status_created {tenant_id, status,
-// created_at:-1} is served by tenant_status_created_id_desc.
-var supersededRunsIndexes = []string{"tenant_status_created"}
-
 // EnsureSchema creates the collections + indexes idempotently so the
 // store is safe to bring up against a fresh or already-bootstrapped
 // database. Called once on construction; can be re-run safely.
@@ -444,15 +438,6 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "inputs_pr_url", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_exact_pr_url_created").SetPartialFilterExpression(bson.M{"inputs_pr_url": bson.M{"$exists": true}})},
 	}); err != nil {
 		return err
-	}
-	// Indexes a runs index above supersedes. Dropped after the successor
-	// exists, so no instant lacks an index for their queries; no query hints
-	// them by name, so a replica still on the old schema replans onto the
-	// successor (and recreates the old index on its own boot until it rolls).
-	for _, superseded := range supersededRunsIndexes {
-		if err := s.runs.Indexes().DropOne(ctx, superseded); err != nil && !mongoutil.IsIndexNotFound(err) {
-			return fmt.Errorf("store/mongo: drop superseded runs index %s: %w", superseded, err)
-		}
 	}
 
 	// events collection: unique (run_id, seq) is the race safety net.
