@@ -1,6 +1,6 @@
 # ADR-176 — A launch past capacity waits as a run: every surface creates it, a scheduler admits it through the slot ledger, and no event is refused, lost or replayed for lack of room
 
-- **Status**: Proposed. The principle is the operator's decision of 2026-11-27 (on [#3845](https://github.com/SocialGouv/iterion/issues/3845)): "a launch past capacity waits as a run; the event that asked for it is never refused for lack of capacity, never lost, never replayed". The mechanism below is not decided, and nothing in it is built. A cross-family review of the plan (GLM-5.4, 25 findings) is folded in; its [disposition](#adversarial-review-disposition-glm-54-via-claude-code-max--25-findings) closes this record. The operator answered its ten questions on 2026-11-27: see [Decisions taken](#decisions-taken-operator-2026-11-27). The record stays Proposed until it is accepted as a whole.
+- **Status**: Proposed. The principle is the operator's decision of 2026-11-27 (on [#3845](https://github.com/SocialGouv/iterion/issues/3845)): "a launch past capacity waits as a run; the event that asked for it is never refused for lack of capacity, never lost, never replayed". There is one named exception: the abuse bound `MaxWaitingRuns` (decision Q5), past which a launch is refused with 429 `capacity_queue_full` (§2). The mechanism below is not decided, and nothing in it is built. A cross-family review of the plan (GLM-5.4, 25 findings) is folded in; its [disposition](#adversarial-review-disposition-glm-54-via-claude-code-max--25-findings) closes this record. The operator answered its ten questions on 2026-11-27: see [Decisions taken](#decisions-taken-operator-2026-11-27). The record stays Proposed until it is accepted as a whole.
 - **Date**: 2026-11-27
 - **Deciders**: jo (the principle); Claude (this draft, the inventory of the readers and surfaces, and the reading of the #3845 review)
 - **Amends**: [ADR-175](175-the-org-is-the-envelope-of-budget-and-capacity.md) D4. D4 is the mechanism for the team and org caps ("the gate chooses, the publisher enforces through `CredSlotStore`"). This record makes it the mechanism for **every** concurrency axis, and replaces D4's refusal contract with a wait: the gate's advisory 429 and the `failed_resumable` park both give way to one state.
@@ -175,10 +175,24 @@ Every surface reaches the one gate, `gateLaunch` ([pkg/server/launch_gate.go:491
 
 - **No refund primitive exists for a run that waits.** Giving the charge back is today `launchAdmission.rollback`, a closure held in memory ([pkg/server/launch_gate.go:427](../../pkg/server/launch_gate.go)). It is called only when a launch returns an error that proves nothing started (`RunMayHaveStarted`, [pkg/runview/run_persisted.go:42](../../pkg/runview/run_persisted.go)). Nothing can give back the charge of a run that waited and was then cancelled, refused or expired.
 - **What S2 builds.** A durable link between a charge and its run: the charged subjects, recorded on the run, and a release by run id that is idempotent.
-- **Which ends refund** (decision Q5(a)): every end of a run that never started gives the charge back. That covers cancelled, superseded, collapsed, expired, and refused during the wait.
-  - **"Never started" has a precise meaning:** a waiting run with no checkpoint and no `resume_spec`.
-  - **A waiting resume has started.** It already ran an attempt, so its charge is not refunded.
-- **A bound on creation, from S2.** A per-team `MaxWaitingRuns` follows the ADR-175 D0 convention. Its proposed default is 200, to be measured in S0. Past it, a launch is refused with 429 `capacity_queue_full`, counted: the one capacity-flavoured refusal, explicit. A storm on a capped bot therefore cannot turn a capacity wait into an exhausted monthly quota.
+- **Which ends refund** (decision Q5(a)): **a charge whose admission was never published is refunded.** "Never started" is judged per charge, not per run.
+  - **Which charges exist.** `gateLaunch` meters a launch and a gated resume alike: the HTTP resume, the WebSocket answer and the retry sweeper's resume ([pkg/server/launch_gate.go:455-463](../../pkg/server/launch_gate.go)). The durable release therefore records each admission charge, with the flip it belongs to.
+  - **What triggers the refund.** The charge is given back when the wait ends without that admission being published: cancelled, superseded, collapsed, expired, or refused during the wait. That applies to a waiting launch and to a waiting resume alike.
+  - **What it does not touch.** A charge whose admission was published stays charged: an earlier attempt of a resumed run, or a run that ran.
+- **A bound on creation, from S2.** A per-team `MaxWaitingRuns` follows the ADR-175 D0 convention. Its proposed default is 200, to be measured in S0.
+  - **What it counts.** Waiting launches **and** waiting resumes.
+  - **Past it**, a launch or a resume is refused with 429 `capacity_queue_full`, counted (`iterion_capacity_queue_full_total`).
+  - **It is the one exception to the principle.** An abuse bound, not a capacity axis: a team with 200 runs already waiting is a runaway sender or a cap set far too low. A storm on a capped bot therefore cannot turn a capacity wait into an exhausted monthly quota.
+  - **The refusal is plain.** Nothing replays the event. It is not parked for replay, because that is the second deferral system whose defects the #3845 review found (P1–P8, P11). Each surface does what it does today with a 429:
+
+    | Surface | `capacity_queue_full` |
+    |---|---|
+    | REST launch and resume, WebSocket answer | 429 to the caller, who retries |
+    | Webhook, immediate lane; `/command`; fork gesture | 429 to the forge. The delivery row is `launch_error`, which is not a claim (webhooks_common.go:1044-1049). It has no attempt budget and no `RetryTarget`, so a GitHub Redeliver or a sender's own retry after room returns launches once, as it does on the base code. GitHub does not redeliver by itself: **the event is refused, and the sender must retry** |
+    | Webhook, debounced lane | re-armed with `Retry-After`, as for today's denials (webhooks_debounce.go:418-497) |
+    | Connector intake | postponed for free: `PostponeFor` gains the token |
+    | Cloud schedule tick, trigger outbox, board dispatcher | today's handling of a 429: the tick is consumed with `last_error`, the outbox spends an attempt, the card backs off |
+    | A resume from the retry sweeper | the run stays `failed_resumable` with its retry re-armed, as for today's transient denials |
 
 ### 3. The scheduler
 
@@ -214,7 +228,8 @@ Every surface reaches the one gate, `gateLaunch` ([pkg/server/launch_gate.go:491
   - **The resume keeps its place.** A waiting resume inherits a `since` equal to the run's first `QueuedAt` (its attempt's instant), not the moment it waited. A run that already started is therefore ahead of every fresh launch on the same subject.
   - **What the flip to `waiting_capacity` preserves:** the checkpoint and its episode; `continuation_state`; the attempt marker that `RevertQueuedFlip` restores (publisher.go:4964-4972); `RetryState`; and the pause pointer. `waiting_capacity` therefore joins `CarriesPausePointer` and `CanReclaimResumePauseHandoff`, so the `SaveRun` scrub ([pkg/store/mongo/runs.go:444-450](../../pkg/store/mongo/runs.go)) keeps the pointer.
   - **Retiring the park.** The park for capacity, `CRED_SLOT_WAIT`, is retired as a writer **for the key kind once it is in `enforce`** (§7), from S2, the slice that ships waiting resumes. From then on no publisher path writes it for an enforced kind, neither a launch's key refusal (§8) nor a resume's.
-  - **While the key kind is `off`**, on an S2 binary as on today's, a key refusal keeps today's publisher key admission and its `CRED_SLOT_WAIT` park. That is the proven path the rollback falls back to (§7).
+  - **While the key kind is `off`**, on an S2 binary as on today's, a key refusal of a launch or a resume that never entered the wait keeps today's publisher key admission and its `CRED_SLOT_WAIT` park. That is the proven path the rollback falls back to (§7).
+  - **An already-waiting run that a key refuses stays waiting** with the key as an axis, whatever the mode (§7, P11).
   - **S5 removes the park writer for good.** There is one exception: a resume that carries `HostInputs` (table above) keeps the park, and it is counted. The retry sweeper keeps re-asking the parks written before S2 until none remains. Its capacity code goes in S5.
   - **The rollback stays proven.** S2 proves, on its own binary:
     - `off` admits every waiting resume, with its spec, at the drain pace;
@@ -379,7 +394,8 @@ Every immediate-lane delivery now answers 202 with a run. The webhook-side machi
   - **The key kind has no `observe`**, because keys are already enforced today: an `observe` mode would weaken them. Its modes are `off` and `enforce`.
   - **Q1(b) and Q3 apply only to the kinds in `enforce`.**
     - **In `observe`**, nothing waits: a refusal is counted as a would-wait, and a ledger or count error is counted, and the run is admitted as on `off`.
-    - **With keys `off`, a resume, or an already-waiting run, refused by a key is parked as today. A ledger error on a key is refused as today. That keeps the rollback on the proven path.
+    - **With keys `off`**, a launch or a resume that has **never entered the wait**, and is refused by a key, is parked as today. A ledger error on a key is refused as today. That keeps the rollback on the proven path.
+    - **An already-waiting run** (one that waited on another axis) that a key then refuses **stays `waiting_capacity`, with the key as an axis, whatever the key kind's mode.** Parking it would make it read as not live (`webhookRunLive` counts only `queued`, `running` and the two paused statuses, [pkg/server/webhooks_common.go:1117-1134](../../pkg/server/webhooks_common.go)): a CODEOWNERS re-request would relaunch the same head (P11), and collapse and holds would stop acting on it. The S2 scheduler re-asks it at its next pass, so the rollback's drain covers it.
   - **`observe`**: the kind is stamped and counted, nothing is reserved, and no run waits on it, not even on a ledger error. `iterion_capacity_would_wait_total{kind}` counts each admission that would have waited, and `iterion_capacity_ledger_errors_total{kind}` counts each error.
   - **`enforce`**: the kind's subjects are reserved, and the run waits.
 - **The guard on `enforce`.** A `PUT` that sets `enforce` is refused (409) in two cases:
@@ -387,7 +403,7 @@ Every immediate-lane delivery now answers 202 with a run. The webhook-side machi
   - **Alive runs are unstamped.** Some alive runs carry no stamp for the kind (§4). `accept_unstamped: true` is the audited escape.
 - **The way back, named.**
   1. Set the kind to `observe`, or `off`. The waiting runs are then admitted at the drain pace (§3), with no bound left on them. None is lost.
-     - For the key kind, set `off`. Its key refusals go back to today's `CRED_SLOT_WAIT` park, which the retry sweeper drains, and the S2 binary keeps that writer for exactly this case.
+     - For the key kind, set `off`. A new key refusal of a run that never entered the wait goes back to today's `CRED_SLOT_WAIT` park, which the retry sweeper drains, and the S2 binary keeps that writer for exactly this case. An already-waiting run that a key refuses stays waiting with the key as an axis, and the scheduler re-asks it, so the drain to zero covers it.
   2. To roll the **binary** back below S2, the procedure is first:
      - `off` for every kind;
      - the waiting set drained to zero: `iterion remote admin capacity ls --waiting` prints 0;
@@ -411,7 +427,7 @@ Every immediate-lane delivery now answers 202 with a run. The webhook-side machi
 **Between S2 and S5, a key refuses a waiting run.** The outcome depends on the key kind's mode, and S2 tests both cases:
 
 - **Key kind `enforce`:** the key is reserved in the same all-or-nothing loop (§3), so the run stays `waiting_capacity` and names the key among its axes. It is not parked `CRED_SLOT_WAIT`.
-- **Key kind `off`, the default until enforced:** the run is parked `CRED_SLOT_WAIT` as today (§7).
+- **Key kind `off`, the default until enforced:** an already-waiting run **also stays `waiting_capacity`** with the key as an axis, for P11's reason (§7). Only a launch or a resume that never entered the wait is parked `CRED_SLOT_WAIT` as today.
 
 **The S2 leak, named in full.** Before #3254 T4a (C1–C3) lands, a `failed_resumable` run holds no place (`HoldsCredentialSlot`, [pkg/store/lifecycle.go:415-417](../../pkg/store/lifecycle.go)). A NATS redelivery of that run resumes it with no admission (ADR-175 D4, ADR-167 Context). Every source of `failed_resumable` opens a window in which the scheduler can give the place away:
 
@@ -452,7 +468,9 @@ Each slice owes:
 - **Admission costs more for a waiting run.** It is re-resolved and re-sealed at admission, and the fast-path resolution is spent for nothing when the run waits. That is the price of not dialling with stale credentials, and of keeping no sealed material at rest on a waiting run.
 - **Contention.** `org:<id>` and a hot `bot:` row are written by every admission under them. Under a burst, the bounded rounds (`credSlotReserveRounds = 32`, [pkg/store/mongo/cred_slots.go:161](../../pkg/store/mongo/cred_slots.go)) can be exhausted. The store error then makes the run wait on `ledger_error` (§3), counted and alerted. It is never an admission on a guess.
 - **A wait is unbounded unless `capacity_wait_deadline` is set** (decision Q4(a)). A run waiting behind a bot whose ceiling the operator never raises waits until it is cancelled, and the alert on the oldest wait is the operator's signal.
-- **Residual loss, out of scope.** The immediate lane still loses an event refused by the maintenance fence, or by a store outage before the run is written. Neither is a capacity refusal.
+- **Residual loss.**
+  - **The one capacity-flavoured loss is the abuse bound.** Past `MaxWaitingRuns`, an immediate-lane event is refused with `capacity_queue_full`, and its sender must retry or redeliver it (§2).
+  - **Out of scope:** the immediate lane still loses an event refused by the maintenance fence, or by a store outage before the run is written. Neither is a capacity refusal.
 
 ## Alternatives considered
 
@@ -489,7 +507,7 @@ The operator answered the ten questions of the reviewed draft. Each entry below 
    - Weighed:
      - (b) the same, but ending `failed`, which is terminal and not auto-resumable;
      - (c) reusing `retrypolicy.MaxWait`, a retry clamp of 8 days by default.
-5. **The monthly charge: (a), charged at creation and refunded on every end that never started**, through S2's durable release. A per-team `MaxWaitingRuns` bounds creation from S2 (200 proposed, measured in S0), with a 429 `capacity_queue_full` beyond it. (F17)
+5. **The monthly charge: (a), charged at creation and refunded for every admission charge never published**, through S2's durable release. A per-team `MaxWaitingRuns` bounds creation from S2, counting waiting launches and waiting resumes (200 proposed, measured in S0). Beyond it the answer is a 429 `capacity_queue_full`: the one, named exception to the principle (§2). (F17)
    - Weighed:
      - (b) charge at admission, which neither refunds nor bounds creation;
      - (c) refund only on cancel and supersede, with no bound until S7.
@@ -539,14 +557,14 @@ Adopted into the plan:
 - **F16** the leak names every source of `failed_resumable` (§8). Under Q10(a), the runner pool stays at 6 until the counter shows the leak is small.
 - **F19** the reader matrix is completed: `SaveRun`'s pause scrub, `CanReclaimResumePauseHandoff`, `WatchDeliverable`, `IsQueued`, `IsPaused`, and `TeamCutoverStatusAlive`, which errored (§1).
 - **F20** nothing sealed rests on a waiting run (§3).
-- **F21** a key refusal between S2 and S5 keeps the run waiting, with several axes (§8).
+- **F21** a key refusal between S2 and S5 keeps an already-waiting run waiting, with several axes, whatever the key kind's mode (§3, §7, §8).
 - **F22** the orphan pass on `admission_pending` is not skipped under backlog (§1, §3).
 - **F23** shared-subject counts are shown as an aggregate (§4, §6), under Q2(a).
 - **F3** under Q1(b): resumes wait, with a durable `resume_spec` (§3).
 - **F4** under Q1(b): a waiting resume inherits its attempt's `since`, and the preserved fields are listed (§3).
 - **F10** under Q6(a): a replacement cancels its predecessor at its own admission (§5).
 - **F14** under Q3(a): the run waits on a `ledger_error` axis, and the clauses of ADR-175 and ADR-167 are amended explicitly (§3, Consequences).
-- **F17** under Q5(a): the durable refund on every end that never started, and `MaxWaitingRuns` from S2 (§2).
+- **F17** under Q5(a): the durable per-charge refund for every admission never published, and `MaxWaitingRuns` from S2 (§2).
 - **F18** under Q4(a): a distinct `capacity_wait_deadline`, ending `failed_resumable` (§3).
 - **F24** a tree is one place, and `dep-update-guard` is never a sub-bot in the catalogue (§4).
 
