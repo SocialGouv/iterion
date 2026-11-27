@@ -38,24 +38,36 @@ const RedeliveryHoldTTLEnv = "ITERION_REDELIVERY_HOLD_TTL"
 // is unset.
 const DefaultRedeliveryHoldTTL = 10 * time.Minute
 
-// RedeliveryHoldTTLFloor is the shortest transit that outlasts the runner's
-// own re-offers: the longest delayed nak a delivery hands back (3 minutes, a
-// sandbox that was not placed) plus the floor under which a running document
-// is not adopted (4 minutes). A shorter hold is honoured, with a warning: the
-// run then loses its places while a redelivery that will resume it is still
-// on its way.
+// RedeliveryHoldTTLFloor is the shortest transit that outlasts the re-offers
+// a delivery hands back once it executed — the longest, 3 minutes, a sandbox
+// that was not placed (2 minutes for a setup timeout or attachments the store
+// did not hand over), each stamped again by the post-engine promote at its
+// nak — plus the floor under which a running document is not adopted
+// (4 minutes). Two re-offers come before the guard and refresh no hold: the
+// nak of a delivery whose lease another pod still holds
+// (natsq.HeldLockRetryDelay: by the delivery's rank, past the default
+// 10-minute hold from the fifth delivery on, up to about an hour with the
+// defaults), and the refusal of a message whose schema or epoch the runner
+// does not speak (30 seconds and 2 minutes per bounce by default, both
+// tunable). A redelivery that arrives after its hold still re-asserts by its
+// admission's token, and parks on CRED_SLOT_WAIT when an admission took its
+// place meanwhile. A hold shorter than the floor is honoured, with a warning:
+// the run then loses its places while a redelivery that will resume it is
+// still on its way.
 const RedeliveryHoldTTLFloor = 7 * time.Minute
 
 // ParseRedeliveryHoldTTL reads the transit's length from a setting's raw value
-// (set false: the setting is absent, the default holds). The value is a Go
-// duration ("10m", "90s") and must be strictly positive; anything else is an
-// error, never a fallback. A value below RedeliveryHoldTTLFloor is accepted
-// and returned with a warning that says why it is short.
+// (set false, or a value empty once trimmed: the setting is unset and the
+// default holds, as pkg/config reads the settings it parses). The value is a
+// Go duration ("10m", "90s") and must be strictly positive; anything else is
+// an error, never a fallback. A value below RedeliveryHoldTTLFloor is
+// accepted and returned with a warning that says why it is short.
 func ParseRedeliveryHoldTTL(raw string, set bool) (time.Duration, string, error) {
-	if !set {
+	trimmed := strings.TrimSpace(raw)
+	if !set || trimmed == "" {
 		return DefaultRedeliveryHoldTTL, "", nil
 	}
-	ttl, err := time.ParseDuration(strings.TrimSpace(raw))
+	ttl, err := time.ParseDuration(trimmed)
 	if err != nil {
 		return 0, "", fmt.Errorf("%s=%q: not a duration (e.g. 10m): %w", RedeliveryHoldTTLEnv, raw, err)
 	}
@@ -63,7 +75,7 @@ func ParseRedeliveryHoldTTL(raw string, set bool) (time.Duration, string, error)
 		return 0, "", fmt.Errorf("%s=%q: the hold must be strictly positive", RedeliveryHoldTTLEnv, raw)
 	}
 	if ttl < RedeliveryHoldTTLFloor {
-		return ttl, fmt.Sprintf("%s=%s is below %s (the longest delayed redelivery, 3m, plus the 4m running-adoption floor): a run handed back to the queue can lose its capacity places before its redelivery resumes it, and then parks on CRED_SLOT_WAIT", RedeliveryHoldTTLEnv, ttl, RedeliveryHoldTTLFloor), nil
+		return ttl, fmt.Sprintf("%s=%s is below %s (the longest delayed redelivery of a run that executed, 3m, plus the 4m running-adoption floor): a run handed back to the queue can lose its capacity places before its redelivery resumes it, and then parks on CRED_SLOT_WAIT", RedeliveryHoldTTLEnv, ttl, RedeliveryHoldTTLFloor), nil
 	}
 	return ttl, "", nil
 }

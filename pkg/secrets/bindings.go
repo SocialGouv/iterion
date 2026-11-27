@@ -247,11 +247,37 @@ func ResolveGenericWithBindings(
 	sealer Sealer,
 	logger *iterlog.Logger,
 ) (map[string]GenericResolution, error) {
+	out, _, err := ResolveGenericWithBindingsReport(ctx, secretStore, bindingStore, teamID, userID, botID, names, secretOverrides, sealer, logger)
+	return out, err
+}
+
+// ResolveGenericWithBindingsReport is ResolveGenericWithBindings that also
+// reports, per name, the first candidate dropped on an error that is not a
+// definite absence: a store read that failed other than with
+// ErrGenericSecretNotFound, or a sealed value that did not unseal (a corrupt
+// record, a replica on an older key ring). A name that resolves nothing and
+// has such an entry is not known to be missing — the read may succeed again.
+func ResolveGenericWithBindingsReport(
+	ctx context.Context,
+	secretStore GenericSecretStore,
+	bindingStore BotSecretBindingStore,
+	teamID, userID, botID string,
+	names []string,
+	secretOverrides map[string]string,
+	sealer Sealer,
+	logger *iterlog.Logger,
+) (map[string]GenericResolution, map[string]error, error) {
 	if secretStore == nil {
-		return map[string]GenericResolution{}, nil
+		return map[string]GenericResolution{}, nil, nil
 	}
 	if teamID == "" {
-		return nil, fmt.Errorf("secrets: team id required for generic secret resolve")
+		return nil, nil, fmt.Errorf("secrets: team id required for generic secret resolve")
+	}
+	unreadable := map[string]error{}
+	markUnreadable := func(name string, err error) {
+		if _, seen := unreadable[name]; !seen {
+			unreadable[name] = err
+		}
 	}
 	want := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -260,13 +286,13 @@ func ResolveGenericWithBindings(
 		}
 	}
 	if len(want) == 0 {
-		return map[string]GenericResolution{}, nil
+		return map[string]GenericResolution{}, unreadable, nil
 	}
 
 	// Tier 1+3 source: everything visible to (team, user).
 	visible, err := secretStore.ListByTeam(ctx, teamID, userID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	userByName := make(map[string]GenericSecret)
 	teamByName := make(map[string]GenericSecret)
@@ -294,7 +320,7 @@ func ResolveGenericWithBindings(
 	if bindingStore != nil && botID != "" {
 		bindings, err := bindingStore.ListByTenantBot(ctx, teamID, botID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, b := range bindings {
 			if !want[b.SecretNameForWorkflow] {
@@ -305,6 +331,9 @@ func ResolveGenericWithBindings(
 			}
 			sec, err := secretStore.Get(ctx, b.SecretID)
 			if err != nil {
+				if !errors.Is(err, ErrGenericSecretNotFound) {
+					markUnreadable(b.SecretNameForWorkflow, err)
+				}
 				// dangling binding (secret deleted) — skip, don't fail the run.
 				// Warn: a configured binding pointing at a missing secret is a
 				// misconfiguration the operator should see (name + reason, never
@@ -339,6 +368,9 @@ func ResolveGenericWithBindings(
 		}
 		sec, err := secretStore.Get(ctx, secretID)
 		if err != nil {
+			if !errors.Is(err, ErrGenericSecretNotFound) {
+				markUnreadable(name, err)
+			}
 			// dangling override -> fall through to the lower tiers. Warn: an
 			// explicitly-pinned secret that can't be read is a misconfiguration.
 			logger.Warn("secrets: webhook override for %q (secret_id=%s) dangles — falling through to lower tiers: %v", name, secretID, err)
@@ -354,12 +386,15 @@ func ResolveGenericWithBindings(
 
 	out := make(map[string]GenericResolution, len(want))
 	for name := range want {
+		// buildGenericResolution drops a candidate only when its sealed value
+		// does not unseal.
 		if s, ok := overrideByName[name]; ok {
 			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
 				r.SourceScope = "webhook-override"
 				out[name] = r
 				continue
 			}
+			markUnreadable(name, fmt.Errorf("secrets: generic secret %s does not unseal", s.ID))
 		}
 		if s, ok := userByName[name]; ok {
 			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
@@ -367,6 +402,7 @@ func ResolveGenericWithBindings(
 				out[name] = r
 				continue
 			}
+			markUnreadable(name, fmt.Errorf("secrets: generic secret %s does not unseal", s.ID))
 		}
 		if b, ok := bindingByName[name]; ok {
 			if r, ok := buildGenericResolution(b.sec, sealer, userID, logger); ok {
@@ -378,6 +414,7 @@ func ResolveGenericWithBindings(
 				out[name] = r
 				continue
 			}
+			markUnreadable(name, fmt.Errorf("secrets: generic secret %s does not unseal", b.sec.ID))
 		}
 		if s, ok := teamByName[name]; ok {
 			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
@@ -385,6 +422,7 @@ func ResolveGenericWithBindings(
 				out[name] = r
 				continue
 			}
+			markUnreadable(name, fmt.Errorf("secrets: generic secret %s does not unseal", s.ID))
 		}
 		// Expected fall-through: no tier produced a value for this name and no
 		// candidate dropped on unseal (those are already warned above). Debug —
@@ -404,7 +442,7 @@ func ResolveGenericWithBindings(
 		}
 		logger.Debug("secrets: no generic secret named %q resolvable for team=%s bot=%s (no user/binding/team/override match) — leaving credential unset", name, teamID, botID)
 	}
-	return out, nil
+	return out, unreadable, nil
 }
 
 // ---- in-memory store (tests / local) ----

@@ -2204,7 +2204,7 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// dispatches through rec, so the transit's end knows whether the queue
 	// hands the delivery back.
 	rec := &nakRecorder{jsDelivery: delivery}
-	capacity, capacityOut, capacityProceeds := r.capacityAtPickup(runCtx, msg, delivery.NumDelivered(), logger)
+	capacity, capacityOut, capacityProceeds := r.capacityAtPickup(runCtx, msg, pre.preRun, delivery.NumDelivered(), logger)
 	if capacity != nil {
 		defer func() {
 			capacity.endUnlessRedelivered(rec.nakked && r.maxDeliver() > 0 && delivery.NumDelivered() < r.maxDeliver())

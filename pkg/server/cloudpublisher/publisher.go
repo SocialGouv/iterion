@@ -641,6 +641,26 @@ func requiredSecretNamesForWorkflow(wf *ir.Workflow) []string {
 	return names
 }
 
+// requiredSecretsRefusal is the required-secret gate's refusal for missing
+// (sorted), unreadable the resolver's report
+// (secrets.ResolveGenericWithBindingsReport). A missing name with no
+// unreadable candidate resolves to nothing: the refusal is
+// secrets.ErrRequiredSecretUnresolved, which ends an automatic resume. When
+// every missing name dropped a candidate on a read or an unseal error, nothing
+// is known to be missing: the refusal names those errors and is not that
+// error, so an automatic resume is retried.
+func requiredSecretsRefusal(missing []string, unreadable map[string]error) error {
+	readErrs := make([]error, 0, len(missing))
+	for _, name := range missing {
+		rerr, ok := unreadable[name]
+		if !ok {
+			return secrets.RequiredSecretsError(missing, "this team/bot")
+		}
+		readErrs = append(readErrs, fmt.Errorf("%q: %w", name, rerr))
+	}
+	return fmt.Errorf("cloudpublisher: %s — a stored candidate could not be read: %w", secrets.RequiredSecretsError(missing, "this team/bot").Error(), errors.Join(readErrs...))
+}
+
 // appBotLoginForForgeToken returns the github_app bot login (e.g.
 // "iterion-forge-1234[bot]") whose managed secret backs the run's resolved
 // forge push token, or "" when the token is a PAT/OAuth/GitLab token (the
@@ -1049,7 +1069,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 				// value means "resolve a stored secret of the same name" for this run.
 				if p.genericSecrets != nil && wf != nil && len(wf.Secrets) > 0 {
 					names := genericSecretNamesForWorkflow(wf)
-					resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer, p.logger)
+					resolved, unreadable, err := secrets.ResolveGenericWithBindingsReport(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer, p.logger)
 					if err != nil {
 						return fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
 					}
@@ -1066,7 +1086,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, orgID,
 						}
 					}
 					if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), haveValue); len(missing) > 0 {
-						return secrets.RequiredSecretsError(missing, "this team/bot")
+						return requiredSecretsRefusal(missing, unreadable)
 					}
 					now := time.Now().UTC()
 					usedIDs := make([]string, 0, len(resolved))

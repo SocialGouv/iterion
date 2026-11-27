@@ -122,6 +122,11 @@ func TestSweepFrozen_ABoundRecordReadmitsItsProgram(t *testing.T) {
 				s.botSources = bots
 			}
 			run, ref := frozenDue(t, st, "run-frozen", tier)
+			if tier != "" {
+				// The parked attempt was queued after the stored bot it ran
+				// was created, as every attempt is.
+				bindAttempt(run, tick())
+			}
 			resumer := &fakeResumer{}
 			sweepOne(s, resumer, ref)
 			if len(resumer.calls) != 1 {
@@ -136,6 +141,115 @@ func TestSweepFrozen_ABoundRecordReadmitsItsProgram(t *testing.T) {
 			}
 			if len(st.cleared) != 1 || retryResult(t, s, retryResultFrozenReadmitted) != 1 {
 				t.Fatalf("cleared %v, frozen_readmitted %v, want the retry cleared and counted", st.cleared, retryResult(t, s, retryResultFrozenReadmitted))
+			}
+		})
+	}
+}
+
+// tick is a millisecond instant a few milliseconds after the last one: the
+// order of two stored-bot writes and an attempt marker, as stores keep them.
+func tick() time.Time {
+	time.Sleep(5 * time.Millisecond)
+	return time.Now().UTC().Truncate(time.Millisecond)
+}
+
+// bindAttempt binds a frozenDue run and its record to the attempt queued at q.
+func bindAttempt(run *store.Run, q time.Time) {
+	run.QueuedAt = &q
+	run.FrozenProgram.QueuedAt = q
+}
+
+// incarnations builds the stored bot a parked attempt ran and what became of
+// it during the wait, and returns the parked attempt's marker: the bot
+// deleted and its slug re-created after the attempt (another bot), updated
+// in place (the same bot), or re-created and then resumed on — the attempt
+// that parked ran the new incarnation.
+func incarnations(t *testing.T, bots botsource.Store, shape string) time.Time {
+	t.Helper()
+	ctx := store.WithTenant(context.Background(), "team-1")
+	create := func(body string) botsource.BotSource {
+		bs, err := bots.Create(ctx, botsource.BotSource{TenantID: "team-1", Slug: "feed-watch", Files: map[string]string{"main.bot": body}})
+		if err != nil {
+			t.Fatalf("create the stored bot: %v", err)
+		}
+		return bs
+	}
+	first := create("workflow w:\n")
+	switch shape {
+	case "re-created after the attempt":
+		q := tick()
+		tick()
+		if err := bots.Delete(ctx, first.ID, 0); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if again := create("workflow w2:\n"); again.ID == first.ID || !again.CreatedAt.After(q) {
+			t.Fatalf("precondition: the re-created row %s (born %v) is not a new incarnation after the attempt %v", again.ID, again.CreatedAt, q)
+		}
+		return q
+	case "updated in place":
+		q := tick()
+		tick()
+		first.Files = map[string]string{"main.bot": "workflow w2:\n"}
+		if _, err := bots.Update(ctx, first); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		return q
+	case "re-created then resumed on":
+		tick()
+		if err := bots.Delete(ctx, first.ID, 0); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		create("workflow w2:\n")
+		return tick()
+	}
+	t.Fatalf("unknown shape %q", shape)
+	return time.Time{}
+}
+
+// F-A. A slug deleted and re-created during a capacity wait is another bot:
+// the program the parked attempt ran came from the deleted row and is never
+// re-admitted — the record is counted stale and ignored, the run takes its
+// bot's current program (refused if it changed, the pre-freeze answer), and
+// the retry is not abandoned. A bot updated in place, or a parked attempt
+// that ran the new incarnation, keeps its record. Red when the existence
+// check reads the slug alone (the deleted incarnation's program re-admitted),
+// or when it abandons a re-created slug's run.
+func TestSweepFrozen_ARecreatedSlugIsAnotherBot(t *testing.T) {
+	for _, tc := range []struct {
+		shape  string
+		frozen bool
+	}{
+		{"re-created after the attempt", false},
+		{"updated in place", true},
+		{"re-created then resumed on", true},
+	} {
+		t.Run(tc.shape, func(t *testing.T) {
+			s, st := newFrozenSweeper(t)
+			bots := botsource.NewMemoryStore()
+			q := incarnations(t, bots, tc.shape)
+			s.botSources = bots
+			run, ref := frozenDue(t, st, "run-frozen", "team-1")
+			bindAttempt(run, q)
+			resumer := &fakeResumer{}
+			sweepOne(s, resumer, ref)
+			if reason := st.abandoned["run-frozen"]; reason != "" {
+				t.Fatalf("abandoned %q, want resumed", reason)
+			}
+			if len(resumer.calls) != 1 {
+				t.Fatalf("Resume called %d times, want 1", len(resumer.calls))
+			}
+			if got := resumer.calls[0].Frozen != nil; got != tc.frozen {
+				t.Fatalf("resume carries the frozen program: %v, want %v", got, tc.frozen)
+			}
+			wantStale := 0.0
+			if !tc.frozen {
+				wantStale = 1
+				if resumer.calls[0].FilePath == "" {
+					t.Fatal("the resume names no current program")
+				}
+			}
+			if n := retryResult(t, s, retryResultFrozenStale); n != wantStale {
+				t.Fatalf("frozen_stale %v, want %v", n, wantStale)
 			}
 		})
 	}

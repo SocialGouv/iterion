@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -53,6 +54,9 @@ func (b *heroIRBlob) GetIRBlob(_ context.Context, key string) ([]byte, error) {
 const (
 	heroV1 = "schema out:\n  ok: bool\n\ntool one:\n  command: `true`\n  output: out\n\nworkflow hero:\n  entry: one\n  one -> done\n"
 	heroV2 = "schema out:\n  ok: bool\n\ntool one:\n  command: `true`\n  output: out\n\ntool two:\n  command: `true`\n  output: out\n\nworkflow hero:\n  entry: one\n  one -> two\n  two -> done\n"
+	// heroBroken is v1 with an edge to a node it does not declare: it does
+	// not compile.
+	heroBroken = "schema out:\n  ok: bool\n\ntool one:\n  command: `true`\n  output: out\n\nworkflow hero:\n  entry: one\n  one -> missing\n"
 )
 
 // F21. The hero, on a real replica set: a run launched on v1 through the real
@@ -194,5 +198,58 @@ func TestSweepFrozen_HeroMongo(t *testing.T) {
 	}
 	if n := counterValue(t, s.cfg.Metrics.RunsRetryResumed.WithLabelValues(retryResultFrozenReadmitted)); n != 1 {
 		t.Fatalf("frozen_readmitted %v, want 1", n)
+	}
+}
+
+// F-A on a real replica set: the stored bots live in the Mongo bot-source
+// store, whose rows keep created_at to the millisecond. The parked attempt's
+// marker against the row the sweeper reads: a slug deleted and re-created
+// after the attempt is another bot (the record counted stale, the current
+// program resumed, nothing abandoned); a bot updated in place, or one the
+// parked attempt ran after its re-creation, keeps its record. Skipped without
+// ITERION_TEST_MONGO_URI. Red when the existence check reads the slug alone.
+func TestSweepFrozen_ARecreatedSlugIsAnotherBotMongo(t *testing.T) {
+	uri := os.Getenv("ITERION_TEST_MONGO_URI")
+	if uri == "" {
+		t.Skip("ITERION_TEST_MONGO_URI not set; the re-created slug's frozen record is unverified on Mongo")
+	}
+	for _, tc := range []struct {
+		shape  string
+		frozen bool
+	}{
+		{"re-created after the attempt", false},
+		{"updated in place", true},
+		{"re-created then resumed on", true},
+	} {
+		t.Run(tc.shape, func(t *testing.T) {
+			ctx := store.WithIdentity(t.Context(), "team-1", "u1")
+			ms, err := mongostore.New(ctx, mongostore.Config{URI: uri, Database: fmt.Sprintf("frozen_recreated_%d", time.Now().UnixNano()), Blob: &heroIRBlob{}, RunFilesScratchDir: filepath.Join(t.TempDir(), "scratch")})
+			if err != nil {
+				t.Fatalf("mongostore.New: %v", err)
+			}
+			t.Cleanup(func() {
+				c, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+				_ = ms.DB().Drop(c)
+				_ = ms.Close(c)
+			})
+			bots := botsource.NewMongoStore(ms.DB())
+			if err := bots.EnsureSchema(ctx); err != nil {
+				t.Fatalf("EnsureSchema: %v", err)
+			}
+			q := incarnations(t, bots, tc.shape)
+			s, st := newFrozenSweeper(t)
+			s.botSources = bots
+			run, ref := frozenDue(t, st, "run-frozen", "team-1")
+			bindAttempt(run, q)
+			resumer := &fakeResumer{}
+			sweepOne(s, resumer, ref)
+			if reason := st.abandoned["run-frozen"]; reason != "" {
+				t.Fatalf("abandoned %q, want resumed", reason)
+			}
+			if len(resumer.calls) != 1 || (resumer.calls[0].Frozen != nil) != tc.frozen {
+				t.Fatalf("resumes %d (first frozen: %v), want one, frozen %v", len(resumer.calls), len(resumer.calls) == 1 && resumer.calls[0].Frozen != nil, tc.frozen)
+			}
+		})
 	}
 }

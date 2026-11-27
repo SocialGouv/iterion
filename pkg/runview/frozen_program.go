@@ -83,7 +83,24 @@ var (
 	// ErrFrozenResumeNotCloud: a frozen re-admission is a cloud publication;
 	// a run service with no publisher has nothing to republish it through.
 	ErrFrozenResumeNotCloud = errors.New("a frozen-program resume is a cloud publication only")
+	// ErrCurrentProgramUnloadable: a resume of the bot's current program was
+	// refused before that program's hash was known, because it does not load
+	// or compile here (Service.Resume) — refused before anything moved or was
+	// published. The retry sweeper reads it, beside a changed source, as the
+	// bot having changed during a usage-window wait.
+	ErrCurrentProgramUnloadable = errors.New("the current program does not load")
 )
+
+// currentProgramUnloadable types a resume's refusal of its current program
+// as ErrCurrentProgramUnloadable, its text and its chain unchanged: every
+// other caller reads the error it read before.
+type currentProgramUnloadable struct{ err error }
+
+func (e currentProgramUnloadable) Error() string { return e.err.Error() }
+
+func (e currentProgramUnloadable) Unwrap() error { return e.err }
+
+func (e currentProgramUnloadable) Is(target error) bool { return target == ErrCurrentProgramUnloadable }
 
 // TransportIRUnloadable is DecodeTransportWorkflow's refusal of an IR that
 // does not decode or compile here; Detail names the stage and the cause.

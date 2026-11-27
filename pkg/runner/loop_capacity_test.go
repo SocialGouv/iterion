@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/credpool"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -180,7 +182,7 @@ func (f *guardFixture) evict(t *testing.T) {
 
 func (f *guardFixture) pickup(t *testing.T, delivered int) (*capacityGuard, preconditionOutcome, bool) {
 	t.Helper()
-	return f.r.capacityAtPickup(context.Background(), f.msg, delivered, iterlog.Nop())
+	return f.r.capacityAtPickup(context.Background(), f.msg, nil, delivered, iterlog.Nop())
 }
 
 // A held place: the delivery proceeds, the run is in a transit this delivery
@@ -405,6 +407,28 @@ func TestCapacityClaimGuard_HoldTooCloseToItsEndRefuses(t *testing.T) {
 	}
 }
 
+// A hold shorter than four claim margins is held to a quarter of itself: the
+// claim right after the pickup that wrote it passes, a hold within that
+// quarter of its end is still refused. Red when every hold is held to the
+// fixed margin — no guarded redelivery under a short hold could ever claim.
+func TestCapacityClaimGuard_AShortHoldIsHeldToAQuarterOfItself(t *testing.T) {
+	f := newGuardFixture(t, "cap-claim-short", store.FailureInterrupted, store.ContinuationRedeliveryPending)
+	f.r.cfg.RedeliveryHoldTTL = 20 * time.Second
+	g, out, proceed := f.pickup(t, 2)
+	if !proceed {
+		t.Fatalf("pickup: %+v, want the held place to proceed", out)
+	}
+	if err := g.claimGuard(context.Background(), f.load(t)); err != nil {
+		t.Fatalf("claim right after the pickup under a 20s hold: %v, want it to pass", err)
+	}
+	run := f.load(t)
+	soon := time.Now().Add(2 * time.Second)
+	run.ContinuationUntil = &soon
+	if err := g.claimGuard(context.Background(), run); !errors.Is(err, store.ErrCapacityLedgerUnavailable) {
+		t.Fatalf("claim on a 20s hold ending in 2s: %v, want refused", err)
+	}
+}
+
 // A delivery that resumed nothing ends the transit it owns: the continuation
 // it replaced put back (final stays final, nothing stays nothing) and its
 // places given back. Handed back to the queue, it ends nothing. Red when the
@@ -541,6 +565,130 @@ func TestCapacityPickup_LegacyMessageIsCounted(t *testing.T) {
 	}
 	if n := counterValue(t, f.reg.CapacityReassertTotal.WithLabelValues(metrics.CapacityStageDelivery, metrics.CapacityLegacy, "none")); n != 1 {
 		t.Fatalf("legacy count %v, want 1 (the nil message only)", n)
+	}
+}
+
+// F1 (the T4a residual, measured). A delivery that resumes a run outside its
+// transit — the hold lapsed, or none was ever stamped — while the run's stamp
+// names subjects its message holds no place for (a key or a gateway capped
+// after the admission, or never capped) is counted unheld_out_of_transit,
+// once per such subject and kind, and proceeds as before: nothing re-asserts
+// those subjects. Both shapes are counted: an admission that reserved
+// nothing (capacity:{}, unguarded) and one whose holds cover only part of
+// the stamp (guarded, its holds proven). An operator-paused run redelivered
+// on an admission that held nothing holds no place either (the pause is not
+// a holder), and is counted the same. A run still in its transit, a queued
+// launch, a legacy message and a stamp the holds cover are not. Red when the
+// measurement keys on an empty admission alone (the partial shape is
+// missed), ignores the transit (a delivery the hold still covers is
+// counted), or keys on failed_resumable instead of the holder predicate (the
+// paused run is missed).
+func TestCapacityPickup_AnUnheldSubjectOutOfTransitIsCounted(t *testing.T) {
+	const capped, gw = "fp-capped-after-the-admission", "gw:llm.example.test"
+	lapsed := time.Now().Add(-time.Second)
+	live := time.Now().Add(5 * time.Minute)
+	for _, tc := range []struct {
+		name string
+		// empty: the admission reserved nothing (capacity:{}); otherwise it
+		// holds capFP.
+		empty   bool
+		until   *time.Time
+		legacy  bool
+		queued  bool
+		paused  bool
+		stamp   []string
+		subject []string
+		want    float64
+	}{
+		{name: "empty admission, hold lapsed", empty: true, until: &lapsed, stamp: []string{capFP, capped}, want: 2},
+		{name: "empty admission, in its transit", empty: true, until: &live, stamp: []string{capFP, capped}},
+		{name: "partial holds, hold lapsed", until: &lapsed, stamp: []string{capFP, capped}, want: 1},
+		{name: "partial holds, in its transit", until: &live, stamp: []string{capFP, capped}},
+		{name: "partial holds, no hold ever stamped", stamp: []string{capFP, capped}, want: 1},
+		{name: "a gateway subject, hold lapsed", until: &lapsed, stamp: []string{capFP}, subject: []string{gw}, want: 1},
+		{name: "holds cover the stamp, hold lapsed", until: &lapsed, stamp: []string{capFP}},
+		{name: "a queued launch", empty: true, queued: true, stamp: []string{capFP, capped}},
+		{name: "an operator-paused run, empty admission", empty: true, paused: true, stamp: []string{capFP, capped}, want: 2},
+		{name: "a legacy message", legacy: true, until: &lapsed, stamp: []string{capFP, capped}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newGuardFixture(t, "cap-unheld", store.FailureInterrupted, "")
+			ctx := idCtx()
+			if err := f.fs.SetRunCredStamp(ctx, f.msg.RunID, store.RunCredStamp{Fingerprints: tc.stamp, CapacitySubjects: tc.subject, CapacityStamped: true}); err != nil {
+				t.Fatalf("SetRunCredStamp: %v", err)
+			}
+			meta := store.RunOutcomeMeta{Continuation: store.ContinuationRedeliveryPending}
+			if tc.until != nil {
+				meta.ContinuationUntil = *tc.until
+			}
+			if _, err := f.fs.UpdateRunOutcome(ctx, f.msg.RunID, store.RunStatusFailedResumable, "", meta, []store.RunStatus{store.RunStatusFailedResumable}); err != nil {
+				t.Fatalf("park the run: %v", err)
+			}
+			if tc.queued || tc.paused {
+				run := f.load(t)
+				run.Status, run.ContinuationState, run.ContinuationUntil = store.RunStatusQueued, "", nil
+				if tc.paused {
+					run.Status = store.RunStatusPausedOperator
+				}
+				if err := f.fs.SaveRun(ctx, run); err != nil {
+					t.Fatalf("move the run to %s: %v", run.Status, err)
+				}
+			}
+			switch {
+			case tc.legacy:
+				f.msg.Capacity = nil
+			case tc.empty:
+				f.msg.Capacity = &queue.CapacityAdmission{}
+			}
+			pre := f.load(t)
+			g, out, proceed := f.r.capacityAtPickup(context.Background(), f.msg, pre, 2, iterlog.Nop())
+			if !proceed {
+				t.Fatalf("pickup: %+v, want the delivery to proceed — the measurement changes nothing", out)
+			}
+			if guarded := g != nil; guarded != (!tc.empty && !tc.legacy) {
+				t.Fatalf("guarded %v, want %v", guarded, !tc.empty && !tc.legacy)
+			}
+			var got float64
+			for _, kind := range []string{metrics.CapacityKindKey, metrics.CapacityKindGateway} {
+				got += counterValue(t, f.reg.CapacityReassertTotal.WithLabelValues(metrics.CapacityStageDelivery, metrics.CapacityUnheldOutOfTransit, kind))
+			}
+			if got != tc.want {
+				t.Fatalf("unheld_out_of_transit %v, want %v", got, tc.want)
+			}
+			if len(tc.subject) > 0 && tc.want > 0 {
+				if n := counterValue(t, f.reg.CapacityReassertTotal.WithLabelValues(metrics.CapacityStageDelivery, metrics.CapacityUnheldOutOfTransit, metrics.CapacityKindGateway)); n != tc.want {
+					t.Fatalf("gateway count %v, want %v", n, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// F2 (the hold's coverage, as the docs state it — store.RedeliveryHoldTTLFloor,
+// docs/environment-variables.md, ADR-167's T4a amendment). The floor covers
+// the delayed re-offers of a delivery that executed, the longest 3 minutes,
+// plus the running-adoption floor. It does not cover the held-lease nak,
+// which comes before the guard: with the defaults that nak stays within the
+// default hold up to the fourth delivery, passes it from the fifth on, and
+// reaches about an hour. Red when a re-offer or a floor moves past what the
+// docs say the hold covers, or the held-lease nak's reach moves.
+func TestRedeliveryHold_CoversThePostExecutionReoffersNotTheHeldLease(t *testing.T) {
+	reoffers := []time.Duration{sandboxSetupTimeoutNakDelay, sandboxCapacityNakDelay, attachmentsFetchNakDelay}
+	longest := slices.Max(reoffers)
+	if longest != 3*time.Minute {
+		t.Fatalf("the longest post-execution re-offer is %s, the docs say 3 min", longest)
+	}
+	if longest+runningAdoptionFloor > store.RedeliveryHoldTTLFloor {
+		t.Fatalf("re-offer %s plus the adoption floor %s pass the hold's floor %s", longest, runningAdoptionFloor, store.RedeliveryHoldTTLFloor)
+	}
+	held := func(delivered int) time.Duration {
+		return natsq.HeldLockRetryDelay(natsq.DefaultLockTTL, LeaseUnwindCeiling, natsq.DefaultStreamMaxRetry, delivered)
+	}
+	if d4, d5 := held(4), held(5); d4 > store.DefaultRedeliveryHoldTTL || d5 <= store.DefaultRedeliveryHoldTTL {
+		t.Fatalf("held-lease naks %s (delivery 4) and %s (delivery 5), want the default hold %s passed from the fifth delivery on", d4, d5, store.DefaultRedeliveryHoldTTL)
+	}
+	if last := held(natsq.DefaultStreamMaxRetry - 1); last < 50*time.Minute || last > time.Hour {
+		t.Fatalf("the longest held-lease nak is %s, the docs say about an hour", last)
 	}
 }
 

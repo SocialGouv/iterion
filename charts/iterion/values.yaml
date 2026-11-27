@@ -965,9 +965,11 @@ metrics:
     interval: 30s
     labels: {}
   # Alert packs: the control-plane starter (DLQ depth, heartbeat errors,
-  # orphan recoveries, launch denials, webhook throttling), the backup
-  # rules when backup.enabled, and the datastore pack below. Needs the
-  # PrometheusRule CRD (prometheus-operator).
+  # orphan recoveries, launch denials, webhook throttling, bot-override
+  # shadows, the capacity transit's ledger errors and unfrozen parks, and
+  # the recording of its legacy re-assertions), the backup rules when
+  # backup.enabled, and the datastore pack below. Needs the PrometheusRule
+  # CRD (prometheus-operator).
   prometheusRule:
     enabled: false
     additionalLabels: {}

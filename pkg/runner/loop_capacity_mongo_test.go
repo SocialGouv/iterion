@@ -96,7 +96,7 @@ func TestCapacityTransitPickupMongo(t *testing.T) {
 	if adm, err := st.ReserveCredSlot(rctx, capFP, "run-x", 1); err != nil || !adm.Granted {
 		t.Fatalf("run-x takes the place of the parked run: %+v %v", adm, err)
 	}
-	_, out, proceed := r.capacityAtPickup(context.Background(), lostMsg, 2, iterlog.Nop())
+	_, out, proceed := r.capacityAtPickup(context.Background(), lostMsg, nil, 2, iterlog.Nop())
 	if proceed || out.action != actionAck {
 		t.Fatalf("pickup of a run whose place was taken: proceed=%v action=%v, want parked and acked", proceed, out.action)
 	}
@@ -120,7 +120,7 @@ func TestCapacityTransitPickupMongo(t *testing.T) {
 		t.Fatalf("reset the ledger: %v", err)
 	}
 	heldMsg := admitAndInterrupt("run-held")
-	g, _, proceed := r2.capacityAtPickup(context.Background(), heldMsg, 2, iterlog.Nop())
+	g, _, proceed := r2.capacityAtPickup(context.Background(), heldMsg, nil, 2, iterlog.Nop())
 	if !proceed || g == nil {
 		t.Fatal("pickup of a run whose place survived did not proceed")
 	}
@@ -239,7 +239,7 @@ func TestCapacityTransitFrozenParkMongo(t *testing.T) {
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		Capacity:       &queue.CapacityAdmission{Holds: []store.CapacityHold{{Subject: capFP, Token: adm.At}}}}
 	r := &Runner{cfg: Config{Store: st, Logger: iterlog.Nop()}, maxDeliverOverride: 8}
-	if _, out, proceed := r.capacityAtPickup(context.Background(), msg, 2, iterlog.Nop()); proceed || out.action != actionAck {
+	if _, out, proceed := r.capacityAtPickup(context.Background(), msg, nil, 2, iterlog.Nop()); proceed || out.action != actionAck {
 		t.Fatalf("pickup: proceed=%v action=%v, want parked and acked", proceed, out.action)
 	}
 	parked, err := st.LoadRun(rctx, "run-frozen")

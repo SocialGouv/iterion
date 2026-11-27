@@ -510,6 +510,44 @@ func TestResumeFrozen_RepublishesTheParkedProgram(t *testing.T) {
 	}
 }
 
+// frozenBroken is the frozen bot pushed into a program that does not compile:
+// an edge to a node it does not declare.
+const frozenBroken = "schema out:\n  ok: bool\n\ntool one:\n  command: `true`\n  output: out\n\nworkflow frozen:\n  entry: one\n  one -> missing\n"
+
+// A resume of the bot's current program that does not compile is refused
+// before anything is published, typed ErrCurrentProgramUnloadable with the
+// compile refusal's own text and chain — the retry sweeper reads it as a
+// bot that changed during a usage wait. A current program that compiles to
+// another hash is refused for its changed source and is not typed so. Red
+// when the compile refusal is left untyped (the sweeper re-arms it against
+// the budget), or when the type is put on every refusal.
+func TestResume_ACurrentProgramThatDoesNotCompileIsTyped(t *testing.T) {
+	pub := &capturingPublisher{}
+	svc, _, _ := frozenResumeFixture(t, pub)
+	ctx := context.Background()
+	_, _, _, compileErr := compileForLaunch("main.bot", frozenBroken, "", "", "", store.RunTrustDefault)
+	if compileErr == nil {
+		t.Fatal("precondition: the broken program compiles")
+	}
+	_, err := svc.Resume(ctx, ResumeSpec{RunID: "run-a", Automatic: true, FilePath: "main.bot", Source: frozenBroken})
+	if !errors.Is(err, ErrCurrentProgramUnloadable) {
+		t.Fatalf("a current program that does not compile: %v, want ErrCurrentProgramUnloadable", err)
+	}
+	if err.Error() != compileErr.Error() {
+		t.Fatalf("the refusal reads %q, want the compile refusal's own text %q", err, compileErr)
+	}
+	if errors.Is(err, runtime.ErrWorkflowSourceChanged) || ResumeNeedsOperator(err) || RunMayHaveStarted(err) {
+		t.Fatalf("the compile refusal is classed as a source change, a consent refusal or a started resume: %v", err)
+	}
+	_, err = svc.Resume(ctx, ResumeSpec{RunID: "run-a", Automatic: true, FilePath: "main.bot", Source: frozenV2})
+	if !errors.Is(err, runtime.ErrWorkflowSourceChanged) || errors.Is(err, ErrCurrentProgramUnloadable) {
+		t.Fatalf("a current program that compiles to another hash: %v, want the source change alone", err)
+	}
+	if pub.resumeCalls != 0 {
+		t.Fatalf("a refused resume published (%d calls)", pub.resumeCalls)
+	}
+}
+
 // F14. The frozen branch skips the source and nothing else: a lineage that
 // does not travel is refused as it is on every resume — before the
 // publisher, with RESUME_INVALID — though the run's file names nothing on

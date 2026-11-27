@@ -326,3 +326,74 @@ func TestUsagePark_TheArmingKeepsItsWholeBudgetAfterTheFreeze(t *testing.T) {
 		t.Fatalf("the arming had %s of its store budget left after a %s record write, want at least %s", left, f.st.setDelay, floor)
 	}
 }
+
+// A failure that is not a usage window parks nothing on it, so it records no
+// program: no envelope written, no record on the run, nothing counted — the
+// delivery falls through to its redelivery untouched. Red when the freeze runs
+// before the usage-window decision.
+func TestUsagePark_ANonUsageFailureRecordsNoProgram(t *testing.T) {
+	f := newUsageFrozenFixture(t, nil)
+	got := f.r.armUsageWindowRetry(context.Background(), errors.New("node one: exit status 1"), f.msg, spentNothing, iterlog.New(iterlog.LevelError, io.Discard))
+	if got != usageRetryNotApplicable {
+		t.Fatalf("outcome %v, want not applicable", got)
+	}
+	if writes := f.st.recordWrites(); len(writes) != 0 {
+		t.Fatalf("records %+v, want none for a failure that is not a usage window", writes)
+	}
+	f.blobs.mu.Lock()
+	envelopes := len(f.blobs.data)
+	f.blobs.mu.Unlock()
+	if envelopes != 0 {
+		t.Fatalf("%d envelope(s) written, want none", envelopes)
+	}
+	for _, outcome := range []string{metrics.FrozenProgramWritten, metrics.FrozenProgramNotStarted, metrics.FrozenProgramFreezeFailed, metrics.FrozenProgramHashMismatch} {
+		if n := f.count(t, outcome); n != 0 {
+			t.Fatalf("%s count %v, want 0", outcome, n)
+		}
+	}
+}
+
+// A record that lands, or a run that never started, is counted once per
+// park that lands — as the capacity park counts — never for a park the
+// store refused (the delivery is handed back and freezes again) nor for one
+// the spent budget refused (nothing parks). Red when the count precedes the
+// arming.
+func TestUsagePark_TheRecordIsCountedOnlyWhenTheArmingLands(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome string
+		shape   func(*store.Run)
+	}{
+		{"a started run's record", metrics.FrozenProgramWritten, nil},
+		{"a run that never started", metrics.FrozenProgramNotStarted, func(run *store.Run) { run.Checkpoint, run.Attempts = nil, nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUsageFrozenFixture(t, tc.shape)
+			f.st.scheduleErr = errors.New("mongo: not primary")
+			if got := f.park(t, spentNothing); got != usageRetryNotApplicable {
+				t.Fatalf("refused arming: outcome %v, want not applicable (handed back)", got)
+			}
+			if n := f.count(t, tc.outcome); n != 0 {
+				t.Fatalf("%s count %v after a park the store refused, want 0", tc.outcome, n)
+			}
+			f.st.scheduleErr = nil
+			if got := f.park(t, spentNothing); got != usageRetryArmed {
+				t.Fatalf("redelivered park: outcome %v, want armed", got)
+			}
+			if n := f.count(t, tc.outcome); n != 1 {
+				t.Fatalf("%s count %v after the park landed, want 1", tc.outcome, n)
+			}
+		})
+	}
+	t.Run("a spent budget", func(t *testing.T) {
+		f := newUsageFrozenFixture(t, func(run *store.Run) {
+			run.RetryState = &store.RunRetryState{Attempts: 5, Reason: store.RetryReasonUsageWindow}
+		})
+		if got := f.park(t, spentNothing); got != usageRetryExhausted {
+			t.Fatalf("outcome %v, want exhausted", got)
+		}
+		if n := f.count(t, metrics.FrozenProgramWritten); n != 0 {
+			t.Fatalf("written count %v for a park the spent budget refused, want 0", n)
+		}
+	})
+}

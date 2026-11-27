@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/connection"
 	"github.com/SocialGouv/iterion/pkg/connector/ingress"
 	"github.com/SocialGouv/iterion/pkg/connector/intake"
@@ -302,7 +303,7 @@ func (s *Server) handleConnectorIngress(w http.ResponseWriter, r *http.Request) 
 		}
 		if n >= limit {
 			if s.cfg.Metrics != nil {
-				s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), "backlog_full").Inc()
+				s.cfg.Metrics.WebhookThrottledTotal.WithLabelValues(string(cfg.Provider), metrics.WebhookThrottledBacklogFull).Inc()
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(int(connectorBacklogRetryAfter.Seconds())))
 			httpError(w, http.StatusServiceUnavailable, "the team's connector backlog is full (%d unprocessed deliveries, cap %d, %s)", n, limit, intake.EnvBacklogMax)

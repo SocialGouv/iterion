@@ -555,7 +555,8 @@ unguarded by a runner that does (counted
 observe-phase stance on a mixed fleet; the version checklist before a
 per-gateway bound moves to `enforce` requires every runner upgraded and the
 `legacy` series at 0 (messages already in the stream age out at its
-`MaxAge`).
+`MaxAge`) — the chart's alert pack records it as
+`iterion:capacity_reassert_legacy:increase24h`.
 
 ## Rollout procedure for a schema bump vN → vN+1
 

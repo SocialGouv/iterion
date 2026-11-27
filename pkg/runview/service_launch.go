@@ -1296,6 +1296,11 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	} else {
 		spec.BundleDir = resumeBundleDir(r, spec)
 		wf, cs, resumeBundle, err = compileForLaunch(spec.FilePath, spec.Source, spec.BundleDir, spec.BundleEntry, s.effectiveWorkDir(r.WorkDir), r.Trust)
+		if err != nil {
+			// Typed here, not inside the compile: its path shortening
+			// rebuilds the error from its text.
+			err = currentProgramUnloadable{err}
+		}
 	}
 	if err == nil {
 		// The launch's codemode warnings, restated — judged on the EFFECTIVE

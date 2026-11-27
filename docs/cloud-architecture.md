@@ -173,7 +173,12 @@ Pinned semantics:
   capacity places until `continuation_until` (`ITERION_REDELIVERY_HOLD_TTL`,
   10 min), longer than these delays; its redelivery re-asserts them before
   it resumes, and one the ledger could not prove is re-offered after 30 s,
-  never resumed unproven ([byok.md](byok.md#concurrency-ceiling--what-counts)). On the LAST permitted delivery
+  never resumed unproven ([byok.md](byok.md#concurrency-ceiling--what-counts)).
+  Not every re-offer is that short: the nak of a delivery whose lease
+  another pod still holds, and a schema or epoch refusal, come before the
+  guard and refresh no hold, so a redelivery can arrive after its hold —
+  it still re-asserts, and parks on `CRED_SLOT_WAIT` if an admission took
+  its place meanwhile. On the LAST permitted delivery
   that young doc is Term'd instead and the log says so — JetStream would
   not re-offer it anyway — and the orphan sweeper below owns it from
   there; nothing is written over a possibly-live writer.
@@ -320,7 +325,7 @@ FS adapter / Mongo adapter both treat it as untenanted.
 | `iterion_llm_cost_usd_total{backend,model}` | runner | Per claw-priced call (delegate calls don't carry a price table) |
 | `iterion_runner_heartbeat_errors_total` | runner | Per KV refresh failure |
 | `iterion_webhook_deliveries_total{provider,status}` | server | Per delivery (terminal status) |
-| `iterion_webhook_throttled_total{provider,reason}` | server | Pre-handler throttle (rate / quota) |
+| `iterion_webhook_throttled_total{provider,reason}` | server | Pre-handler throttle (rate / quota / connector backlog) |
 | `iterion_auth_logins_total{result}` | server | Login attempts |
 | `iterion_auth_password_resets_total{step}` | server | Reset flow (`requested`, `confirmed`) |
 | `iterion_launch_denied_total{reason}` | server | Launch gate refusals |
@@ -336,7 +341,9 @@ All from a shared registry in
 [pkg/cloud/metrics/metrics.go](../pkg/cloud/metrics/metrics.go) so the
 PodMonitor scrapes both binaries with identical metric names.
 Tenant labels are deliberately absent on every counter (cardinality
-discipline; per-org accounting lives in Mongo).
+discipline; per-org accounting lives in Mongo). Every child a chart rule
+reads through `increase()` or `rate()` is served at 0 from each pod's boot,
+on server and runner pods alike ([quotas-and-limits.md](quotas-and-limits.md#prometheus-metrics)).
 
 ## Run-completion callbacks vs inbound webhooks
 

@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/botsource"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -112,6 +114,80 @@ func TestSweepFrozen_AUsageParkResumesItsCurrentProgramUnlessItChanged(t *testin
 			t.Fatal("a resumed run was re-armed against its budget")
 		}
 	})
+}
+
+// F-A on a usage park: a slug deleted and re-created during the wait is
+// another bot, so the current program — the new row's, refused for its
+// changed source — is not followed by the deleted incarnation's frozen
+// program: the refusal is re-armed as before any freeze. A bot updated in
+// place still falls back to the program the park froze. Red when the
+// record is kept for a slug re-created after the parked attempt.
+func TestSweepFrozen_AUsageParkOnARecreatedSlugKeepsTheRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		shape  string
+		frozen bool
+	}{
+		{"re-created after the attempt", false},
+		{"updated in place", true},
+	} {
+		t.Run(tc.shape, func(t *testing.T) {
+			s, st := newFrozenSweeper(t)
+			s.cfg.Mode = "cloud"
+			bots := botsource.NewMemoryStore()
+			q := incarnations(t, bots, tc.shape)
+			s.botSources = bots
+			run, ref := frozenDue(t, st, "run-usage", "team-1")
+			run.FailureCode = store.FailureUsageLimitBlocked
+			run.FrozenProgram.Source = store.FrozenProgramSourceUsageWindow
+			ref.RetryState.Reason, ref.RetryState.Code = store.RetryReasonUsageWindow, "USAGE_LIMIT_BLOCKED"
+			bindAttempt(run, q)
+			resumer := &sourceChangeResumer{current: runtime.ValidateResumeWorkflowHash("run-usage", "h1", "h2", false)}
+			sweepWith(s, resumer, ref)
+			calls := resumer.recorded()
+			if reason := st.abandoned["run-usage"]; reason != "" {
+				t.Fatalf("abandoned %q, want the current program's refusal handled", reason)
+			}
+			if len(calls) == 0 || calls[0].Frozen != nil {
+				t.Fatalf("resumes %+v, want the current program first", calls)
+			}
+			fellBack := len(calls) == 2 && calls[1].Frozen != nil
+			if fellBack != tc.frozen || len(calls) > 2 {
+				t.Fatalf("resumes %d, frozen fallback %v, want fallback %v", len(calls), fellBack, tc.frozen)
+			}
+			if !tc.frozen {
+				if _, rearmed := st.armBudget["run-usage"]; !rearmed {
+					t.Fatal("the current program's refusal was not re-armed")
+				}
+			}
+		})
+	}
+}
+
+// The bot changed during the usage wait into a program that no longer
+// compiles: its current program is refused before anything moved
+// (runview.ErrCurrentProgramUnloadable), and the same pass resumes the
+// program the park froze, on the same admission — the clearest case of a
+// bot that changed. Red when only a changed source falls back (the run is
+// re-armed against its budget until abandoned).
+func TestSweepFrozen_AUsageParkFallsBackWhenItsBotNoLongerCompiles(t *testing.T) {
+	s, st := newFrozenSweeper(t)
+	run, ref := usageFrozenDue(t, st, "run-usage")
+	unloadable := fmt.Errorf("compile error: error [C001]: edge target \"missing\" not found: %w", runview.ErrCurrentProgramUnloadable)
+	resumer := &sourceChangeResumer{current: unloadable}
+	sweepWith(s, resumer, ref)
+	calls := resumer.recorded()
+	if len(calls) != 2 || calls[0].Frozen != nil || calls[1].Frozen == nil || calls[1].Frozen.Program.Key != run.FrozenProgram.Key {
+		t.Fatalf("resumes %+v, want the current program then the frozen one", calls)
+	}
+	if calls[1].Admitted == nil || calls[1].Admitted != calls[0].Admitted || calls[1].Force {
+		t.Fatalf("frozen resume admitted %p (first %p) force %v, want the pass's one admission, unforced", calls[1].Admitted, calls[0].Admitted, calls[1].Force)
+	}
+	if _, paid := st.armBudget["run-usage"]; paid {
+		t.Fatal("a resumed run was re-armed against its budget")
+	}
+	if retryResult(t, s, retryResultFrozenReadmitted) != 1 {
+		t.Fatalf("frozen_readmitted %v, want 1", retryResult(t, s, retryResultFrozenReadmitted))
+	}
 }
 
 // A refusal of the current program that is not a source change keeps its

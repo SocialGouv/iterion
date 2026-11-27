@@ -61,7 +61,8 @@ func TestHoldsCapacity(t *testing.T) {
 
 // The transit's length, read on runners only: a Go duration, strictly
 // positive, an error for anything else, and a warning — not a refusal — below
-// the floor the runner's own re-offers need.
+// the floor the runner's own re-offers need. Set but empty (a manifest that
+// renders an optional value as "") is unset: the default, not a boot stop.
 func TestParseRedeliveryHoldTTL(t *testing.T) {
 	cases := []struct {
 		raw     string
@@ -81,7 +82,8 @@ func TestParseRedeliveryHoldTTL(t *testing.T) {
 		{"-1m", true, 0, false, true},
 		{"x", true, 0, false, true},
 		{"600", true, 0, false, true},
-		{"", true, 0, false, true},
+		{"", true, DefaultRedeliveryHoldTTL, false, false},
+		{"   ", true, DefaultRedeliveryHoldTTL, false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.raw, func(t *testing.T) {

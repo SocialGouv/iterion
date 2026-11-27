@@ -26,19 +26,24 @@ import (
 // counted. Bot pushed to v2: the current program is refused by the real
 // source check, and the same pass publishes v1's program instead — one
 // publication, unforced, v2's node absent, the run's attempts untouched.
-// Skipped without ITERION_TEST_MONGO_URI. Red when the sweeper never falls
-// back to the frozen program (v2 refused, re-armed, nothing published).
+// Bot pushed to a program that no longer compiles: the current program is
+// refused by the real compile, typed unloadable, and the same pass publishes
+// v1's program alike. Skipped without ITERION_TEST_MONGO_URI. Red when the
+// sweeper never falls back to the frozen program (v2 or the broken program
+// refused, re-armed, nothing published).
 func TestSweepFrozen_UsageHeroMongo(t *testing.T) {
 	uri := os.Getenv("ITERION_TEST_MONGO_URI")
 	if uri == "" {
 		t.Skip("ITERION_TEST_MONGO_URI not set; the usage park's frozen re-admission is unverified on Mongo")
 	}
 	for _, tc := range []struct {
-		name    string
-		changed bool
+		name string
+		// next is the bot written during the wait, "" for none.
+		next string
 	}{
-		{"unchanged", false},
-		{"changed", true},
+		{"unchanged", ""},
+		{"changed", heroV2},
+		{"no longer compiles", heroBroken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := store.WithIdentity(t.Context(), "team-1", "u1")
@@ -119,8 +124,8 @@ func TestSweepFrozen_UsageHeroMongo(t *testing.T) {
 				t.Fatalf("arm: armed=%v attempt=%d err=%v", armed, attempt, err)
 			}
 
-			if tc.changed {
-				if err := os.WriteFile(botPath, []byte(heroV2), 0o644); err != nil {
+			if tc.next != "" {
+				if err := os.WriteFile(botPath, []byte(tc.next), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -157,7 +162,7 @@ func TestSweepFrozen_UsageHeroMongo(t *testing.T) {
 				t.Fatalf("retry state %+v, want the park's one attempt, untouched by the re-admission", after.RetryState)
 			}
 			want := 0.0
-			if tc.changed {
+			if tc.next != "" {
 				want = 1
 			}
 			if n := counterValue(t, s.cfg.Metrics.RunsRetryResumed.WithLabelValues(retryResultFrozenReadmitted)); n != want {

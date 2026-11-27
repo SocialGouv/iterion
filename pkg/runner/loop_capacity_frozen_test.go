@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // The capacity park of a started run freezes the program its delivery
@@ -24,16 +27,20 @@ import (
 const frozenRunnerBot = "schema out:\n  ok: bool\n\ntool one:\n  command: `true`\n  output: out\n\nworkflow frozen:\n  entry: one\n  one -> done\n"
 
 // runnerIRBlobs is an in-memory IR blob store that fails its writes on
-// demand.
+// demand, or takes putDelay over each (putDone: when the last one returned).
 type runnerIRBlobs struct {
-	mu     sync.Mutex
-	data   map[string][]byte
-	putErr error
+	mu       sync.Mutex
+	data     map[string][]byte
+	putErr   error
+	putDelay time.Duration
+	putDone  time.Time
 }
 
 func (b *runnerIRBlobs) PutIRBlob(_ context.Context, id string, body []byte) (string, error) {
+	time.Sleep(b.putDelay)
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	defer func() { b.putDone = time.Now() }()
 	if b.putErr != nil {
 		return "", b.putErr
 	}
@@ -219,5 +226,50 @@ func TestCapacityPark_AFailedFreezeStillParks(t *testing.T) {
 				t.Fatalf("%s count %v, want 1", tc.outcome, n)
 			}
 		})
+	}
+}
+
+// The runner counts a park's freeze by the store's source (countFrozenProgram
+// with store.FrozenProgramSource*), and the registry creates the children the
+// alert reads at 0 at boot by its own restatement of those sources (the
+// metrics package is a leaf). Equal, so every freeze failure lands on a child
+// that was served at 0 before it: a child born by its first Inc is first
+// scraped at 1, and IterionFrozenProgramNotRecorded never sees that event.
+// Red when the two drift.
+func TestFrozenProgramSources_TheRegistryCreatesTheStoresSources(t *testing.T) {
+	for _, tc := range []struct{ metricsSide, storeSide string }{
+		{metrics.FrozenProgramSourceCapacity, store.FrozenProgramSourceCapacity},
+		{metrics.FrozenProgramSourceUsageWindow, store.FrozenProgramSourceUsageWindow},
+	} {
+		if tc.metricsSide != tc.storeSide {
+			t.Errorf("metrics source %q, store source %q: the runner's count would be born by its first Inc", tc.metricsSide, tc.storeSide)
+		}
+	}
+	served := map[string]float64{}
+	ch := make(chan prometheus.Metric, 64)
+	metrics.New().CapacityFrozenProgramTotal.Collect(ch)
+	close(ch)
+	for m := range ch {
+		var pb dto.Metric
+		if err := m.Write(&pb); err != nil {
+			t.Fatalf("read the frozen-program counter: %v", err)
+		}
+		var source, outcome string
+		for _, l := range pb.GetLabel() {
+			switch l.GetName() {
+			case "source":
+				source = l.GetValue()
+			case "outcome":
+				outcome = l.GetValue()
+			}
+		}
+		served[source+"/"+outcome] = pb.GetCounter().GetValue()
+	}
+	for _, source := range []string{store.FrozenProgramSourceCapacity, store.FrozenProgramSourceUsageWindow} {
+		for _, outcome := range []string{metrics.FrozenProgramFreezeFailed, metrics.FrozenProgramHashMismatch} {
+			if v, ok := served[source+"/"+outcome]; !ok || v != 0 {
+				t.Errorf("a fresh registry serves %s/%s as (%v, %v), want 0", source, outcome, v, ok)
+			}
+		}
 	}
 }

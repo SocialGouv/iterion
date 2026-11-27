@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -47,8 +48,18 @@ import (
 
 // capacityClaimMargin is the least of the hold a claim must still have: a
 // claim this close to the hold's end can lose the place between its proof and
-// its write.
+// its write. A hold shorter than four margins is held to a quarter of itself
+// instead (claimMargin).
 const capacityClaimMargin = 30 * time.Second
+
+// claimMargin is the margin a claim's hold must clear: capacityClaimMargin,
+// or a quarter of a shorter hold. The pre_engine stage refreshes a transit
+// older than a quarter of the hold, so the engine starts with at least three
+// quarters of it, and its claim clears the margin unless the load before the
+// claim takes half the hold.
+func (r *Runner) claimMargin() time.Duration {
+	return min(capacityClaimMargin, r.redeliveryHoldTTL()/4)
+}
 
 // capacityReassertNakDelay spaces the redeliveries of a delivery the ledger
 // could not answer for.
@@ -118,13 +129,52 @@ func (r *Runner) newCapacityGuard(msg *queue.RunMessage, delivered int, logger *
 // disposition. It runs on every guarded delivery — a launch message
 // redelivered onto a run that executed as much as a resume message — and
 // keys on the status the transit write finds, never on the message's kind.
-func (r *Runner) capacityAtPickup(ctx context.Context, msg *queue.RunMessage, delivered int, logger *iterlog.Logger) (*capacityGuard, preconditionOutcome, bool) {
+// pre is the run as the delivery's precondition read it, before the lock
+// and any transit write: what countUnheldOutOfTransit measures on a delivery
+// that proceeds.
+func (r *Runner) capacityAtPickup(ctx context.Context, msg *queue.RunMessage, pre *store.Run, delivered int, logger *iterlog.Logger) (*capacityGuard, preconditionOutcome, bool) {
 	g := r.newCapacityGuard(msg, delivered, logger)
 	if g == nil {
+		r.countUnheldOutOfTransit(msg, pre, time.Now())
 		return nil, preconditionOutcome{proceed: true}, true
 	}
 	out, proceed := g.deliveryStage(ctx)
+	if proceed {
+		r.countUnheldOutOfTransit(msg, pre, time.Now())
+	}
 	return g, out, proceed
+}
+
+// countUnheldOutOfTransit counts, once per subject, a delivery that resumes
+// a run holding nothing (Run.HoldsCapacity, the one holder predicate: neither
+// alive nor in its capacity transit) — a parked run whose hold lapsed, or
+// that none was stamped for (a post-engine promote that failed, one by a
+// runner older than the transit, a DLQ replay), or an operator-paused run
+// redelivered on an admission that held nothing — while the run's stamp
+// (Run.StampsCapacity) names subjects its message holds no place for: a key
+// or gateway capped after the admission, or never capped. Nothing re-asserts
+// such a subject: only the transit's adoption kept a newcomer from taking its
+// place, so this resume can run beside a run admitted since (ADR-167 T4a, the
+// residual). A measurement only: the delivery proceeds as it would without
+// it. now is this reader's clock, which the run's stamped instant is compared
+// with, as every reader of the transit does.
+func (r *Runner) countUnheldOutOfTransit(msg *queue.RunMessage, pre *store.Run, now time.Time) {
+	if msg.Capacity == nil || pre == nil || pre.HoldsCapacity(now) {
+		return
+	}
+	held := make(map[string]bool, len(msg.Capacity.Holds))
+	for _, h := range msg.Capacity.Holds {
+		held[h.Subject] = true
+	}
+	var unheld []string
+	for _, s := range slices.Concat(pre.CredFingerprints, pre.CapacitySubjects) {
+		if s != "" && !held[s] && !slices.Contains(unheld, s) {
+			unheld = append(unheld, s)
+		}
+	}
+	if len(unheld) > 0 {
+		r.countCapacity(metrics.CapacityStageDelivery, metrics.CapacityUnheldOutOfTransit, unheld...)
+	}
 }
 
 // countCapacity increments the re-assertion counter once per subject named
@@ -134,7 +184,7 @@ func (r *Runner) countCapacity(stage, outcome string, subjects ...string) {
 		return
 	}
 	if len(subjects) == 0 {
-		r.cfg.Metrics.CapacityReassertTotal.WithLabelValues(stage, outcome, "none").Inc()
+		r.cfg.Metrics.CapacityReassertTotal.WithLabelValues(stage, outcome, metrics.CapacityKindNone).Inc()
 		return
 	}
 	for _, s := range subjects {
@@ -240,7 +290,19 @@ func (g *capacityGuard) deliveryStage(ctx context.Context) (preconditionOutcome,
 		return g.notInTransit(ctx)
 	case entry.Lost != "":
 		g.r.countCapacity(metrics.CapacityStageDelivery, metrics.CapacityMissing, entry.Lost)
-		status := g.parkLostPlace(ctx, entry.Lost)
+		status, reoffer := g.parkLostPlace(ctx, entry.Lost)
+		if reoffer {
+			// The redelivery reuses the delivery's pool lease: left open.
+			return preconditionOutcome{
+				finalStatus: status,
+				op:          "nak-capacity-park-store-error",
+				action:      actionNakDelayed,
+				delay:       capacityReassertNakDelay,
+				level:       logWarn,
+				logFmt:      "runner: run %s lost its capacity place on %s while the queue redelivered it, and the store did not take its park (%s) — re-offering in %s, NOT resumed",
+				logArgs:     []any{g.msg.RunID, entry.Lost, status, capacityReassertNakDelay},
+			}, false
+		}
 		g.closeUnexecutedPoolLease()
 		return preconditionOutcome{
 			finalStatus: status,
@@ -303,7 +365,8 @@ func (g *capacityGuard) notInTransit(ctx context.Context) (preconditionOutcome, 
 // on its last delivery — it never resumes unproven.
 func (g *capacityGuard) ledgerUnavailable(ctx context.Context, cause error) preconditionOutcome {
 	if g.lastDelivery() {
-		status := g.parkLostPlace(ctx, "")
+		// The last delivery: parkLostPlace re-offers nothing.
+		status, _ := g.parkLostPlace(ctx, "")
 		g.closeUnexecutedPoolLease()
 		return preconditionOutcome{
 			finalStatus: status,
@@ -372,17 +435,18 @@ func (r *Runner) capacityBeforeEngine(ctx context.Context) error {
 // the document the engine is about to claim from. A queued run is its
 // publication's, decided by the publisher's admission. Any other — the
 // parked statuses a redelivery claims from, or one the run moved to since the
-// delivery stage — must still be in its transit, far enough from the hold's
-// end, and every hold still held for this admission. It writes nothing to the
-// run document: the claims fence on its version.
+// delivery stage — must still be in its transit, at least claimMargin from
+// the hold's end, and every hold still held for this admission. It writes
+// nothing to the run document: the claims fence on its version.
 func (g *capacityGuard) claimGuard(ctx context.Context, run *store.Run) error {
 	if run.Status.IsQueued() {
 		return nil
 	}
 	now := time.Now()
-	if run.ContinuationState != store.ContinuationRedeliveryPending || run.ContinuationUntil == nil || run.ContinuationUntil.Sub(now) < capacityClaimMargin {
+	margin := g.r.claimMargin()
+	if run.ContinuationState != store.ContinuationRedeliveryPending || run.ContinuationUntil == nil || run.ContinuationUntil.Sub(now) < margin {
 		g.r.countCapacity(metrics.CapacityStageClaim, metrics.CapacityExpired, g.subjects()...)
-		return fmt.Errorf("%w: run %s reads %s with continuation %q until %v — its capacity hold lapsed or is within %s of lapsing before the claim", store.ErrCapacityLedgerUnavailable, run.ID, run.Status, run.ContinuationState, run.ContinuationUntil, capacityClaimMargin)
+		return fmt.Errorf("%w: run %s reads %s with continuation %q until %v — its capacity hold lapsed or is within %s of lapsing before the claim", store.ErrCapacityLedgerUnavailable, run.ID, run.Status, run.ContinuationState, run.ContinuationUntil, margin)
 	}
 	_, ledger, err := g.stores()
 	if err != nil {
@@ -434,7 +498,8 @@ func (g *capacityGuard) onResumablePark(ctx context.Context, code store.FailureC
 // afterEngine decides a delivery whose execution returned a capacity refusal
 // (stage pre_engine or claim): the run is parked when its place is gone, or
 // on the last delivery; re-offered after a delay when the ledger did not
-// answer. handled false: the error is not the guard's.
+// answer, or the store did not take the park (parkLostPlace). handled false:
+// the error is not the guard's.
 func (g *capacityGuard) afterEngine(ctx context.Context, err error, delivery jsDelivery, usage *metricsEmitter) (string, bool) {
 	lost := errors.Is(err, store.ErrCapacityPlaceLost)
 	unavailable := errors.Is(err, store.ErrCapacityLedgerUnavailable)
@@ -452,7 +517,13 @@ func (g *capacityGuard) afterEngine(ctx context.Context, err error, delivery jsD
 	if errors.As(err, &placeLost) {
 		lostSubject = placeLost.subject
 	}
-	status := g.parkLostPlace(ctx, lostSubject)
+	status, reoffer := g.parkLostPlace(ctx, lostSubject)
+	if reoffer {
+		g.reportPoolSpend(usage, err, true)
+		g.logger.Warn("runner: run %s: %v — the store did not take its park (%s), re-offering in %s, NOT resumed", g.msg.RunID, err, status, capacityReassertNakDelay)
+		dispatchDelivery(g.logger, delivery, actionNakDelayed, capacityReassertNakDelay, "nak-capacity-park-store-error", g.msg.RunID)
+		return status, true
+	}
 	g.reportPoolSpend(usage, err, false)
 	g.logger.Warn("runner: run %s: %v — parked on CRED_SLOT_WAIT for the retry sweeper (%s), NOT resumed", g.msg.RunID, err, status)
 	dispatchDelivery(g.logger, delivery, actionAck, 0, "ack-capacity-place-lost", g.msg.RunID)
@@ -521,44 +592,50 @@ func freeCapacityParkSource(code store.FailureCode) bool {
 // its retry armed, in one write (store.CapacityParker) — with the program of
 // a started run frozen for its re-admission (freezeProgram) — and reports the
 // delivery's final status. lost names the subject whose place is gone ("" when
-// the ledger could not answer on the last delivery). A park the store cannot
-// arm, or a charged park over a spent budget, ends the transit as final with
-// the cause said; a run that moved past the transit is left to whoever moved
-// it.
-func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
+// the ledger could not answer on the last delivery). reoffer true: a store
+// error stopped the park while the queue still redelivers — the transit stays
+// this delivery's and the caller naks, so the next delivery parks the run on
+// what it then reads (parkStoreFailed). On the last delivery that error, a
+// park the store cannot arm, or a charged park over a spent budget, ends the
+// transit as final with the cause said; a run that moved past the transit is
+// left to whoever moved it.
+func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) (status string, reoffer bool) {
 	owned, _, _ := g.ownedTransit()
-	sctx, cancel := g.storeCtx(ctx)
-	defer cancel()
 	if owned.IsZero() {
 		// No transit of this delivery's to park from: the queue hands nothing
 		// back, so the run's continuation says nobody resumes it — never a
 		// redelivery_pending no redelivery honours.
-		if _, err := g.r.cfg.Store.UpdateRunOutcome(sctx, g.msg.RunID, store.RunStatusFailedResumable, "",
+		uctx, ucancel := g.storeCtx(ctx)
+		defer ucancel()
+		if _, err := g.r.cfg.Store.UpdateRunOutcome(uctx, g.msg.RunID, store.RunStatusFailedResumable, "",
 			store.RunOutcomeMeta{Continuation: store.ContinuationFinal, ExactQueuedAt: codemodeQuotaQueuedAt(g.msg)},
 			[]store.RunStatus{store.RunStatusFailedResumable}); err != nil {
 			g.logger.Error("runner: run %s: mark the continuation final after an unproven last delivery: %v", g.msg.RunID, err)
 		}
 		g.logger.Error("runner: run %s: its capacity places could not be proven on its last delivery and this delivery wrote no transit to park it from — left failed_resumable with no continuation, NOT resumed: resume it by hand", g.msg.RunID)
-		return "capacity_place_lost_unowned"
+		return "capacity_place_lost_unowned", false
 	}
-	run, err := g.r.cfg.Store.LoadRun(sctx, g.msg.RunID)
+	what := "its capacity places could not be proven on its last delivery"
+	if lost != "" {
+		what = fmt.Sprintf("the capacity place its admission reserved on %s was taken while the queue redelivered it", lost)
+	}
+	lctx, lcancel := g.storeCtx(ctx)
+	run, err := g.r.cfg.Store.LoadRun(lctx, g.msg.RunID)
+	lcancel()
 	if err != nil {
-		g.logger.Error("runner: run %s: read the run to park it on capacity: %v — its transit ends at %s, NOT resumed", g.msg.RunID, err, owned.Format(time.RFC3339))
-		return "capacity_park_unreadable"
+		return g.parkStoreFailed(ctx, owned, "capacity_park_unreadable", fmt.Sprintf("%s, and the run could not be read to park it (%v)", what, err))
 	}
 	maxAttempts := retrypolicy.DefaultMaxAttempts
 	if run.RetryPolicy != nil && run.RetryPolicy.MaxAttempts > 0 {
 		maxAttempts = run.RetryPolicy.MaxAttempts
 	}
 	charge := !freeCapacityParkSource(run.FailureCode)
-	what := "its capacity places could not be proven on its last delivery"
-	if lost != "" {
-		what = fmt.Sprintf("the capacity place its admission reserved on %s was taken while the queue redelivered it", lost)
-	}
 	parker := store.AsCapacityParker(g.r.cfg.Store)
 	if parker == nil {
-		g.endFinal(sctx, owned, fmt.Sprintf("parked: %s — this run store hosts no durable retry, so nothing resumes the run by itself: resume it once a slot frees", what))
-		return "capacity_place_lost_unarmed"
+		if !g.endFinal(ctx, owned, fmt.Sprintf("parked: %s — this run store hosts no durable retry, so nothing resumes the run by itself: resume it once a slot frees", what)) {
+			return "capacity_place_lost_moved", false
+		}
+		return "capacity_place_lost_unarmed", false
 	}
 	// A started run keeps the program it ran: the retry sweeper's
 	// re-admission republishes it, as this redelivery would have. Frozen
@@ -569,6 +646,10 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 	if started {
 		frozen = g.r.freezeProgram(ctx, g.msg, run, store.FrozenProgramSourceCapacity, "lost its capacity place", g.logger)
 	}
+	// The park's store budget starts once the freeze returned: a slow freeze
+	// never leaves the park an expired context.
+	sctx, cancel := g.storeCtx(ctx)
+	defer cancel()
 	retryAfter := time.Now().UTC().Add(store.CredSlotProbeInterval)
 	parked, attempt, err := parker.ParkRunOnCapacity(sctx, g.msg.RunID, store.CapacityPark{
 		From:         store.RunStatusFailedResumable,
@@ -582,8 +663,7 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 		Frozen:       frozen,
 	})
 	if err != nil {
-		g.endFinal(sctx, owned, fmt.Sprintf("%s, and the park could not be written (%v) — resume it by hand", what, err))
-		return "capacity_park_failed"
+		return g.parkStoreFailed(ctx, owned, "capacity_park_failed", fmt.Sprintf("%s, and the park could not be written (%v)", what, err))
 	}
 	if parked {
 		g.disown()
@@ -597,19 +677,41 @@ func (g *capacityGuard) parkLostPlace(ctx context.Context, lost string) string {
 			g.r.cfg.Metrics.RunsRetryScheduled.Inc()
 		}
 		g.emitCapacityRetryScheduled(sctx, retryAfter, attempt, maxAttempts, charge, lost)
-		return "capacity_parked"
+		return "capacity_parked", false
 	}
 	if charge {
 		after, rerr := g.r.cfg.Store.LoadRun(sctx, g.msg.RunID)
-		if rerr == nil && after.Status == store.RunStatusFailedResumable && after.ContinuationState == store.ContinuationRedeliveryPending &&
+		if rerr != nil {
+			return g.parkStoreFailed(ctx, owned, "capacity_park_unreadable", fmt.Sprintf("%s, its charged park was refused, and the run could not be re-read to tell a spent budget from a move (%v)", what, rerr))
+		}
+		if after.Status == store.RunStatusFailedResumable && after.ContinuationState == store.ContinuationRedeliveryPending &&
 			after.ContinuationUntil != nil && after.ContinuationUntil.Equal(owned) {
-			g.endFinal(sctx, owned, fmt.Sprintf("%s, and its retry budget is spent (%d attempts) — place lost, retry budget spent: resume it by hand", what, maxAttempts))
-			return "capacity_place_lost_budget_spent"
+			if !g.endFinal(ctx, owned, fmt.Sprintf("%s, and its retry budget is spent (%d attempts) — place lost, retry budget spent: resume it by hand", what, maxAttempts)) {
+				return "capacity_place_lost_moved", false
+			}
+			return "capacity_place_lost_budget_spent", false
 		}
 	}
 	g.disown()
 	g.logger.Warn("runner: run %s moved past its capacity transit before the park — left to whoever moved it", g.msg.RunID)
-	return "capacity_place_lost_moved"
+	return "capacity_place_lost_moved", false
+}
+
+// parkStoreFailed is the park's answer to a store error, cause said: while the
+// queue redelivers, the delivery is re-offered with its transit kept (the
+// write that failed may still have landed, and the next delivery reads which);
+// on the last delivery, the transit ends as final — or, when that end finds
+// the run moved (the failed write landed, another writer moved it), the run
+// is left to whoever moved it.
+func (g *capacityGuard) parkStoreFailed(ctx context.Context, owned time.Time, status, cause string) (string, bool) {
+	if !g.lastDelivery() {
+		g.logger.Warn("runner: run %s: %s — its capacity transit kept, re-offered so the next delivery parks it", g.msg.RunID, cause)
+		return status, true
+	}
+	if !g.endFinal(ctx, owned, fmt.Sprintf("%s on its last delivery — resume it by hand", cause)) {
+		return "capacity_place_lost_moved", false
+	}
+	return status, false
 }
 
 // programFreezeTimeout bounds the freeze of a parked delivery's program: a
@@ -650,15 +752,40 @@ func (r *Runner) countFrozenProgram(source, outcome string) {
 }
 
 // endFinal ends the owned transit as final — nobody resumes the run by itself
-// — and says why on the run's timeline and in the log.
-func (g *capacityGuard) endFinal(ctx context.Context, owned time.Time, why string) {
+// — and says why on the run's timeline and in the log, on a store budget of
+// its own. An end the store refuses keeps the transit owned with final to put
+// back, so the delivery's own end (endUnlessRedelivered) writes it again. An
+// end that matches nothing — a park that landed despite its error, an
+// operator's resume, a deleted run — leaves the run to whoever moved it:
+// nothing is written to its timeline, and matched is false (the caller
+// reports the run moved). A refused end, or a store with no transit, is
+// matched: the cause is said.
+func (g *capacityGuard) endFinal(parent context.Context, owned time.Time, why string) (matched bool) {
+	ctx, cancel := g.storeCtx(parent)
+	defer cancel()
 	transit := store.AsCapacityTransitStore(g.r.cfg.Store)
+	matched = true
+	failed := false
 	if transit != nil {
-		if _, err := transit.EndCapacityTransit(ctx, g.msg.RunID, owned, store.ContinuationFinal); err != nil {
-			g.logger.Error("runner: run %s: end its capacity transit as final: %v — the hold lapses at %s", g.msg.RunID, err, owned.Format(time.RFC3339))
+		m, err := transit.EndCapacityTransit(ctx, g.msg.RunID, owned, store.ContinuationFinal)
+		if err != nil {
+			failed = true
+			g.logger.Error("runner: run %s: end its capacity transit as final: %v — the delivery's end writes it again", g.msg.RunID, err)
+		} else {
+			matched = m
 		}
 	}
-	g.disown()
+	if failed {
+		g.mu.Lock()
+		g.restore = store.ContinuationFinal
+		g.mu.Unlock()
+	} else {
+		g.disown()
+	}
+	if !matched {
+		g.logger.Warn("runner: run %s moved past its capacity transit before its final end — left to whoever moved it (%s)", g.msg.RunID, why)
+		return false
+	}
 	g.logger.Error("runner: run %s: %s", g.msg.RunID, why)
 	if _, err := g.r.cfg.Store.AppendEvent(ctx, g.msg.RunID, store.Event{
 		Type: store.EventRunRetrySkipped,
@@ -671,6 +798,7 @@ func (g *capacityGuard) endFinal(ctx context.Context, owned time.Time, why strin
 	}); err != nil {
 		g.logger.Warn("runner: run %s: could not emit run_retry_skipped: %v", g.msg.RunID, err)
 	}
+	return true
 }
 
 // emitCapacityRetryScheduled records the armed retry on the run's timeline.

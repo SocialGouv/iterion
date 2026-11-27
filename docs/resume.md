@@ -1310,7 +1310,12 @@ What still takes the bot's current program:
 - an operator's resume, always: its flip moves the run's attempt marker, and
   the record no longer binds it;
 - a record that no longer binds the run, or whose envelope is gone (counted
-  `frozen_stale` and `frozen_unavailable` on `iterion_runs_retry_resumed_total`).
+  `frozen_stale` and `frozen_unavailable` on `iterion_runs_retry_resumed_total`);
+- a stored bot deleted and re-created under the same slug after the parked
+  attempt (its row born after the attempt's `queued_at`): that is another
+  bot, whose predecessor's program is never re-admitted — the record counts
+  `frozen_stale`, and the new bot's program is refused for its hash if it
+  differs.
 
 A stored bot deleted during the wait still ends the run's automation, frozen or
 not. An inline-source cloud run parked on capacity now resumes too. A run parked
@@ -1328,7 +1333,8 @@ bound to the attempt it parks. When the window reopens, the retry sweeper
 resumes the bot's **current** program, so skills, devbox and subbot snapshot
 updated during the wait are taken. Only when that resume is refused because
 the bot's source changed (its workflow hash, or a shared dependency's
-identity) does the same pass resume the recorded program instead — on the
+identity), or because its current program no longer compiles, does the same
+pass resume the recorded program instead — on the
 admission the first resume was judged under, never with `--force`
 (`frozen_readmitted` on `iterion_runs_retry_resumed_total`). A pull-forward
 probe whose resume meets the window again parks the run again on that
@@ -1343,10 +1349,12 @@ budget as before:
 - a park whose program was not recorded (`freeze_failed` or `hash_mismatch` on
   the same counter): its retry is armed all the same;
 - a record whose envelope is gone or corrupt (`frozen_unavailable` on
-  `iterion_runs_retry_resumed_total`).
+  `iterion_runs_retry_resumed_total`);
+- a stored bot deleted and re-created under the same slug after the parked
+  attempt: another bot, so the recorded program is not resumed (`frozen_stale`).
 
-A stored bot deleted during the wait ends the automation: the current program
-is resolved first, and its resolution says the bot is gone. An inline-source
+A stored bot deleted during the wait ends the automation: the sweeper looks
+its row up before it resumes anything, and the lookup says the bot is gone. An inline-source
 cloud run takes the same first step and cannot resolve a current source: its
 retry is abandoned, as before — resume it by hand.
 
@@ -1354,7 +1362,9 @@ An automatic retry, frozen or not, stops at its first due with the reason named
 when the resume needs a person: an effect left undecided, a scratch or a
 lineage that does not travel, an artifact contract the program no longer meets,
 a required secret that resolves to nothing. Resume it by hand once the cause is
-dealt with.
+dealt with. When every missing required secret had a stored candidate that
+failed to read or to unseal (a store error, a replica on an older key ring),
+nothing is known to be missing: that retry is re-armed.
 
 ### What a resume rebuilds
 

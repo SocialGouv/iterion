@@ -305,13 +305,31 @@ delivery after 30 s, and parks the run on its last delivery: a redelivery
 never resumes on places it could not prove. A delivery that resumes nothing
 and is not handed back ends the transit it wrote and gives its places back.
 
+**What the hold does not cover.** A run's stamp names every key it sealed and
+every gateway it may ride, capped or not; its message holds only the places
+its admission reserved. A key or a gateway capped after that admission is
+covered by the transit's adoption alone: a redelivery that resumes the run
+once its hold has lapsed, after a post-engine promote that failed (no
+`continuation_until` written), from a DLQ replay, or while an operator pause
+holds nothing (a message whose admission reserved no place) re-asserts
+nothing on it, and can run beside a run admitted in between. Such a delivery proceeds and is
+counted, once per such subject,
+`iterion_capacity_reassert_total{stage="delivery",outcome="unheld_out_of_transit"}`.
+And the hold can lapse on the way: two re-offers come before the guard and
+refresh nothing — the nak of a delivery whose lease another pod still holds
+(by its rank, past the default hold from the fifth delivery on) and a schema
+or epoch refusal during a rollout. A subject the message holds is still
+re-asserted on such a late redelivery, and the run parks on `CRED_SLOT_WAIT`
+when its place was taken.
+
 Behaviour that follows: a redelivery of an **operator-paused** run whose
 message carries reserved places is dropped (the pause released them; the
 operator's resume re-admits the run), and a run whose **retry is armed** is
 resumed by that retry only, never by a redelivery. A message from a publisher
 older than the field resumes unguarded, as before, and is counted
 `iterion_capacity_reassert_total{outcome="legacy"}`; that series must read 0
-before the per-gateway bound moves to `enforce`. A launch, too, re-asserts its
+before the per-gateway bound moves to `enforce` (the chart's alert pack records
+it as `iterion:capacity_reassert_legacy:increase24h`). A launch, too, re-asserts its
 slots right before it publishes: one lost while the launch stalled past the
 ledger's grace is asked for again, and the launch parks when none is free.
 
