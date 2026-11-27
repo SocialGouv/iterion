@@ -466,8 +466,6 @@ One row per page under `docs/`, ADRs included. An ADR's **status** is the column
 | [`docs/references/map-bots.md`](map-bots.md) | Bot and skill map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-docs.md`](map-docs.md) | Docs and ADR map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/map-packages.md`](map-packages.md) | Package map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
-| [`docs/references/map-packages.md`](map-packages.md) | Package map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
-| [`docs/references/map-packages.md`](map-packages.md) | Package map | Run `task map:gen` and commit; `task map:check` fails on drift. | — |
 | [`docs/references/patterns.md`](patterns.md) | Iterion DSL — Common Workflow Patterns | Reusable patterns for building `.bot` workflows. | — |
 | [`docs/references/productive-session-patterns.md`](productive-session-patterns.md) | Productive-Session Patterns | What a *productive* human-driven agent session actually looks like — measured, | — |
 | [`docs/references/workspace-service.md`](workspace-service.md) | Shared local workspace service | Local development uses one per-user service, `iterion-workspace.service`, for | — |
