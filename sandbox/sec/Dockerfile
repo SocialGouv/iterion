@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.29@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 #
 # iterion-sandbox-sec — security-scanner variant layered on
 # iterion-sandbox-full. It adds the SAST / SCA / secret scanners the
@@ -21,7 +21,7 @@
 #   - trivy     — fs vuln/config/secret scanning (SCA + IaC + secrets).
 #   - gitleaks  — secret detection.
 
-ARG BASE=ghcr.io/socialgouv/iterion-sandbox-full-base:edge@sha256:10c41c3a52fec852773dcae934e35129771b012fa96e9ca0a93e2a6292330f2f
+ARG BASE=ghcr.io/socialgouv/iterion-sandbox-full-base:edge@sha256:fa2695100233ca191ed902e1ea29f4db80939e4ef1863c820ab100b2d11c390a
 FROM ${BASE}
 
 USER root

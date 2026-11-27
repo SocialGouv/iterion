@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1.29@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 #
 # Shared finalize layer — produces every published iterion-sandbox-* image
 # (slim/full/sec/browser) by stamping the iterion binary + LLM CLIs onto the
@@ -13,7 +13,7 @@
 #                   pinned llm-clis get baked in.
 
 ARG BASE
-ARG ITERION_IMAGE=ghcr.io/socialgouv/iterion:edge@sha256:56c3471904ad66705eb6b72989ebb97c18801585c49a3aaf1c9e8c8433abb24a
+ARG ITERION_IMAGE=ghcr.io/socialgouv/iterion:edge@sha256:cee7a0f6e71d55dd1249cd16db1844f4e49a3888ec4a7248efe3deb6142b1614
 FROM ${ITERION_IMAGE} AS iterion-bin
 
 FROM ${BASE}
