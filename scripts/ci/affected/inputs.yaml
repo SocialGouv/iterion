@@ -60,8 +60,8 @@ packages:
     reads: ["docs/auto-maintenance.md", "scripts/auto-maintenance-check.sh"]
     why: "tests read paths named literally in preflight_test.go"
   internal/ciguard:
-    reads: [".github/**", "scripts/**", "ci/**", "Taskfile.yml", "AGENTS.md", "docs/merge-policy.md", "docs/agents/workflow/review-and-merge.md", "docs/agents/workflow/push-to-main.md", "renovate.json", "Formula/**", "Cask/**", ".release-it.mjs", "**/*_test.go", "CHANGELOG.md", "charts/iterion/Chart.yaml", "internal/mdcode/testdata/committed-reading.txt", "package.json", "docker/**", "openapi.json", "pkg/sandbox/**", "studio/e2e/**", "studio/src/api/schema.ts"]
-    why: "parses the workflows, the gate map, the Taskfile, AGENTS.md, the merge-policy pages, ci/arc-runner and Formula/Cask, runs workflow run steps and scripts, walks every _test.go (native_exec_runner) and stats the paths-ignore files; plus paths named literally in e2e_shards_test.go, gate_map_test.go, light_pr_lanes_test.go, native_exec_runner_test.go, openapi_check_test.go, renovate_pins_test.go"
+    reads: [".github/**", "scripts/**", "ci/**", "Taskfile.yml", "AGENTS.md", "docs/merge-policy.md", "docs/agents/workflow/review-and-merge.md", "docs/agents/workflow/push-to-main.md", "renovate.json", "Formula/**", "Cask/**", ".release-it.mjs", "**/*_test.go", "CHANGELOG.md", "charts/iterion/Chart.yaml", "internal/mdcode/testdata/committed-reading.txt", "package.json", "docker/**", "openapi.json", "pkg/sandbox/**", "studio/e2e/**", "studio/src/api/schema.ts", "**/Dockerfile", "**/Dockerfile.*", "**/Containerfile"]
+    why: "parses the workflows, the gate map, the Taskfile, AGENTS.md, the merge-policy pages, ci/arc-runner and Formula/Cask, runs workflow run steps and scripts, walks every _test.go (native_exec_runner) and stats the paths-ignore files; plus paths named literally in e2e_shards_test.go, gate_map_test.go, light_pr_lanes_test.go, native_exec_runner_test.go, openapi_check_test.go, renovate_pins_test.go; TestEveryDockerfileVersionPinIsManagedByRenovate walks the tree from the repository root and reads every Dockerfile, Dockerfile.* and Containerfile outside renovate.json's ignorePaths, against renovate.json and go.mod"
   internal/corpusreading:
     reads: [".release-it.mjs"]
     why: "tests read paths named literally in corpusreading_test.go"
@@ -124,8 +124,8 @@ packages:
     reads: ["**/*.go"]
     why: "the global-lookup restore sweep walks every .go file from sweepwalk.ModuleRoot; the launch-vars and codemode-cell sweeps walk the pkg/, cmd/ and internal/ trees and name cmd/iterion/runner.go, pkg/backend/model/claw_backend.go, pkg/dryrun/executor.go and pkg/runtime/resume.go"
   internal/sweep/publishedtree:
-    reads: ["bots/**", "examples/**", "docs/**", "skills/**", "scripts/**", "charts/**", "ci/**", "*.md", "**/.gitignore"]
-    why: "TestCatalogNamesNoForeignInfrastructure lists the tracked files of catalogScope (bots, examples, docs, skills, scripts, charts, ci and the root *.md) from sweepwalk.ModuleRoot; the gitignore guard asks check-ignore, which reads every .gitignore on the path"
+    reads: ["bots/**", "examples/**", "docs/**", "skills/**", "scripts/**", "charts/**", "ci/**", "internal/sweep/**", "*.md", "**/.gitignore"]
+    why: "TestCatalogNamesNoForeignInfrastructure lists the tracked files of catalogScope (bots, examples, docs, skills, scripts, charts, ci, internal/sweep and the root *.md) from sweepwalk.ModuleRoot, its own file excepted, and TestTheGuardExemptsItsOwnPathOnly reads that file back; the gitignore guard asks check-ignore, which reads every .gitignore on the path"
   internal/sweep/runtimecatalog:
     reads: ["bots/**"]
     why: "the catalogue guards compile and run real bots/*/main.bot nodes, walk every bundle under bots/ for owned-skill parsing and binary resolution, and merge bots/whole-improve-loop/presets"
@@ -142,6 +142,9 @@ packages:
   internal/sweep/serversurface:
     reads: ["cmd/iterion/**", "pkg/cli/**", "pkg/server/**", "pkg/dispatcher/native/http.go", "pkg/dispatcher/manager.go", "docs/**"]
     why: "the CLI route sweeps read the .go files of cmd/iterion and pkg/cli; routescan.ServedRouteTable derives the served table from pkg/server's registrations, pkg/dispatcher/native/http.go and pkg/dispatcher/manager.go; the REST reference guards read docs/cloud-rest-api.md (the scan reads the Join tail \"docs\" as docs/); the bootstrap guard parses cmd/iterion/server.go"
+  internal/sweep/sweepguard:
+    reads: ["internal/sweep/**"]
+    why: "TestNoParallelSweepTestSharesProcessState lists every directory of internal/sweep (os.ReadDir(\"..\"), so a new sweep package joins the verdict) and parses each one's _test.go files through testparallel.ReadCampaign; only _test.go files are read, but the listing is discovered, so the scan holds the whole tree"
   internal/sweepwalk:
     why: "every test runs on t.TempDir fixtures; TestModuleRootJudgesTheExecutionTree chdirs into one, so no repository file is read"
   pkg/backend/auxllm:
@@ -163,6 +166,9 @@ packages:
   pkg/backend/tool:
     reads: ["pkg/backend/**"]
     why: "tests read paths named literally in claw_workspace_read_test.go"
+  pkg/backend/tool/privacy/detector:
+    reads: ["examples/*.bot"]
+    why: "TestRules_NoFP_OnExamples globs ../../../../../examples/*.bot and runs every detector rule over each file"
   pkg/backend/toolcatalog:
     reads: ["pkg/**/*.go", "bots/**/*.go", "cmd/**/*.go", "internal/**/*.go", "docs/agents/backends/prompt-engineering-dials.md", "docs/agents/backends/fallbacks-and-parity.md", "docs/backends.md", "docs/ultracode.md", "docs/references/diagnostics.md", "docs/plugins.md", "docs/sandbox.md"]
     why: "refused_test reads seven docs pages; writing_canonicals_test walks pkg/, bots/, cmd/ and internal/ for .go files"
@@ -259,6 +265,9 @@ packages:
   pkg/dsl/workflowfile:
     reads: ["**/*.yaml", "**/*.yml"]
     why: "the YAML bound tests walk the whole repo for .yaml/.yml files"
+  pkg/forge:
+    reads: ["bots/**"]
+    why: "TestCatalogCommandsRouteToTheirBot globs ../../bots/*/<name> for bundle.ManifestFile and ManifestFileAlt (manifest.yaml, manifest.yml) and provisions the whole catalogue's invocations; the name is computed, so the scan holds every file under bots/*, which only bots/** covers"
   pkg/git:
     reads: ["**/*.go"]
     why: "the git-caller sweeps (gitSitesInTree) read every .go file of the repo"
@@ -352,6 +361,9 @@ legs:
   race:
     aggregates: [race-shard, test-native-exec]
     why: the aggregator of the race legs
+  heavy-gate:
+    paths: [scripts/ci/heavy-gate.sh]
+    why: "push only: scripts/ci/heavy-gate.sh reads main's run history and decides whether the push runs the heavy layer; it tests no package, and its one input sits under scripts/ci/ (global)"
   test-unit:
     packages: ["..."]
     paths: ["**/*.go"]

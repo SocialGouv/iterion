@@ -37,6 +37,15 @@ import (
 //   - anchored: a literal (or a Join tail of literals) that names an
 //     existing path when joined to one of the package's anchors — the repo
 //     root when it reaches one, and every directory a relative read names.
+//
+// A relative path holding a glob segment (`../../bots/*/x.yaml`, the pattern
+// a test hands filepath.Glob) is kept as the pattern: it counts when it
+// matches something in the tree, and it reads every tracked file it matches —
+// and everything under a matching directory, the shape of a Join whose glob
+// prefix is followed by a computed name. An anchored literal with a glob is
+// not taken: outside a climb, a starred string is far more often a pattern
+// under test (a permission rule, a URL shape) than a read, and a root-anchored
+// package's entry already answers for what it reads.
 
 type evidence struct {
 	Pkg  string // package directory, repo-relative
@@ -45,6 +54,7 @@ type evidence struct {
 	Kind string // relative | root | anchored
 	Path string // repo-relative path read; "." for the root itself
 	Dir  bool
+	Glob bool // Path is a glob pattern; Dir: a match is a directory
 }
 
 func (e evidence) String() string {
@@ -131,7 +141,7 @@ func scanTree(root, module string) ([]evidence, error) {
 			ev = append(ev, finderCalls(module, f, finders)...)
 		}
 		for _, e := range ev {
-			if e.Dir {
+			if e.Dir && !e.Glob {
 				anchors[e.Path] = true
 			}
 		}
@@ -345,6 +355,45 @@ func existing(root, p string) (exists, isDir bool) {
 	return true, st.IsDir()
 }
 
+// globMeta are the characters that make a path segment a glob pattern.
+const globMeta = "*?["
+
+// globBase is the part of a slash path before its first glob segment: the
+// directory a pattern reads from ("." for a pattern at the root); the path
+// itself when it holds no glob.
+func globBase(p string) string {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if strings.ContainsAny(s, globMeta) {
+			if i == 0 {
+				return "."
+			}
+			return strings.Join(segs[:i], "/")
+		}
+	}
+	return p
+}
+
+// existingOrMatched is existing for a plain path. For a glob pattern it
+// reports whether the pattern matches anything in the tree, and isDir when
+// one of the matches is a directory.
+func existingOrMatched(root, p string) (exists, isDir, glob bool) {
+	if !strings.ContainsAny(p, globMeta) {
+		exists, isDir = existing(root, p)
+		return exists, isDir, false
+	}
+	matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(p)))
+	if err != nil || len(matches) == 0 {
+		return false, false, true
+	}
+	for _, m := range matches {
+		if st, err := os.Stat(m); err == nil && st.IsDir() {
+			return true, true, true
+		}
+	}
+	return true, false, true
+}
+
 // relativeReads finds the literal paths of f that climb out of its
 // directory and name an existing path of the repository.
 func relativeReads(root string, f *scanFile) []evidence {
@@ -352,10 +401,10 @@ func relativeReads(root string, f *scanFile) []evidence {
 	consumed := map[ast.Expr]bool{}
 	add := func(n ast.Node, rel string) {
 		p, ok := resolveFrom(f.dir, rel)
-		if !ok || within(p, f.dir) {
+		if !ok || within(globBase(p), f.dir) {
 			return
 		}
-		exists, isDir := existing(root, p)
+		exists, isDir, glob := existingOrMatched(root, p)
 		if !exists {
 			return
 		}
@@ -363,7 +412,7 @@ func relativeReads(root string, f *scanFile) []evidence {
 		if p == "." {
 			kind = "root"
 		}
-		out = append(out, evidence{Pkg: f.dir, File: f.rel, Line: f.line(n), Kind: kind, Path: p, Dir: isDir})
+		out = append(out, evidence{Pkg: f.dir, File: f.rel, Line: f.line(n), Kind: kind, Path: p, Dir: isDir, Glob: glob})
 	}
 	ast.Inspect(f.ast, func(n ast.Node) bool {
 		switch n := n.(type) {

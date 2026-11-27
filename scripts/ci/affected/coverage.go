@@ -15,6 +15,8 @@ import (
 //   - A file read must match one of the entry's globs (or a global one).
 //   - A directory read must cover every tracked file under it that the
 //     package does not own.
+//   - A glob read must cover every tracked file the pattern matches, and
+//     every one under a matching directory, that the package does not own.
 //   - A root read (a root finder, or a climb to the root) needs the entry
 //     alone: what a root-anchored test reads is the entry's word.
 func undeclared(in *inputs, tracked []string, ev []evidence) []string {
@@ -33,6 +35,21 @@ func undeclared(in *inputs, tracked []string, ev []evidence) []string {
 			return isGlobal(p) || (ok && firstMatch(decl.Reads, p) != "")
 		}
 		switch {
+		case e.Glob:
+			var missing []string
+			for _, t := range tracked {
+				reads := matchGlob(e.Path, t) || (e.Dir && matchGlob(e.Path+"/**", t))
+				if !reads {
+					continue
+				}
+				if within(t, e.Pkg) || covered(t) {
+					continue
+				}
+				missing = append(missing, t)
+			}
+			if len(missing) > 0 {
+				out = append(out, fmt.Sprintf("%s: %s: %d tracked file(s) matching %s match no declared glob (first: %s)", e.Pkg, e, len(missing), e.Path, missing[0]))
+			}
 		case e.Kind == "root" || e.Path == ".":
 			if !ok {
 				out = append(out, fmt.Sprintf("%s: %s: reaches the repository root and has no `packages:` entry", e.Pkg, e))

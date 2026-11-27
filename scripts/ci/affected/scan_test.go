@@ -57,6 +57,22 @@ func TestD(t *testing.T) {
 	os.ReadFile("testdata/own.txt")
 }
 `,
+		"examples/a.bot":         "a",
+		"examples/sub/b.bot":     "b",
+		"bots/one/manifest.yaml": "m",
+		"bots/one/main.bot":      "m",
+		"pkg/f/f_test.go": `package f
+import ("path/filepath"; "testing")
+func TestF(t *testing.T) { filepath.Glob(filepath.Join("..", "..", "examples", "*.bot")) }
+`,
+		"pkg/g/g_test.go": `package g
+import ("path/filepath"; "testing")
+func TestG(t *testing.T) { name := "manifest.yaml"; filepath.Glob(filepath.Join("..", "..", "bots", "*", name)) }
+`,
+		"pkg/h/h_test.go": `package h
+import ("path/filepath"; "testing")
+func TestH(t *testing.T) { filepath.Glob("../../nowhere/*.bot") }
+`,
 		"pkg/e/e.go": `package e
 import "os"
 func Load() { os.ReadFile("../../docs/x.md") }
@@ -79,6 +95,8 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 		"pkg/a": {"relative docs/x.md"},
 		"pkg/b": {"relative docs/adr", "relative docs/y.md"},
 		"pkg/c": {"anchored docs/z.md", "root ."},
+		"pkg/f": {"relative examples/*.bot"},
+		"pkg/g": {"relative bots/*"},
 	} {
 		g := got[pkg]
 		slices.Sort(g)
@@ -87,8 +105,9 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 		}
 	}
 	// A traversal fixture, a climb relative to a temp dir, a path naming
-	// nothing in the tree, and production code: none is a test's read.
-	for _, pkg := range []string{"pkg/d", "pkg/e"} {
+	// nothing in the tree, a glob matching nothing, and production code:
+	// none is a test's read.
+	for _, pkg := range []string{"pkg/d", "pkg/e", "pkg/h"} {
 		if len(got[pkg]) > 0 {
 			t.Errorf("%s: scan = %v, want nothing", pkg, got[pkg])
 		}
@@ -97,18 +116,22 @@ func TestTheScanFindsEachReadShape(t *testing.T) {
 
 func TestUndeclaredJudgesFilesDirectoriesAndRoots(t *testing.T) {
 	ev := scanFixture(t)
-	tracked := []string{"docs/adr/1.md", "docs/x.md", "docs/y.md", "docs/z.md", "go.mod"}
+	tracked := []string{"bots/one/main.bot", "bots/one/manifest.yaml", "docs/adr/1.md", "docs/x.md", "docs/y.md", "docs/z.md", "examples/a.bot", "examples/sub/b.bot", "go.mod"}
 	in := &inputs{Packages: map[string]readDecl{
 		"pkg/a": {Reads: []string{"docs/x.md"}, Why: "w"},
 		"pkg/b": {Reads: []string{"docs/y.md"}, Why: "w"}, // misses docs/adr/
 		// pkg/c has no entry: its root read is refused.
+		"pkg/f": {Reads: []string{"examples/sub/*.bot"}, Why: "w"},   // misses examples/a.bot
+		"pkg/g": {Reads: []string{"bots/*/manifest.yaml"}, Why: "w"}, // the computed name reads every bundle file
 	}}
 	got := undeclared(in, tracked, ev)
-	if len(got) != 3 {
-		t.Fatalf("undeclared = %q, want pkg/b's directory and pkg/c's root and file", got)
+	if len(got) != 5 {
+		t.Fatalf("undeclared = %q, want pkg/b's directory, pkg/c's root and file, pkg/f's glob and pkg/g's glob directory", got)
 	}
 	in.Packages["pkg/b"] = readDecl{Reads: []string{"docs/**"}, Why: "w"}
 	in.Packages["pkg/c"] = readDecl{Reads: []string{"docs/z.md"}, Why: "w"}
+	in.Packages["pkg/f"] = readDecl{Reads: []string{"examples/*.bot"}, Why: "w"}
+	in.Packages["pkg/g"] = readDecl{Reads: []string{"bots/**"}, Why: "w"}
 	if got := undeclared(in, tracked, ev); len(got) != 0 {
 		t.Fatalf("undeclared = %q, want none", got)
 	}
