@@ -22,3 +22,4 @@ github.com/SocialGouv/iterion/pkg/server	TestAssistantWatchSweep_K3HandoverThrou
 github.com/SocialGouv/iterion/pkg/runview	TestAlertsOfASuccessorNeverReachAPredecessorsStream	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertRotationReregistersTheSuccessor	#3624
 github.com/SocialGouv/iterion/pkg/runview	TestAlertEpochEndRetiredQueueAndResume	#3624
+github.com/SocialGouv/iterion/pkg/eventbus	TestBusSubscribeCancelSharedBudget/nats-async	#3893
